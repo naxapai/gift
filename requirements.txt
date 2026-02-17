@@ -1,0 +1,1 @@
+# No external dependencies required for the web app and bot.

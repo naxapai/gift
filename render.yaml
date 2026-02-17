@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: telegram-gifts-market
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: "python3 server.py"
+    autoDeploy: true
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: REALTIME_INTERVAL_SEC
+        value: "3"
+
+  - type: worker
+    name: telegram-gifts-bot
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: "python3 bot.py"
+    autoDeploy: false
+    envVars:
+      - key: BOT_POLL_INTERVAL
+        value: "300"
+      - key: BOT_MIN_INTENSITY
+        value: "10"
+      - key: TG_BOT_TOKEN
+        sync: false
+      - key: TG_CHAT_ID
+        sync: false

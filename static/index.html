@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Telegram Gifts Market Intelligence</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="bg-shape bg-shape-a"></div>
+    <div class="bg-shape bg-shape-b"></div>
+
+    <main class="container">
+      <header class="topbar card">
+        <div>
+          <h1>Telegram Gifts Market Intelligence</h1>
+          <p>Аналитика рынка подарков: рост, спрос/предложение, сигналы и скринер.</p>
+          <p id="liveStatus" class="live-status">LIVE: подключение...</p>
+        </div>
+        <button id="refreshBtn" class="btn">Перегенерировать историю</button>
+      </header>
+
+      <section class="grid-kpi" id="kpiGrid"></section>
+
+      <section class="card chart-card">
+        <div class="card-head">
+          <h2>График роста подарка</h2>
+          <select id="giftSelect"></select>
+        </div>
+        <div class="chart-wrap">
+          <svg id="lineChart" viewBox="0 0 1000 360" preserveAspectRatio="none"></svg>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Скринер подарков</h2>
+          <div class="filters">
+            <select id="signalFilter">
+              <option value="">Все сигналы</option>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+              <option value="ANOMALY">ANOMALY</option>
+              <option value="HOLD">HOLD</option>
+            </select>
+            <select id="groupFilter">
+              <option value="">Все группы</option>
+            </select>
+            <select id="sortBy">
+              <option value="change_7d">Рост 7д</option>
+              <option value="change_30d">Рост 30д</option>
+              <option value="demand_supply_ratio">Спрос/предложение</option>
+              <option value="volume_trend_7_vs_30">Тренд объема</option>
+              <option value="zscore_30d">Аномальность</option>
+            </select>
+            <select id="order">
+              <option value="desc">По убыванию</option>
+              <option value="asc">По возрастанию</option>
+            </select>
+            <button id="applyFilterBtn" class="btn">Применить</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Подарок</th>
+                <th>Цена</th>
+                <th>1д</th>
+                <th>7д</th>
+                <th>30д</th>
+                <th>D/S</th>
+                <th>Объем</th>
+                <th>Сигнал</th>
+                <th>Комментарий</th>
+              </tr>
+            </thead>
+            <tbody id="screenerBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card signals">
+        <div class="card-head">
+          <h2>Топ сигналов</h2>
+        </div>
+        <ul id="signalsList"></ul>
+      </section>
+    </main>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

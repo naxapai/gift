@@ -1,0 +1,266 @@
+:root {
+  --bg: #f4f6f8;
+  --panel: rgba(255, 255, 255, 0.78);
+  --text: #1c252f;
+  --muted: #5f6b76;
+  --line: #d7dde3;
+  --accent: #01639c;
+  --good: #0b8f51;
+  --bad: #c0392b;
+  --warn: #e6a700;
+  --hold: #5d6670;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Manrope", "Segoe UI", sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 10% 15%, #ddebf4 0, transparent 40%),
+    radial-gradient(circle at 95% 85%, #fff0dd 0, transparent 35%),
+    var(--bg);
+}
+
+.bg-shape {
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.bg-shape-a {
+  width: 280px;
+  height: 280px;
+  background: #8dc8e8;
+  left: -70px;
+  top: -70px;
+}
+
+.bg-shape-b {
+  width: 360px;
+  height: 360px;
+  background: #ffd59f;
+  right: -140px;
+  bottom: -120px;
+}
+
+.container {
+  position: relative;
+  z-index: 2;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 24px 16px 36px;
+  display: grid;
+  gap: 16px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 20px;
+  padding: 16px;
+  box-shadow: 0 10px 30px rgba(16, 25, 36, 0.08);
+  backdrop-filter: blur(8px);
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 26px;
+  letter-spacing: -0.02em;
+}
+
+p {
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.live-status {
+  font-size: 13px;
+  font-weight: 600;
+  color: #006da9;
+}
+
+.btn,
+select {
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  font: inherit;
+  background: #fff;
+}
+
+.btn {
+  border: none;
+  color: #fff;
+  background: linear-gradient(135deg, #006da9, #0096c7);
+  cursor: pointer;
+}
+
+.btn:hover {
+  opacity: 0.93;
+}
+
+.grid-kpi {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.kpi {
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.kpi .label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.kpi .value {
+  margin-top: 8px;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chart-wrap {
+  height: 370px;
+}
+
+#lineChart {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fff, #f5f9fc);
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-size: 14px;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.group-row td {
+  background: #eef6fb;
+  font-weight: 700;
+  color: #184d6b;
+  border-top: 1px solid #c8d9e6;
+}
+
+.group-count {
+  margin-left: 8px;
+  color: #4f7389;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.tag {
+  font-weight: 700;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: #fff;
+}
+
+.tag.BUY {
+  background: var(--good);
+}
+
+.tag.SELL {
+  background: var(--bad);
+}
+
+.tag.ANOMALY {
+  background: var(--warn);
+}
+
+.tag.HOLD {
+  background: var(--hold);
+}
+
+.pos {
+  color: var(--good);
+  font-weight: 600;
+}
+
+.neg {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.signals ul,
+#signalsList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#signalsList li {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  h1 {
+    font-size: 22px;
+  }
+}
