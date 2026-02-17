@@ -4,16 +4,23 @@ const lineChart = document.getElementById("lineChart");
 const screenerBody = document.getElementById("screenerBody");
 const signalsList = document.getElementById("signalsList");
 const favoritesList = document.getElementById("favoritesList");
-const applyFilterBtn = document.getElementById("applyFilterBtn");
 const refreshBtn = document.getElementById("refreshBtn");
 const liveStatus = document.getElementById("liveStatus");
 const giftModal = document.getElementById("giftModal");
 const giftModalBody = document.getElementById("giftModalBody");
 const giftModalTitle = document.getElementById("giftModalTitle");
 const giftModalClose = document.getElementById("giftModalClose");
+const pageSizeSelect = document.getElementById("pageSizeSelect");
+const prevPageBtn = document.getElementById("prevPageBtn");
+const nextPageBtn = document.getElementById("nextPageBtn");
+const pageInfo = document.getElementById("pageInfo");
 
 const signalFilter = document.getElementById("signalFilter");
-const groupFilter = document.getElementById("groupFilter");
+const marketFilter = document.getElementById("marketFilter");
+const collectionFilter = document.getElementById("collectionFilter");
+const modelFilter = document.getElementById("modelFilter");
+const backdropFilter = document.getElementById("backdropFilter");
+const symbolFilter = document.getElementById("symbolFilter");
 const sortBy = document.getElementById("sortBy");
 const order = document.getElementById("order");
 const giftSearch = document.getElementById("giftSearch");
@@ -24,6 +31,8 @@ let currentGiftId = "";
 let autoRefreshTimer = null;
 let favorites = new Set();
 let lastSummary = null;
+let currentPage = 1;
+let pageSize = 25;
 
 function loadFavorites() {
   try {
@@ -71,6 +80,40 @@ function formatPrice(v) {
   return Number(v).toFixed(2);
 }
 
+function withShare(label, share) {
+  return share ? `${label} (${share})` : label;
+}
+
+function getMultiSelectedValues(selectEl) {
+  return Array.from(selectEl.selectedOptions || [])
+    .map((o) => (o.value || "").trim())
+    .filter(Boolean);
+}
+
+function restoreMultiSelection(selectEl, values) {
+  const wanted = new Set(values || []);
+  Array.from(selectEl.options || []).forEach((opt) => {
+    opt.selected = wanted.has(opt.value);
+  });
+}
+
+function bindMultiToggle(selectEl) {
+  if (!selectEl) return;
+  selectEl.addEventListener("mousedown", (e) => {
+    const opt = e.target;
+    if (!(opt instanceof HTMLOptionElement)) return;
+    e.preventDefault();
+    opt.selected = !opt.selected;
+    selectEl.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+function normalizeText(v) {
+  return String(v || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё]+/gi, "");
+}
+
 function renderGiftNameCell(r) {
   return `<a href="#" class="gift-link" data-gift-id="${r.gift_id}">${getGiftIcon(r.gift_id)} ${r.name}</a>`;
 }
@@ -111,14 +154,78 @@ function renderGiftOptions(rows) {
   giftSelect.value = currentGiftId;
 }
 
-function renderGroupOptions(rows) {
-  const selectedBefore = groupFilter.value || "";
-  const groups = [...new Set(rows.map((r) => r.group || "Other"))].sort((a, b) => a.localeCompare(b));
-  const options = ['<option value="">Все группы</option>']
-    .concat(groups.map((g) => `<option value="${g}">${g}</option>`))
+function renderCollectionOptions(rows) {
+  const selectedBefore = collectionFilter.value || "";
+  const collections = [...new Set(rows.map((r) => r.collection || ""))]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const options = ['<option value="">All Collections</option>']
+    .concat(collections.map((c) => `<option value="${c}">${c}</option>`))
     .join("");
-  groupFilter.innerHTML = options;
-  if (groups.includes(selectedBefore)) groupFilter.value = selectedBefore;
+  collectionFilter.innerHTML = options;
+  if (collections.includes(selectedBefore)) collectionFilter.value = selectedBefore;
+}
+
+function renderModelOptions(rows) {
+  const selectedBefore = getMultiSelectedValues(modelFilter);
+  const selectedCollection = (collectionFilter.value || "").trim().toLowerCase();
+  const baseRows = selectedCollection
+    ? rows.filter((r) => String(r.collection || "").trim().toLowerCase() === selectedCollection)
+    : rows;
+  const models = [...new Set(baseRows.map((r) => r.model || ""))]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const options = ['<option value="">All Models</option>']
+    .concat(models.map((m) => `<option value="${m}">${m}</option>`))
+    .join("");
+  modelFilter.innerHTML = options;
+  restoreMultiSelection(modelFilter, selectedBefore.filter((v) => models.includes(v)));
+  if (!selectedBefore.length) modelFilter.selectedIndex = -1;
+}
+
+function renderBackdropOptions(options = []) {
+  const selectedBefore = getMultiSelectedValues(backdropFilter);
+  const values = (options || []).map((o) => o.value).filter(Boolean);
+  const html = (options || []).map((o) => `<option value="${o.value}">${o.value}${o.count ? ` (${o.count})` : ""}</option>`)
+    .join("");
+  backdropFilter.innerHTML = html;
+  restoreMultiSelection(backdropFilter, selectedBefore.filter((v) => values.includes(v)));
+  if (!selectedBefore.length) backdropFilter.selectedIndex = -1;
+}
+
+function renderSymbolOptions(options = []) {
+  const selectedBefore = getMultiSelectedValues(symbolFilter);
+  const values = (options || []).map((o) => o.value).filter(Boolean);
+  const html = (options || []).map((o) => `<option value="${o.value}">${o.value}${o.count ? ` (${o.count})` : ""}</option>`)
+    .join("");
+  symbolFilter.innerHTML = html;
+  restoreMultiSelection(symbolFilter, selectedBefore.filter((v) => values.includes(v)));
+  if (!selectedBefore.length) symbolFilter.selectedIndex = -1;
+}
+
+async function loadFilterOptions() {
+  const resp = await fetchJson("/api/market/filters");
+  const f = resp.data || {};
+  const selectedCollection = collectionFilter.value || "";
+  const selectedModels = getMultiSelectedValues(modelFilter);
+
+  const collections = (f.collections || []).map((c) => c.slug || c.name).filter(Boolean);
+  collectionFilter.innerHTML =
+    ['<option value="">All Collections</option>']
+      .concat(collections.map((c) => `<option value="${c}">${c}</option>`))
+      .join("");
+  if (collections.includes(selectedCollection)) collectionFilter.value = selectedCollection;
+
+  const modelOptions = f.models || [];
+  const models = modelOptions.map((m) => m.value).filter(Boolean);
+  modelFilter.innerHTML =
+    modelOptions.map((m) => `<option value="${m.value}">${m.value}${m.count ? ` (${m.count})` : ""}</option>`)
+      .join("");
+  restoreMultiSelection(modelFilter, selectedModels.filter((v) => models.includes(v)));
+  if (!selectedModels.length) modelFilter.selectedIndex = -1;
+
+  renderBackdropOptions(f.backdrops || []);
+  renderSymbolOptions(f.symbols || []);
 }
 
 function renderFavoritesList() {
@@ -138,83 +245,129 @@ function renderFavoritesList() {
 }
 
 function renderChart(series) {
-  const prices = series.prices;
-  if (!prices || prices.length === 0) {
+  const pricesAll = series.prices_ton && series.prices_ton.length ? series.prices_ton : series.prices;
+  const datesAll = Array.isArray(series.dates) ? series.dates : [];
+  if (!pricesAll || pricesAll.length === 0) {
     lineChart.innerHTML = "";
     return;
   }
+
+  const targetPoints = Math.min(48, pricesAll.length);
+  const pickedIdx = [];
+  for (let i = 0; i < targetPoints; i++) {
+    pickedIdx.push(Math.round((i * (pricesAll.length - 1)) / Math.max(1, targetPoints - 1)));
+  }
+  const uniqueIdx = [...new Set(pickedIdx)];
+  const prices = uniqueIdx.map((i) => pricesAll[i]);
+  const dates = uniqueIdx.map((i) => datesAll[i] || "");
+
   const max = Math.max(...prices);
   const min = Math.min(...prices);
-  const padLeft = 70;
-  const padRight = 20;
-  const padTop = 22;
-  const padBottom = 36;
+  const padLeft = 38;
+  const padRight = 22;
+  const padTop = 14;
+  const padBottom = 26;
   const viewW = 1000;
-  const viewH = 360;
+  const viewH = 440;
   const h = viewH - padTop - padBottom;
   const w = viewW - padLeft - padRight;
   const range = max - min || 1;
-  const yTicks = 5;
+  const yPad = range * 0.18;
+  const yMax = max + yPad;
+  const yMin = Math.max(0, min - yPad);
+  const yRange = yMax - yMin || 1;
 
-  const points = prices.map((price, i) => {
-    const x = padLeft + (i / (prices.length - 1 || 1)) * w;
-    const norm = (price - min) / range;
+  const pointsRaw = prices.map((price, i) => {
+    const x = padLeft + (i / Math.max(1, prices.length - 1)) * w;
+    const norm = (price - yMin) / yRange;
     const y = padTop + (1 - norm) * h;
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
+    return { x, y, price };
   });
 
-  const firstPoint = points[0].split(",");
-  const lastPoint = points[points.length - 1].split(",");
-  const area = `${firstPoint[0]},${padTop + h} ${points.join(" ")} ${lastPoint[0]},${padTop + h}`;
-  const last = prices[prices.length - 1];
-  const first = prices[0];
-  const trendUp = last >= first;
-  const changePct = ((last - first) / (first || 1)) * 100;
-  const lineColor = trendUp ? "#0b8f51" : "#c0392b";
-  const fillColor = trendUp ? "rgba(11,143,81,0.14)" : "rgba(192,57,43,0.14)";
-  const lastX = Number(lastPoint[0]);
-  const lastY = Number(lastPoint[1]);
+  const d = pointsRaw.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(" ");
+  const areaD = `${d} L ${(padLeft + w).toFixed(2)} ${(padTop + h).toFixed(2)} L ${padLeft.toFixed(2)} ${(padTop + h).toFixed(2)} Z`;
 
-  const yGrid = Array.from({ length: yTicks + 1 }, (_, i) => {
-    const t = i / yTicks;
-    const y = padTop + t * h;
-    const val = max - t * range;
-    return `<line x1="${padLeft}" y1="${y.toFixed(1)}" x2="${(padLeft + w).toFixed(1)}" y2="${y.toFixed(1)}" stroke="#d5dee6" stroke-width="1" />
-    <text x="${padLeft - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" fill="#5f6b76" font-size="12">${formatPrice(val)}</text>`;
-  }).join("");
-
-  const xTickStep = Math.max(1, Math.floor((prices.length - 1) / 6));
-  let xTicks = "";
-  for (let i = 0; i < prices.length; i += xTickStep) {
-    const x = padLeft + (i / (prices.length - 1 || 1)) * w;
-    const raw = String(series.dates[i] || "");
-    const label = raw.length > 10 ? raw.slice(11, 16) : raw.slice(5);
-    xTicks += `<line x1="${x.toFixed(1)}" y1="${padTop + h}" x2="${x.toFixed(1)}" y2="${padTop + h + 5}" stroke="#b9c7d3" />
-    <text x="${x.toFixed(1)}" y="${padTop + h + 20}" text-anchor="middle" fill="#5f6b76" font-size="11">${label}</text>`;
+  const yGridCount = 6;
+  const xGridCount = 9;
+  let grid = "";
+  let yAxisLabels = "";
+  for (let i = 0; i <= yGridCount; i++) {
+    const y = padTop + (i / yGridCount) * h;
+    grid += `<line x1="${padLeft}" y1="${y.toFixed(1)}" x2="${(padLeft + w).toFixed(1)}" y2="${y.toFixed(1)}" stroke="#ece7fb" stroke-width="1" />`;
+    const val = yMax - (i / yGridCount) * yRange;
+    yAxisLabels += `<text x="${(padLeft - 8).toFixed(1)}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#8f84ae">${val.toFixed(2)}</text>`;
+  }
+  let xAxisLabels = "";
+  for (let i = 0; i <= xGridCount; i++) {
+    const x = padLeft + (i / xGridCount) * w;
+    grid += `<line x1="${x.toFixed(1)}" y1="${padTop}" x2="${x.toFixed(1)}" y2="${(padTop + h).toFixed(1)}" stroke="#f2eefc" stroke-width="1" />`;
+    const idx = Math.round((i / xGridCount) * (prices.length - 1));
+    const rawDt = dates[idx] || "";
+    const dtLabel = rawDt ? String(rawDt).slice(5, 10) : String(idx + 1);
+    xAxisLabels += `<text x="${x.toFixed(1)}" y="${(padTop + h + 16).toFixed(1)}" text-anchor="middle" font-size="10" fill="#9b90be">${dtLabel}</text>`;
   }
 
+  const valueStep = Math.max(1, Math.floor(pointsRaw.length / 8));
+  const pointsSvg = pointsRaw
+    .filter((_, idx) => idx % Math.max(1, Math.floor(pointsRaw.length / 10)) === 0 || idx === pointsRaw.length - 1)
+    .map(
+      (p) => `
+        <circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="4.5" fill="#8a61f7" />
+        <circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="2.1" fill="#fff" />
+      `
+    )
+    .join("");
+  const pointValueLabels = pointsRaw
+    .filter((_, idx) => idx % valueStep === 0 || idx === pointsRaw.length - 1)
+    .map(
+      (p) => `
+        <text x="${p.x.toFixed(2)}" y="${(p.y - 9).toFixed(2)}" text-anchor="middle" font-size="10" font-weight="700" fill="#5f4aa1">${p.price.toFixed(2)}</text>
+      `
+    )
+    .join("");
+
   lineChart.innerHTML = `
-    <rect x="${padLeft}" y="${padTop}" width="${w}" height="${h}" fill="#ffffff" stroke="#d7dde3" />
-    ${yGrid}
-    ${xTicks}
-    <polygon points="${area}" fill="${fillColor}" />
-    <polyline fill="none" stroke="${lineColor}" stroke-width="3" points="${points.join(" ")}" />
-    <circle cx="${lastX}" cy="${lastY}" r="4.5" fill="${lineColor}" />
-    <text x="${padLeft + 10}" y="18" fill="#1c252f" font-size="13" font-weight="600">${series.name}</text>
-    <text x="${padLeft + 220}" y="18" fill="${lineColor}" font-size="13" font-weight="700">Текущая: ${formatPrice(last)} (${formatPct(changePct)})</text>
+    <defs>
+      <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#8a61f7" stop-opacity="0.32"/>
+        <stop offset="100%" stop-color="#8a61f7" stop-opacity="0.03"/>
+      </linearGradient>
+    </defs>
+    <rect x="${padLeft}" y="${padTop}" width="${w}" height="${h}" fill="#fff" stroke="#ece6fb" />
+    ${grid}
+    ${yAxisLabels}
+    ${xAxisLabels}
+    <path d="${areaD}" fill="url(#areaFill)" />
+    <path d="${d}" fill="none" stroke="#8a61f7" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" />
+    ${pointsSvg}
+    ${pointValueLabels}
   `;
 }
 
 function renderScreener(rows) {
-  const query = (giftSearch.value || "").trim().toLowerCase();
+  const queryRaw = (giftSearch.value || "").trim();
+  const queryNorm = normalizeText(queryRaw);
   const filtered = rows.filter((r) => {
-    const matchesSearch = !query || r.name.toLowerCase().includes(query) || r.gift_id.toLowerCase().includes(query);
+    const plain = `${r.name} ${r.gift_id} ${r.collection || ""} ${r.model || ""}`.toLowerCase();
+    const norm = normalizeText(`${r.name} ${r.gift_id} ${r.collection || ""} ${r.model || ""}`);
+    const matchesSearch = !queryRaw || plain.includes(queryRaw.toLowerCase()) || (queryNorm && norm.includes(queryNorm));
     const matchesFavorite = !favoritesOnly.checked || isFavorite(r.gift_id);
     return matchesSearch && matchesFavorite;
   });
 
+  const totalItems = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  if (currentPage > totalPages) currentPage = totalPages;
+  const start = (currentPage - 1) * pageSize;
+  const end = start + pageSize;
+  const pagedRows = filtered.slice(start, end);
+
+  pageInfo.textContent = `Page ${currentPage}/${totalPages} • ${totalItems}`;
+  prevPageBtn.disabled = currentPage <= 1;
+  nextPageBtn.disabled = currentPage >= totalPages;
+
   const grouped = new Map();
-  for (const row of filtered) {
+  for (const row of pagedRows) {
     const key = row.group || "Other";
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(row);
@@ -228,7 +381,7 @@ function renderScreener(rows) {
       <tr>
         <td>${renderGiftNameCell(r)}</td>
         <td>${renderFavoriteButton(r.gift_id)}</td>
-        <td>${r.price.toFixed(2)}</td>
+        <td>${(r.price_ton ?? 0).toFixed(4)}</td>
         <td class="${clsForValue(r.change_1d)}">${formatPct(r.change_1d)}</td>
         <td class="${clsForValue(r.change_7d)}">${formatPct(r.change_7d)}</td>
         <td class="${clsForValue(r.change_30d)}">${formatPct(r.change_30d)}</td>
@@ -279,11 +432,17 @@ async function showGiftModal(giftId) {
   const resp = await fetchJson(`/api/market/gift-details?gift_id=${encodeURIComponent(giftId)}`);
   const d = resp.data;
   const g = d.gift;
+  const p = d.profile || {};
   giftModalTitle.textContent = `${getGiftIcon(g.gift_id)} ${g.name}`;
   giftModalBody.innerHTML = `
-    <div class="modal-price-line"><strong>Цена:</strong> ${formatPrice(d.price_usd)} USD | ${d.price_ton.toFixed(4)} TON | ${d.price_stars} ⭐</div>
+    <div class="modal-price-line"><strong>Цена:</strong> ${d.price_ton.toFixed(4)} TON | ${d.price_stars} ⭐</div>
     <div><strong>Группа:</strong> ${g.group} | <strong>Сигнал:</strong> <span class="tag ${g.signal}">${g.signal}</span></div>
     <div class="modal-grid">
+      <div class="modal-kpi"><div class="label">Модель</div><div class="value">${withShare(p.model || "-", p.model_share)}</div></div>
+      <div class="modal-kpi"><div class="label">Узор</div><div class="value">${withShare(p.pattern || "-", p.pattern_share)}</div></div>
+      <div class="modal-kpi"><div class="label">Фон</div><div class="value">${withShare(p.background || "-", p.background_share)}</div></div>
+      <div class="modal-kpi"><div class="label">Наличие</div><div class="value">${p.issued ?? "-"} / ${p.total_supply ?? "-"}</div></div>
+      <div class="modal-kpi"><div class="label">Ценность</div><div class="value">${p.value_ton_estimate ? `~${Number(p.value_ton_estimate).toFixed(4)} TON` : p.value_rub_estimate ? `~${Number(p.value_rub_estimate).toFixed(2)} ₽` : `${p.value_score ?? "-"} / 100`}</div></div>
       <div class="modal-kpi"><div class="label">Изм. 1д</div><div class="value ${clsForValue(g.change_1d)}">${formatPct(g.change_1d)}</div></div>
       <div class="modal-kpi"><div class="label">Изм. 7д</div><div class="value ${clsForValue(g.change_7d)}">${formatPct(g.change_7d)}</div></div>
       <div class="modal-kpi"><div class="label">Изм. 30д</div><div class="value ${clsForValue(g.change_30d)}">${formatPct(g.change_30d)}</div></div>
@@ -291,6 +450,7 @@ async function showGiftModal(giftId) {
       <div class="modal-kpi"><div class="label">Объём</div><div class="value">${g.volume}</div></div>
       <div class="modal-kpi"><div class="label">Волатильность 30д</div><div class="value">${g.volatility_30d.toFixed(2)}%</div></div>
     </div>
+    <div><strong>Источник профиля:</strong> ${p.source_note || "N/A"}</div>
     <div><strong>Краткий тренд:</strong> ${buildRecentTrend(d)}</div>
     <div><strong>Аналитика:</strong> ${g.commentary}</div>
     <div><a class="buy-link" href="${d.buy_url}" target="_blank" rel="noopener noreferrer">Купить подарок</a></div>
@@ -310,7 +470,13 @@ async function loadSummary() {
   marketRows = resp.data.rows;
   renderKpi(resp.data);
   renderGiftOptions(marketRows);
-  renderGroupOptions(marketRows);
+  renderCollectionOptions(marketRows);
+  renderModelOptions(marketRows);
+  try {
+    await loadFilterOptions();
+  } catch (e) {
+    console.error("filters load failed", e);
+  }
   await loadScreenerFiltered();
   renderFavoritesList();
 
@@ -327,7 +493,11 @@ async function loadChart(giftId) {
 async function loadScreenerFiltered() {
   const params = new URLSearchParams();
   if (signalFilter.value) params.set("signal", signalFilter.value);
-  if (groupFilter.value) params.set("group", groupFilter.value);
+  if (marketFilter.value) params.set("market", marketFilter.value);
+  if (collectionFilter.value) params.set("collection", collectionFilter.value);
+  for (const v of getMultiSelectedValues(modelFilter)) params.append("model", v);
+  for (const v of getMultiSelectedValues(backdropFilter)) params.append("backdrop", v);
+  for (const v of getMultiSelectedValues(symbolFilter)) params.append("symbol", v);
   if (sortBy.value) params.set("sort_by", sortBy.value);
   if (order.value) params.set("order", order.value);
 
@@ -343,6 +513,10 @@ async function loadSignals() {
 async function loadRealtimeStatus() {
   const resp = await fetchJson("/api/market/realtime-status");
   const st = resp.data;
+  if (st.verified_only && st.verified_source === "fragment") {
+    liveStatus.textContent = `LIVE: Fragment sync каждые ${st.verified_refresh_sec}s, тиков ${st.realtime_tick_count}, обновлено ${st.last_tick_at || "-"}`;
+    return;
+  }
   liveStatus.textContent = `LIVE: тик #${st.realtime_tick_count}, шаг ${st.realtime_interval_sec}s, обновлено ${st.last_tick_at || "-"}`;
 }
 
@@ -393,9 +567,50 @@ favoritesList.addEventListener("click", async (e) => {
   }
 });
 
-applyFilterBtn.addEventListener("click", loadScreenerFiltered);
-giftSearch.addEventListener("input", loadScreenerFiltered);
-favoritesOnly.addEventListener("change", loadScreenerFiltered);
+giftSearch.addEventListener("input", () => {
+  currentPage = 1;
+  loadScreenerFiltered();
+});
+favoritesOnly.addEventListener("change", () => {
+  currentPage = 1;
+  loadScreenerFiltered();
+});
+collectionFilter.addEventListener("change", () => {
+  currentPage = 1;
+  renderModelOptions(marketRows);
+  loadScreenerFiltered();
+});
+modelFilter.addEventListener("change", () => {
+  currentPage = 1;
+  loadScreenerFiltered();
+});
+backdropFilter.addEventListener("change", () => {
+  currentPage = 1;
+  loadScreenerFiltered();
+});
+symbolFilter.addEventListener("change", () => {
+  currentPage = 1;
+  loadScreenerFiltered();
+});
+marketFilter.addEventListener("change", () => {
+  currentPage = 1;
+  loadScreenerFiltered();
+});
+pageSizeSelect.addEventListener("change", () => {
+  pageSize = Number(pageSizeSelect.value) || 25;
+  currentPage = 1;
+  loadScreenerFiltered();
+});
+prevPageBtn.addEventListener("click", () => {
+  if (currentPage > 1) {
+    currentPage -= 1;
+    loadScreenerFiltered();
+  }
+});
+nextPageBtn.addEventListener("click", () => {
+  currentPage += 1;
+  loadScreenerFiltered();
+});
 refreshBtn.addEventListener("click", async () => {
   refreshBtn.disabled = true;
   try {
@@ -419,6 +634,10 @@ function startAutoRefresh() {
 }
 
 loadFavorites();
+bindMultiToggle(modelFilter);
+bindMultiToggle(backdropFilter);
+bindMultiToggle(symbolFilter);
+pageSize = Number(pageSizeSelect.value) || 25;
 Promise.all([loadSummary(), loadSignals(), loadRealtimeStatus()])
   .then(() => startAutoRefresh())
   .catch((e) => {

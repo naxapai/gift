@@ -7,96 +7,159 @@
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
-    <div class="bg-shape bg-shape-a"></div>
-    <div class="bg-shape bg-shape-b"></div>
-
-    <main class="container">
-      <header class="topbar card">
-        <div>
-          <h1>Telegram Gifts Market Intelligence</h1>
-          <p>Аналитика рынка подарков: рост, спрос/предложение, сигналы и скринер.</p>
-          <p id="liveStatus" class="live-status">LIVE: подключение...</p>
-        </div>
-        <button id="refreshBtn" class="btn">Перегенерировать историю</button>
-      </header>
-
-      <section class="grid-kpi" id="kpiGrid"></section>
-
-      <section class="card chart-card">
-        <div class="card-head">
-          <h2>График роста подарка</h2>
-          <select id="giftSelect"></select>
-        </div>
-        <div class="chart-wrap">
-          <svg id="lineChart" viewBox="0 0 1000 360" preserveAspectRatio="none"></svg>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card-head">
-          <h2>Скринер подарков</h2>
-          <div class="filters">
-            <input id="giftSearch" type="search" placeholder="Поиск подарков..." />
-            <select id="signalFilter">
-              <option value="">Все сигналы</option>
-              <option value="BUY">BUY</option>
-              <option value="SELL">SELL</option>
-              <option value="ANOMALY">ANOMALY</option>
-              <option value="HOLD">HOLD</option>
-            </select>
-            <label class="fav-only-label"><input id="favoritesOnly" type="checkbox" /> Только избранное</label>
-            <select id="groupFilter">
-              <option value="">Все группы</option>
-            </select>
-            <select id="sortBy">
-              <option value="change_7d">Рост 7д</option>
-              <option value="change_30d">Рост 30д</option>
-              <option value="demand_supply_ratio">Спрос/предложение</option>
-              <option value="volume_trend_7_vs_30">Тренд объема</option>
-              <option value="zscore_30d">Аномальность</option>
-            </select>
-            <select id="order">
-              <option value="desc">По убыванию</option>
-              <option value="asc">По возрастанию</option>
-            </select>
-            <button id="applyFilterBtn" class="btn">Применить</button>
+    <div class="app-shell">
+      <main class="workspace">
+        <header class="topbar">
+          <div class="topbar-title">
+            <div class="project-brand">
+              <span class="project-logo">G</span>
+              <h1>GiftMarketZone</h1>
+            </div>
+            <p id="liveStatus" class="live-status">LIVE: подключение...</p>
           </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Подарок</th>
-                <th>Избр.</th>
-                <th>Цена</th>
-                <th>1д</th>
-                <th>7д</th>
-                <th>30д</th>
-                <th>D/S</th>
-                <th>Объем</th>
-                <th>Сигнал</th>
-                <th>Комментарий</th>
-              </tr>
-            </thead>
-            <tbody id="screenerBody"></tbody>
-          </table>
-        </div>
-      </section>
+          <div class="topbar-actions">
+            <input id="topSearchInput" type="search" placeholder="Search here..." />
+            <button id="refreshBtn" class="btn">Refresh</button>
+          </div>
+        </header>
 
-      <section class="card favorites-card">
-        <div class="card-head">
-          <h2>Избранные подарки</h2>
-        </div>
-        <ul id="favoritesList"></ul>
-      </section>
+        <section class="grid-kpi" id="kpiGrid"></section>
 
-      <section class="card signals">
-        <div class="card-head">
-          <h2>Топ сигналов</h2>
-        </div>
-        <ul id="signalsList"></ul>
-      </section>
-    </main>
+        <section class="card chart-card">
+          <div class="card-head">
+            <h2>Market Chart</h2>
+            <select id="giftSelect"></select>
+          </div>
+          <div class="chart-wrap">
+            <svg id="lineChart" viewBox="0 0 1000 440" preserveAspectRatio="none"></svg>
+          </div>
+        </section>
+
+        <section class="dashboard-grid">
+          <div class="main-col">
+            <section class="card">
+              <div class="card-head">
+                <h2>Market Watch</h2>
+                <div class="filters">
+                  <input id="giftSearch" type="search" placeholder="Search gift..." />
+                  <select id="marketFilter">
+                    <option value="">All Market Statuses</option>
+                    <option value="sold">Sold</option>
+                    <option value="sale">For sale</option>
+                    <option value="auction">On auction</option>
+                  </select>
+                  <select id="signalFilter">
+                    <option value="">All Signals</option>
+                    <option value="BUY">BUY</option>
+                    <option value="SELL">SELL</option>
+                    <option value="ANOMALY">ANOMALY</option>
+                    <option value="HOLD">HOLD</option>
+                  </select>
+                  <label class="fav-only-label"><input id="favoritesOnly" type="checkbox" /> Favorites</label>
+                  <select id="sortBy">
+                    <option value="change_7d">Growth 7d</option>
+                    <option value="change_30d">Growth 30d</option>
+                    <option value="demand_supply_ratio">Demand/Supply</option>
+                    <option value="volume_trend_7_vs_30">Volume Trend</option>
+                    <option value="zscore_30d">Anomaly</option>
+                  </select>
+                  <select id="order">
+                    <option value="desc">Desc</option>
+                    <option value="asc">Asc</option>
+                  </select>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Fav</th>
+                      <th>Price (TON)</th>
+                      <th>1d</th>
+                      <th>7d</th>
+                      <th>30d</th>
+                      <th>D/S</th>
+                      <th>Volume</th>
+                      <th>Signal</th>
+                      <th>Commentary</th>
+                    </tr>
+                  </thead>
+                  <tbody id="screenerBody"></tbody>
+                </table>
+              </div>
+              <div class="pager">
+                <div class="pager-left">
+                  <label>Show
+                    <select id="pageSizeSelect">
+                      <option value="10">10</option>
+                      <option value="25" selected>25</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                    </select>
+                    entries
+                  </label>
+                </div>
+                <div class="pager-right">
+                  <button id="prevPageBtn" class="pager-btn">Prev</button>
+                  <span id="pageInfo">Page 1/1</span>
+                  <button id="nextPageBtn" class="pager-btn">Next</button>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="side-col">
+            <section class="card favorites-card">
+              <div class="card-head">
+                <h2>Favorites</h2>
+              </div>
+              <ul id="favoritesList"></ul>
+            </section>
+
+            <section class="card advanced-filters-card">
+              <div class="card-head">
+                <h2>Filters</h2>
+              </div>
+              <div class="advanced-filters-note">Для множественного выбора: удерживай Cmd/Ctrl и кликай по пунктам.</div>
+              <div class="advanced-filters-grid">
+                <label class="adv-field">
+                  <span>Collection</span>
+                  <select id="collectionFilter">
+                    <option value="">All Collections</option>
+                  </select>
+                </label>
+                <label class="adv-field">
+                  <span>Model (multi)</span>
+                  <select id="modelFilter" multiple size="7" title="Cmd/Ctrl + click">
+                    <option value="">All Models</option>
+                  </select>
+                </label>
+                <label class="adv-field">
+                  <span>Background (multi)</span>
+                  <select id="backdropFilter" multiple size="7" title="Cmd/Ctrl + click">
+                    <option value="">All Backgrounds</option>
+                  </select>
+                </label>
+                <label class="adv-field">
+                  <span>Pattern (multi)</span>
+                  <select id="symbolFilter" multiple size="7" title="Cmd/Ctrl + click">
+                    <option value="">All Symbols</option>
+                  </select>
+                </label>
+              </div>
+            </section>
+
+            <section class="card signals">
+              <div class="card-head">
+                <h2>Market Previews</h2>
+              </div>
+              <ul id="signalsList"></ul>
+            </section>
+          </aside>
+        </section>
+      </main>
+    </div>
 
     <div id="giftModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="giftModalTitle">
       <div class="modal-backdrop" data-close="1"></div>

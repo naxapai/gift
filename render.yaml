@@ -9,6 +9,28 @@ services:
     envVars:
       - key: HOST
         value: 0.0.0.0
+      - key: VERIFIED_ONLY
+        value: "true"
+      - key: VERIFIED_SOURCE
+        value: "fragment"
+      - key: VERIFIED_REFRESH_SEC
+        value: "600"
+      - key: FRAGMENT_GIFTS_URL
+        value: "https://fragment.com/gifts"
+      - key: FRAGMENT_MAX_COLLECTIONS
+        value: "0"
+      - key: FRAGMENT_MAX_PAGES_PER_COLLECTION
+        value: "500"
+      - key: FRAGMENT_BOOTSTRAP_CACHE
+        value: "true"
+      - key: VERIFIED_API_URL
+        sync: false
+      - key: VERIFIED_API_TOKEN
+        sync: false
+      - key: VERIFIED_API_TOKEN_HEADER
+        value: "Authorization"
+      - key: VERIFIED_API_TOKEN_PREFIX
+        value: "Bearer "
       - key: REALTIME_INTERVAL_SEC
         value: "3"
 

@@ -11,45 +11,151 @@ from urllib.parse import quote
 from urllib.parse import parse_qs, urlparse
 
 from analytics import build_chart_series, build_market_summary, get_ranked_signals
-from market_data import load_dataset, refresh_dataset, tick_realtime
+from market_data import load_dataset, load_verified_dataset, load_verified_dataset_source, refresh_dataset, tick_realtime
 
 ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
+VERIFIED_GIFT_OVERRIDES = {
+    "input_key_magic_8_ball_60441": {
+        "model": "Magic 8 Ball",
+        "model_share": "2%",
+        "pattern": "Magic Hat",
+        "pattern_share": "0.2%",
+        "background": "Cyberpunk",
+        "background_share": "1.2%",
+        "issued": 128809,
+        "total_supply": 159750,
+        "value_rub_estimate": 976.00,
+        "value_score": 94,
+        "source_note": "User verified snapshot",
+    }
+}
 
 
 class AppState:
     def __init__(self) -> None:
-        self.dataset = load_dataset()
+        self.verified_only = os.getenv("VERIFIED_ONLY", "true").lower() in {"1", "true", "yes", "on"}
+        self.verified_data_file = os.getenv("VERIFIED_DATA_FILE", "")
+        self.verified_refresh_sec = float(os.getenv("VERIFIED_REFRESH_SEC", "600"))
         self.lock = threading.RLock()
         self.realtime_tick_count = 0
         self.last_tick_at = ""
         self.realtime_interval_sec = float(os.getenv("REALTIME_INTERVAL_SEC", "3"))
-        self._start_realtime_loop()
+        self.dataset = self._load_initial_dataset()
+        if self.verified_only:
+            self._start_verified_reload_loop()
+        else:
+            self._start_realtime_loop()
 
     def refresh(self) -> None:
         with self.lock:
-            self.dataset = refresh_dataset()
+            if self.verified_only:
+                self.dataset = load_verified_dataset_source()
+            else:
+                self.dataset = refresh_dataset()
             self.realtime_tick_count = 0
             self.last_tick_at = ""
 
     def summary(self) -> dict:
         with self.lock:
-            return build_market_summary(self.dataset)
+            summary = build_market_summary(self.dataset)
+            ton_usd = self._ton_usd_rate()
+            ton_native = self._price_is_ton_native()
+            for row in summary.get("rows", []):
+                if ton_native:
+                    row["price_ton"] = round(float(row["price"]), 4)
+                else:
+                    row["price_ton"] = round(float(row["price"]) / ton_usd, 4) if ton_usd > 0 else 0.0
+            summary["ton_usd_rate"] = ton_usd
+            return summary
+
+    def filters(self) -> dict:
+        with self.lock:
+            rows = build_market_summary(self.dataset)["rows"]
+            dataset_filters = self.dataset.get("filters") if isinstance(self.dataset, dict) else None
+            if dataset_filters:
+                def _to_sorted_options(values: dict) -> list[dict]:
+                    items = [{"value": k, "count": int(v)} for k, v in values.items() if k]
+                    items.sort(key=lambda x: (-x["count"], x["value"]))
+                    return items
+
+                collections = list(dataset_filters.get("collections") or [])
+                collections.sort(key=lambda x: x.get("name", ""))
+                models = _to_sorted_options(dataset_filters.get("models") or {})
+                backdrops = _to_sorted_options(dataset_filters.get("backdrops") or {})
+                symbols = _to_sorted_options(dataset_filters.get("symbols") or {})
+                if not models:
+                    models = [{"value": m, "count": 0} for m in sorted({str(r.get("model", "")).strip() for r in rows if str(r.get("model", "")).strip()})]
+                if not backdrops:
+                    backdrops = [{"value": b, "count": 0} for b in sorted({str(r.get("backdrop", "")).strip() for r in rows if str(r.get("backdrop", "")).strip()})]
+                if not symbols:
+                    symbols = [{"value": s, "count": 0} for s in sorted({str(r.get("symbol", "")).strip() for r in rows if str(r.get("symbol", "")).strip()})]
+                return {
+                    "collections": collections,
+                    "models": models,
+                    "backdrops": backdrops,
+                    "symbols": symbols,
+                    "market_statuses": [
+                        {"value": "sold", "label": "Sold"},
+                        {"value": "sale", "label": "For sale"},
+                        {"value": "auction", "label": "On auction"},
+                    ],
+                }
+
+            collections = sorted({str(r.get("collection", "")).strip() for r in rows if str(r.get("collection", "")).strip()})
+            models = sorted({str(r.get("model", "")).strip() for r in rows if str(r.get("model", "")).strip()})
+            backdrops = sorted({str(r.get("backdrop", "")).strip() for r in rows if str(r.get("backdrop", "")).strip()})
+            symbols = sorted({str(r.get("symbol", "")).strip() for r in rows if str(r.get("symbol", "")).strip()})
+            return {
+                "collections": [{"slug": c, "name": c, "total_supply": 0} for c in collections],
+                "models": [{"value": m, "count": 0} for m in models],
+                "backdrops": [{"value": b, "count": 0} for b in backdrops],
+                "symbols": [{"value": s, "count": 0} for s in symbols],
+                "market_statuses": [
+                    {"value": "sold", "label": "Sold"},
+                    {"value": "sale", "label": "For sale"},
+                    {"value": "auction", "label": "On auction"},
+                ],
+            }
 
     def chart(self, gift_id: str) -> dict | None:
         with self.lock:
             gift = next((g for g in self.dataset["gifts"] if g["gift_id"] == gift_id), None)
             if not gift:
                 return None
-            return build_chart_series(gift)
+            chart = build_chart_series(gift)
+            ton_usd = self._ton_usd_rate()
+            ton_native = self._price_is_ton_native()
+            if ton_native:
+                chart["prices_ton"] = [round(float(p), 4) for p in chart["prices"]]
+            else:
+                chart["prices_ton"] = [round(float(p) / ton_usd, 4) if ton_usd > 0 else 0.0 for p in chart["prices"]]
+            chart["ton_usd_rate"] = ton_usd
+            return chart
 
     def screener(self) -> list[dict]:
         with self.lock:
-            return build_market_summary(self.dataset)["rows"]
+            rows = build_market_summary(self.dataset)["rows"]
+            ton_usd = self._ton_usd_rate()
+            ton_native = self._price_is_ton_native()
+            for row in rows:
+                if ton_native:
+                    row["price_ton"] = round(float(row["price"]), 4)
+                else:
+                    row["price_ton"] = round(float(row["price"]) / ton_usd, 4) if ton_usd > 0 else 0.0
+            return rows
 
     def signals(self) -> list[dict]:
         with self.lock:
-            return get_ranked_signals(self.dataset)
+            rows = get_ranked_signals(self.dataset)
+            ton_usd = self._ton_usd_rate()
+            ton_native = self._price_is_ton_native()
+            for row in rows:
+                if ton_native:
+                    row["price_ton"] = round(float(row["price"]), 4)
+                else:
+                    row["price_ton"] = round(float(row["price"]) / ton_usd, 4) if ton_usd > 0 else 0.0
+            return rows
 
     def status(self) -> dict:
         with self.lock:
@@ -57,6 +163,9 @@ class AppState:
                 "realtime_interval_sec": self.realtime_interval_sec,
                 "realtime_tick_count": self.realtime_tick_count,
                 "last_tick_at": self.last_tick_at,
+                "verified_only": self.verified_only,
+                "verified_source": os.getenv("VERIFIED_SOURCE", "file"),
+                "verified_refresh_sec": self.verified_refresh_sec,
             }
 
     def details(self, gift_id: str) -> dict | None:
@@ -71,10 +180,23 @@ class AppState:
             ton_usd = float(os.getenv("TON_USD_RATE", "4.2"))
             star_usd = float(os.getenv("STAR_USD_RATE", "0.015"))
             buy_url_template = os.getenv("PORTALS_GIFT_URL_TEMPLATE", "https://portals.market/gifts/{gift_id}")
-            price_usd = float(row["price"])
-            price_ton = round(price_usd / ton_usd, 4) if ton_usd > 0 else 0.0
+            ton_native = self._price_is_ton_native()
+            if ton_native:
+                price_ton = round(float(row["price"]), 4)
+                price_usd = round(price_ton * ton_usd, 4)
+            else:
+                price_usd = float(row["price"])
+                price_ton = round(price_usd / ton_usd, 4) if ton_usd > 0 else 0.0
             price_stars = int(round(price_usd / star_usd)) if star_usd > 0 else 0
-            buy_url = buy_url_template.format(gift_id=quote(gift_id, safe=""))
+            if gift.get("last_lot_id"):
+                buy_url = f"https://fragment.com/gift/{quote(gift['last_lot_id'], safe='')}?sort=price"
+            elif gift.get("fragment_market_url"):
+                buy_url = gift["fragment_market_url"]
+            else:
+                buy_url = buy_url_template.format(gift_id=quote(gift_id, safe=""))
+            profile = gift.get("profile") if self.verified_only else _gift_profile(gift_id, price_usd, row["signal"])
+            if not profile:
+                return None
 
             return {
                 "gift": row,
@@ -82,12 +204,49 @@ class AppState:
                 "price_ton": price_ton,
                 "price_stars": price_stars,
                 "buy_url": buy_url,
+                "profile": profile,
                 "chart_tail": {
                     "dates": chart["dates"][-24:],
                     "prices": chart["prices"][-24:],
                     "volume": chart["volume"][-24:],
                 },
             }
+
+    def _ton_usd_rate(self) -> float:
+        return float(os.getenv("TON_USD_RATE", "4.2"))
+
+    def _price_is_ton_native(self) -> bool:
+        return self.verified_only and os.getenv("VERIFIED_SOURCE", "file").strip().lower() == "fragment"
+
+    def _load_initial_dataset(self) -> dict:
+        if self.verified_only and os.getenv("VERIFIED_SOURCE", "file").strip().lower() == "fragment":
+            use_cache = os.getenv("FRAGMENT_BOOTSTRAP_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
+            cache_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
+            if use_cache:
+                try:
+                    return load_verified_dataset(cache_path)
+                except Exception:
+                    pass
+        if self.verified_only:
+            return load_verified_dataset_source()
+        return load_dataset()
+
+    def _start_verified_reload_loop(self) -> None:
+        def loop() -> None:
+            while True:
+                time.sleep(self.verified_refresh_sec)
+                try:
+                    new_dataset = load_verified_dataset_source()
+                    with self.lock:
+                        self.dataset = new_dataset
+                        self.realtime_tick_count += 1
+                        self.last_tick_at = time.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    # Keep last known verified snapshot if source read failed.
+                    pass
+
+        thread = threading.Thread(target=loop, daemon=True, name="verified-reloader")
+        thread.start()
 
     def _start_realtime_loop(self) -> None:
         def loop() -> None:
@@ -103,6 +262,43 @@ class AppState:
 
 
 STATE = AppState()
+
+
+def _gift_profile(gift_id: str, price_usd: float, signal: str) -> dict:
+    if gift_id in VERIFIED_GIFT_OVERRIDES:
+        return VERIFIED_GIFT_OVERRIDES[gift_id]
+
+    models = ["Genesis", "Aurora", "Nebula", "Quantum", "Legacy", "Pulse", "Nova", "Elite"]
+    patterns = ["Fractal", "Matrix", "Neon Weave", "Crystal Grid", "Flame Arc", "Pixel Bloom", "Wave Mesh"]
+    backgrounds = ["Midnight", "Sunset", "Aurora Sky", "Obsidian", "Pearl Mist", "Deep Ocean", "Violet Dust"]
+
+    seed = sum((i + 1) * ord(ch) for i, ch in enumerate(gift_id))
+    model = models[seed % len(models)]
+    pattern = patterns[(seed // 3) % len(patterns)]
+    background = backgrounds[(seed // 5) % len(backgrounds)]
+
+    total_supply = 1500 + (seed % 5000)
+    issued = max(1, int(total_supply * (0.22 + (seed % 65) / 100.0)))
+    if issued > total_supply:
+        issued = total_supply
+
+    scarcity = (1 - issued / total_supply) * 100
+    premium = 14 if signal == "BUY" else -8 if signal == "SELL" else 6 if signal == "ANOMALY" else 0
+    value_score = max(1, min(100, int(35 + scarcity * 0.7 + min(price_usd, 200) * 0.12 + premium)))
+
+    return {
+        "model": model,
+        "model_share": None,
+        "pattern": pattern,
+        "pattern_share": None,
+        "background": background,
+        "background_share": None,
+        "issued": issued,
+        "total_supply": total_supply,
+        "value_rub_estimate": None,
+        "value_score": value_score,
+        "source_note": "Synthetic fallback",
+    }
 
 
 def _json_response(handler: BaseHTTPRequestHandler, payload: dict, status: int = 200) -> None:
@@ -194,10 +390,24 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/market/screener":
             params = parse_qs(parsed.query)
+            def _multi(name: str) -> set[str]:
+                values: set[str] = set()
+                for raw in (params.get(name) or []):
+                    for piece in str(raw).split(","):
+                        v = piece.strip().lower()
+                        if v:
+                            values.add(v)
+                return values
+
             sort_by = (params.get("sort_by") or ["change_7d"])[0]
             order = (params.get("order") or ["desc"])[0]
             signal_filter = (params.get("signal") or [""])[0].upper().strip()
             group_filter = (params.get("group") or [""])[0].strip().lower()
+            collection_filter = (params.get("collection") or [""])[0].strip().lower()
+            model_filters = _multi("model")
+            backdrop_filters = _multi("backdrop")
+            symbol_filters = _multi("symbol")
+            market_filter = (params.get("market") or [""])[0].strip().lower()
             min_ratio_raw = (params.get("min_ratio") or [""])[0].strip()
 
             rows = STATE.screener()
@@ -206,6 +416,19 @@ class RequestHandler(BaseHTTPRequestHandler):
                 rows = [r for r in rows if r["signal"] == signal_filter]
             if group_filter:
                 rows = [r for r in rows if str(r.get("group", "")).lower() == group_filter]
+            if collection_filter:
+                rows = [r for r in rows if str(r.get("collection", "")).lower() == collection_filter]
+            if model_filters:
+                rows = [r for r in rows if str(r.get("model", "")).lower() in model_filters]
+            if backdrop_filters:
+                rows = [r for r in rows if str(r.get("backdrop", "")).lower() in backdrop_filters]
+            if symbol_filters:
+                rows = [r for r in rows if str(r.get("symbol", "")).lower() in symbol_filters]
+            if market_filter:
+                rows = [
+                    r for r in rows
+                    if int((r.get("market_statuses") or {}).get(market_filter, 0)) > 0
+                ]
 
             if min_ratio_raw:
                 try:
@@ -226,6 +449,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             reverse = order.lower() != "asc"
             rows = sorted(rows, key=lambda x: x[sort_by], reverse=reverse)
             _json_response(self, {"ok": True, "data": rows})
+            return
+        if path == "/api/market/filters":
+            _json_response(self, {"ok": True, "data": STATE.filters()})
             return
 
         if path == "/api/signals/latest":

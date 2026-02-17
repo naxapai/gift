@@ -1,14 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
 import random
+import re
+import ssl
+import urllib.error
+import urllib.request
+from collections import defaultdict
+from http import cookiejar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from html import unescape
 from pathlib import Path
 from typing import Dict, List
+from urllib.parse import urlencode
 
 DATA_FILE = Path(__file__).parent / "data" / "gifts_history.json"
+VERIFIED_DATA_FILE = Path(__file__).parent / "data" / "verified_gifts.json"
+FRAGMENT_ANALYTICS_STORE_FILE = Path(__file__).parent / "data" / "fragment_analytics_store.json"
 MIN_GIFTS_COUNT = 200
+REQUIRED_GIFT_IDS = {"input_key_magic_8_ball_60441"}
 
 
 @dataclass
@@ -63,6 +75,15 @@ def _gift_templates() -> List[Dict]:
                     "volatility": round(base_vol + vol_add, 4),
                 }
             )
+    templates.append(
+        {
+            "gift_id": "input_key_magic_8_ball_60441",
+            "name": "Input Key (magic 8 ball) #60441",
+            "group": "Portals Collection",
+            "base_price": 88.0,
+            "volatility": 0.047,
+        }
+    )
     return templates
 
 
@@ -130,10 +151,535 @@ def load_dataset() -> Dict:
         dataset = json.load(f)
 
     gifts = dataset.get("gifts", [])
-    if len(gifts) < MIN_GIFTS_COUNT:
+    gift_ids = {g.get("gift_id", "") for g in gifts}
+    has_required = REQUIRED_GIFT_IDS.issubset(gift_ids)
+    if len(gifts) < MIN_GIFTS_COUNT or not has_required:
         dataset = generate_dataset()
         save_dataset(dataset)
     return dataset
+
+
+def _validate_verified_dataset(dataset: Dict) -> None:
+    gifts = dataset.get("gifts")
+    if not isinstance(gifts, list) or not gifts:
+        raise ValueError("Verified dataset is empty or invalid: 'gifts' must be a non-empty list.")
+
+    for gift in gifts:
+        if not gift.get("gift_id") or not gift.get("name"):
+            raise ValueError("Each verified gift must contain 'gift_id' and 'name'.")
+        series = gift.get("series")
+        if not isinstance(series, list) or not series:
+            raise ValueError(f"Verified gift '{gift.get('gift_id')}' has empty series.")
+        for point in series:
+            for key in ("dt", "price", "demand", "supply", "volume"):
+                if key not in point:
+                    raise ValueError(f"Verified gift '{gift.get('gift_id')}' has invalid point: missing '{key}'.")
+        if "profile" not in gift:
+            raise ValueError(f"Verified gift '{gift.get('gift_id')}' must include 'profile'.")
+
+
+def load_verified_dataset(path: str | None = None) -> Dict:
+    source = Path(path) if path else VERIFIED_DATA_FILE
+    if not source.exists():
+        raise FileNotFoundError(
+            f"Verified dataset file not found: {source}. "
+            "Create it or set VERIFIED_DATA_FILE=/absolute/path/to/file.json"
+        )
+
+    with source.open("r", encoding="utf-8") as f:
+        dataset = json.load(f)
+    _validate_verified_dataset(dataset)
+    return dataset
+
+
+def save_verified_dataset(dataset: Dict, path: str | None = None) -> None:
+    target = Path(path) if path else VERIFIED_DATA_FILE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8") as f:
+        json.dump(dataset, f, ensure_ascii=False, indent=2)
+
+
+def fetch_verified_dataset_from_api(
+    api_url: str,
+    api_token: str = "",
+    timeout_sec: int = 25,
+    token_header: str = "Authorization",
+    token_prefix: str = "Bearer ",
+) -> Dict:
+    if not api_url:
+        raise ValueError("VERIFIED_API_URL is required for VERIFIED_SOURCE=api")
+
+    req = urllib.request.Request(api_url, method="GET")
+    req.add_header("Accept", "application/json")
+    if api_token:
+        req.add_header(token_header, f"{token_prefix}{api_token}".strip())
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw = resp.read().decode("utf-8")
+            payload = json.loads(raw)
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Unable to fetch verified API dataset: {e}") from e
+
+    dataset = payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
+    if not isinstance(dataset, dict):
+        raise ValueError("Verified API response must be an object with dataset or {data: dataset}.")
+
+    _validate_verified_dataset(dataset)
+    return dataset
+
+
+def _clean_fragment_text(value: str) -> str:
+    return re.sub(r"\s+", " ", unescape(value or "")).strip()
+
+
+def _fragment_to_iso_day(ts: str) -> str:
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).date().isoformat()
+    except Exception:
+        return datetime.utcnow().date().isoformat()
+
+
+def _fragment_build_series(events: List[dict]) -> List[dict]:
+    by_day: dict[str, list[float]] = defaultdict(list)
+    for event in events:
+        day = _fragment_to_iso_day(event["datetime"])
+        by_day[day].append(float(event["price_ton"]))
+
+    days = sorted(by_day.keys())
+    if not days:
+        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        return [{"dt": now, "price": 0.0, "demand": 1.0, "supply": 1.0, "volume": 1}]
+
+    daily = [(d, sum(vals) / len(vals), len(vals)) for d, vals in ((d, by_day[d]) for d in days)]
+    max_volume = max(v for _, _, v in daily) or 1
+    series: List[dict] = []
+    for idx, (day, avg_price, volume) in enumerate(daily):
+        price = max(0.0001, round(avg_price, 6))
+        demand = round(0.9 + 1.1 * (volume / max_volume), 4)
+        prev_price = daily[idx - 1][1] if idx > 0 else avg_price
+        supply = 1.0
+        if prev_price > 0:
+            # Lower relative price usually means higher available supply.
+            supply = 0.9 + 1.1 * max(0.2, min(1.8, prev_price / max(avg_price, 1e-9)))
+        series.append(
+            {
+                "dt": day,
+                "price": price,
+                "demand": max(0.3, round(demand, 4)),
+                "supply": max(0.3, round(supply, 4)),
+                "volume": int(volume),
+            }
+        )
+    return series
+
+
+def _fragment_parse_collections(html: str) -> List[dict]:
+    collections: List[dict] = []
+    pattern = re.compile(
+        r'<a href="/gifts/(?P<slug>[a-z0-9]+)"[^>]*data-value="(?P<value>[^"]+)"[^>]*>.*?'
+        r'<div class="tm-main-filters-name">(?P<name>[^<]+)</div>\s*'
+        r'<div class="tm-main-filters-count">(?P<count>[^<]+)</div>',
+        re.S | re.I,
+    )
+    seen: set[str] = set()
+    for m in pattern.finditer(html):
+        slug = _clean_fragment_text(m.group("slug")).lower()
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        count_raw = _clean_fragment_text(m.group("count"))
+        count_digits = re.sub(r"[^\d]", "", count_raw)
+        total_supply = int(count_digits) if count_digits else 0
+        collections.append(
+            {
+                "slug": slug,
+                "name": _clean_fragment_text(m.group("name")),
+                "total_supply": total_supply,
+            }
+        )
+    return collections
+
+
+def _fragment_parse_item_cards(html: str) -> List[dict]:
+    cards: List[dict] = []
+    pattern = re.compile(
+        r'<a href="/gift/(?P<gift_id>[a-z0-9\-]+)(?:\?[^"]*)?" class="tm-grid-item">.*?'
+        r'<time datetime="(?P<dt>[^"]+)"[^>]*>.*?</time>.*?'
+        r'icon-ton">(?P<price>[0-9.]+)</div>.*?'
+        r'tm-grid-item-status[^"]*">(?P<status>[^<]+)</div>',
+        re.S | re.I,
+    )
+    for m in pattern.finditer(html):
+        try:
+            cards.append(
+                {
+                    "gift_id": _clean_fragment_text(m.group("gift_id")),
+                    "datetime": _clean_fragment_text(m.group("dt")),
+                    "price_ton": float(_clean_fragment_text(m.group("price"))),
+                    "status": _clean_fragment_text(m.group("status")),
+                }
+            )
+        except ValueError:
+            continue
+    return cards
+
+
+def _fragment_extract_next_offset(html: str) -> str:
+    m = re.search(r'data-next-offset="([^"]+)"', html, re.I)
+    return _clean_fragment_text(m.group(1)) if m else ""
+
+
+def _fragment_extract_api_hash(html: str) -> str:
+    m = re.search(r'api\?hash=([a-f0-9]+)', html)
+    if not m:
+        raise ValueError("Unable to find Fragment API hash on page")
+    return m.group(1)
+
+
+def _fragment_parse_detail_profile(html: str) -> dict:
+    def _extract_attr(label: str) -> tuple[str, str | None]:
+        rx = re.compile(
+            rf'<div class="table-cell">{label}</div>.*?<div class="table-cell-value tm-value">.*?'
+            r'<a [^>]*class="table-cell-value-link">([^<]+)</a>.*?'
+            r'<span class="tm-rarity">\s*([^<]+)\s*</span>',
+            re.S | re.I,
+        )
+        m = rx.search(html)
+        if not m:
+            return ("N/A", None)
+        return (_clean_fragment_text(m.group(1)), _clean_fragment_text(m.group(2)))
+
+    model, model_share = _extract_attr("Model")
+    pattern, pattern_share = _extract_attr("Symbol")
+    background, background_share = _extract_attr("Backdrop")
+
+    issued = 0
+    total_supply = 0
+    m_issued = re.search(r'<div class="table-cell">Issued</div>.*?<div class="table-cell-value tm-value">\s*([^<]+)\s*</div>', html, re.S | re.I)
+    if m_issued:
+        raw = _clean_fragment_text(m_issued.group(1))
+        nums = re.findall(r"\d+", raw.replace(",", ""))
+        if len(nums) >= 2:
+            issued = int(nums[0])
+            total_supply = int(nums[1])
+
+    m_price = re.search(r'<div class="table-cell-value tm-value icon-before icon-ton">([0-9.]+)</div>', html, re.S | re.I)
+    value_ton = float(m_price.group(1)) if m_price else None
+
+    return {
+        "model": model,
+        "model_share": model_share,
+        "pattern": pattern,
+        "pattern_share": pattern_share,
+        "background": background,
+        "background_share": background_share,
+        "issued": issued,
+        "total_supply": total_supply,
+        "value_ton_estimate": value_ton,
+        "value_rub_estimate": None,
+        "value_score": 50,
+        "source_note": "fragment.com verified",
+    }
+
+
+def _fragment_parse_attribute_options(html: str, label: str) -> List[dict]:
+    # Extract filter options from Fragment sidebar blocks for Model/Backdrop/Symbol.
+    box_re = re.compile(
+        rf'<div class="tm-main-filters-name">{re.escape(label)}</div>.*?<div class="tm-main-filters-content[^"]*">(.*?)</div>\s*</div>',
+        re.S | re.I,
+    )
+    box_match = box_re.search(html)
+    if not box_match:
+        return []
+
+    content = box_match.group(1)
+    item_re = re.compile(
+        r'js-attribute-item"[^>]*data-value="([^"]+)".*?'
+        r'<div class="tm-main-filters-name">([^<]+)</div>\s*'
+        r'<div class="tm-main-filters-count">([^<]+)</div>',
+        re.S | re.I,
+    )
+    out: List[dict] = []
+    seen: set[str] = set()
+    for m in item_re.finditer(content):
+        value = _clean_fragment_text(m.group(1))
+        if not value or value.lower() == "select all":
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        count_raw = _clean_fragment_text(m.group(3))
+        count_digits = re.sub(r"[^\d]", "", count_raw)
+        out.append(
+            {
+                "value": value,
+                "count": int(count_digits) if count_digits else 0,
+            }
+        )
+    out.sort(key=lambda x: x["count"], reverse=True)
+    return out
+
+
+def fetch_verified_dataset_from_fragment(
+    root_url: str = "https://fragment.com/gifts",
+    timeout_sec: int = 25,
+    max_collections: int = 0,
+    max_pages_per_collection: int = 500,
+    collection_start: int = 0,
+) -> Dict:
+    cj = cookiejar.CookieJar()
+    no_verify_ssl = os.getenv("FRAGMENT_SSL_NO_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"}
+    ssl_context = ssl._create_unverified_context() if no_verify_ssl else ssl.create_default_context()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(cj),
+        urllib.request.HTTPSHandler(context=ssl_context),
+    )
+
+    def _get_text(url: str) -> str:
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("User-Agent", "Mozilla/5.0 (compatible; GiftMarketZone/1.0)")
+        req.add_header("Accept", "text/html,application/xhtml+xml")
+        with opener.open(req, timeout=timeout_sec) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+
+    def _post_json(api_hash: str, referer: str, params: dict) -> dict:
+        api_url = f"https://fragment.com/api?hash={api_hash}"
+        body = urlencode(params).encode("utf-8")
+        req = urllib.request.Request(api_url, data=body, method="POST")
+        req.add_header("User-Agent", "Mozilla/5.0 (compatible; GiftMarketZone/1.0)")
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+        req.add_header("X-Requested-With", "XMLHttpRequest")
+        req.add_header("Origin", "https://fragment.com")
+        req.add_header("Referer", referer)
+        with opener.open(req, timeout=timeout_sec) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    root_html = _get_text(root_url)
+    collections = _fragment_parse_collections(root_html)
+    if collection_start > 0:
+        collections = collections[collection_start:]
+    if max_collections and max_collections > 0:
+        collections = collections[:max_collections]
+
+    gifts: List[dict] = []
+    filter_index = {
+        "collections": [],
+        "models": {},
+        "backdrops": {},
+        "symbols": {},
+    }
+    generated_at = datetime.utcnow().isoformat() + "Z"
+
+    for collection in collections:
+        slug = collection["slug"]
+        page_url = f"https://fragment.com/gifts/{slug}?sort=price"
+        try:
+            collection_html = _get_text(page_url)
+            api_hash = _fragment_extract_api_hash(collection_html)
+            model_options = _fragment_parse_attribute_options(collection_html, "Model")
+            backdrop_options = _fragment_parse_attribute_options(collection_html, "Backdrop")
+            symbol_options = _fragment_parse_attribute_options(collection_html, "Symbol")
+
+            filter_index["collections"].append(
+                {
+                    "slug": slug,
+                    "name": collection["name"],
+                    "total_supply": collection.get("total_supply", 0),
+                }
+            )
+            for item in model_options:
+                filter_index["models"][item["value"]] = filter_index["models"].get(item["value"], 0) + item["count"]
+            for item in backdrop_options:
+                filter_index["backdrops"][item["value"]] = filter_index["backdrops"].get(item["value"], 0) + item["count"]
+            for item in symbol_options:
+                filter_index["symbols"][item["value"]] = filter_index["symbols"].get(item["value"], 0) + item["count"]
+
+            params = {
+                "method": "searchAuctions",
+                "type": "gifts",
+                "collection": slug,
+                "sort": "price",
+                "filter": "",
+                "view": "",
+                "query": "",
+                "attr[Model]": "",
+                "attr[Backdrop]": "",
+                "attr[Symbol]": "",
+            }
+            first = _post_json(api_hash, page_url, params)
+            html_block = first.get("html", "")
+            events = _fragment_parse_item_cards(html_block)
+            next_offset = _fragment_extract_next_offset(html_block)
+
+            page_no = 1
+            while next_offset and page_no < max_pages_per_collection:
+                page_no += 1
+                params["offset_id"] = next_offset
+                part = _post_json(api_hash, page_url, params)
+                body_html = part.get("body", "")
+                foot_html = part.get("foot", "")
+                events.extend(_fragment_parse_item_cards(body_html))
+                next_offset = _fragment_extract_next_offset(foot_html)
+                if not body_html:
+                    break
+
+            if not events:
+                continue
+
+            events.sort(key=lambda x: x["datetime"])
+            last_event = events[-1]
+            detail_html = _get_text(f"https://fragment.com/gift/{last_event['gift_id']}?sort=price")
+            profile = _fragment_parse_detail_profile(detail_html)
+            if not profile.get("total_supply"):
+                profile["total_supply"] = collection.get("total_supply", 0)
+            if not profile.get("issued"):
+                profile["issued"] = min(collection.get("total_supply", 0), collection.get("total_supply", 0))
+            profile["source_note"] = "fragment.com verified"
+
+            status_counts: dict[str, int] = {}
+            for ev in events:
+                key = str(ev.get("status", "")).strip().lower()
+                if not key:
+                    continue
+                status_counts[key] = status_counts.get(key, 0) + 1
+
+            gift_name = collection["name"] if collection["name"] else slug
+            gift_id = f"fragment_{slug}"
+            series = _fragment_build_series(events)
+            gifts.append(
+                {
+                    "gift_id": gift_id,
+                    "name": gift_name,
+                    "group": "Fragment Gifts",
+                    "collection_slug": slug,
+                    "fragment_market_url": f"https://fragment.com/gifts/{slug}",
+                    "last_lot_id": last_event["gift_id"],
+                    "available_models": [x["value"] for x in model_options],
+                    "available_backdrops": [x["value"] for x in backdrop_options],
+                    "available_symbols": [x["value"] for x in symbol_options],
+                    "status_counts": status_counts,
+                    "series": series,
+                    "profile": profile,
+                }
+            )
+        except Exception:
+            # Skip broken collection and keep progressing through the catalog.
+            continue
+
+    if not filter_index["models"] or not filter_index["backdrops"] or not filter_index["symbols"]:
+        for gift in gifts:
+            profile = gift.get("profile") or {}
+            model = str(profile.get("model") or "").strip()
+            backdrop = str(profile.get("background") or "").strip()
+            symbol = str(profile.get("pattern") or "").strip()
+            if model:
+                filter_index["models"][model] = int(filter_index["models"].get(model, 0)) + 1
+            if backdrop:
+                filter_index["backdrops"][backdrop] = int(filter_index["backdrops"].get(backdrop, 0)) + 1
+            if symbol:
+                filter_index["symbols"][symbol] = int(filter_index["symbols"].get(symbol, 0)) + 1
+
+    dataset = {"generated_at": generated_at, "gifts": gifts, "filters": filter_index}
+    _merge_fragment_analytics_store(dataset)
+    _validate_verified_dataset(dataset)
+    return dataset
+
+
+def _load_fragment_analytics_store() -> Dict:
+    if not FRAGMENT_ANALYTICS_STORE_FILE.exists():
+        return {"gifts": []}
+    try:
+        with FRAGMENT_ANALYTICS_STORE_FILE.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+            if isinstance(payload, dict):
+                return payload
+    except Exception:
+        return {"gifts": []}
+    return {"gifts": []}
+
+
+def _save_fragment_analytics_store(store: Dict) -> None:
+    FRAGMENT_ANALYTICS_STORE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with FRAGMENT_ANALYTICS_STORE_FILE.open("w", encoding="utf-8") as f:
+        json.dump(store, f, ensure_ascii=False, indent=2)
+
+
+def _merge_fragment_analytics_store(dataset: Dict) -> None:
+    store = _load_fragment_analytics_store()
+    old_map = {g.get("gift_id"): g for g in store.get("gifts", []) if g.get("gift_id")}
+    merged_gifts = []
+
+    for gift in dataset.get("gifts", []):
+        gift_id = gift.get("gift_id")
+        if not gift_id:
+            continue
+        old_series = old_map.get(gift_id, {}).get("series", [])
+        new_series = gift.get("series", [])
+        merged_by_dt: dict[str, dict] = {}
+        for p in old_series:
+            dt = p.get("dt")
+            if dt:
+                merged_by_dt[dt] = p
+        for p in new_series:
+            dt = p.get("dt")
+            if dt:
+                merged_by_dt[dt] = p
+        merged = [merged_by_dt[k] for k in sorted(merged_by_dt.keys())]
+        if len(merged) > 1440:
+            merged = merged[-1440:]
+        gift["series"] = merged if merged else new_series
+        merged_gifts.append({"gift_id": gift_id, "series": gift["series"]})
+
+    store_payload = {
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "gifts": merged_gifts,
+    }
+    _save_fragment_analytics_store(store_payload)
+
+
+def load_verified_dataset_source() -> Dict:
+    source = os.getenv("VERIFIED_SOURCE", "file").strip().lower()
+    file_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
+
+    if source == "file":
+        return load_verified_dataset(file_path)
+    if source == "api":
+        api_url = os.getenv("VERIFIED_API_URL", "").strip()
+        api_token = os.getenv("VERIFIED_API_TOKEN", "").strip()
+        token_header = os.getenv("VERIFIED_API_TOKEN_HEADER", "Authorization").strip()
+        token_prefix = os.getenv("VERIFIED_API_TOKEN_PREFIX", "Bearer ").strip()
+        timeout_sec = int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "25"))
+
+        dataset = fetch_verified_dataset_from_api(
+            api_url=api_url,
+            api_token=api_token,
+            timeout_sec=timeout_sec,
+            token_header=token_header,
+            token_prefix=token_prefix,
+        )
+        # Cache last successful verified snapshot for audit and fallback debugging.
+        save_verified_dataset(dataset, file_path)
+        return dataset
+    if source == "fragment":
+        timeout_sec = int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "25"))
+        root_url = os.getenv("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts").strip()
+        max_collections = int(os.getenv("FRAGMENT_MAX_COLLECTIONS", "0"))
+        max_pages_per_collection = int(os.getenv("FRAGMENT_MAX_PAGES_PER_COLLECTION", "500"))
+        collection_start = int(os.getenv("FRAGMENT_COLLECTION_START", "0"))
+        dataset = fetch_verified_dataset_from_fragment(
+            root_url=root_url,
+            timeout_sec=timeout_sec,
+            max_collections=max_collections,
+            max_pages_per_collection=max_pages_per_collection,
+            collection_start=collection_start,
+        )
+        save_verified_dataset(dataset, file_path)
+        return dataset
+
+    raise ValueError("VERIFIED_SOURCE must be one of: 'file', 'api', 'fragment'")
 
 
 def save_dataset(dataset: Dict) -> None:

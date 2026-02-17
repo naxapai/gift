@@ -81,6 +81,99 @@ python3 bot.py
 
 Текущая версия использует внутренний генератор рыночных данных. Для продакшена замените источник на реальный фид Telegram-гifts маркетплейса/биржи и включите хранение исторических сделок.
 
+## Verified-Only режим (критичный)
+
+Сервер теперь поддерживает fail-closed режим верифицированных данных:
+
+- `VERIFIED_ONLY=true` (по умолчанию) — использовать только верифицированный источник.
+- Источник выбирается через `VERIFIED_SOURCE`:
+  - `file` — локальный файл `data/verified_gifts.json` (или `VERIFIED_DATA_FILE`);
+  - `api` — внешний верифицированный API (`VERIFIED_API_URL`);
+  - `fragment` — официальный маркет Fragment (`https://fragment.com/gifts`).
+- Если файл отсутствует/невалиден, сервер завершится с ошибкой (чтобы не показывать synthetic данные).
+
+Период обновления verified-файла:
+
+- `VERIFIED_REFRESH_SEC=600` (по умолчанию, 10 минут).
+
+### Подключение внешнего verified API
+
+```bash
+export VERIFIED_ONLY=true
+export VERIFIED_SOURCE=api
+export VERIFIED_API_URL="https://your-verified-source/api/gifts"
+export VERIFIED_API_TOKEN="your_token"
+export VERIFIED_API_TOKEN_HEADER="Authorization"
+export VERIFIED_API_TOKEN_PREFIX="Bearer "
+python3 server.py
+```
+
+### Подключение официального verified источника Fragment
+
+```bash
+export VERIFIED_ONLY=true
+export VERIFIED_SOURCE=fragment
+export FRAGMENT_GIFTS_URL="https://fragment.com/gifts"
+export FRAGMENT_MAX_COLLECTIONS=0              # 0 = все коллекции
+export FRAGMENT_MAX_PAGES_PER_COLLECTION=500   # глубина пагинации по каждой коллекции
+export FRAGMENT_BOOTSTRAP_CACHE=true           # быстрый старт из локального verified-кэша
+# export FRAGMENT_SSL_NO_VERIFY=true            # только для локальной диагностики SSL-цепочки
+python3 server.py
+```
+
+Примечания:
+
+- Цены из Fragment считаются нативно в `TON` (без конверсии из USD).
+- Ссылка "Купить подарок" в модальном окне ведет на `fragment.com` (лот/коллекция).
+- Аналитическая история дополнительно хранится локально в `data/fragment_analytics_store.json`.
+
+API фильтров (максимально приближены к Fragment):
+
+- `GET /api/market/filters` — коллекции, модели, фоны, узоры, market statuses.
+- `GET /api/market/screener` поддерживает параметры:
+  - `market` = `sold|sale|auction`
+  - `collection`
+  - `model`
+  - `backdrop`
+  - `symbol`
+  - а также `signal`, `group`, `sort_by`, `order`, `min_ratio`.
+
+Поддерживается формат ответа:
+
+- объект датасета напрямую `{ \"gifts\": [...] }`
+- или объект с оберткой `{ \"data\": { \"gifts\": [...] } }`
+
+### Ручная синхронизация verified-данных в файл
+
+```bash
+export VERIFIED_SOURCE=fragment
+export FRAGMENT_GIFTS_URL="https://fragment.com/gifts"
+export FRAGMENT_MAX_COLLECTIONS=0
+export FRAGMENT_MAX_PAGES_PER_COLLECTION=500
+python3 sync_verified.py
+```
+
+Минимальная структура подарка в verified-источнике:
+
+```json
+{
+  "gift_id": "input_key_magic_8_ball_60441",
+  "name": "Input Key (magic 8 ball) #60441",
+  "group": "Portals Collection",
+  "series": [{"dt":"2026-02-17","price":43.3,"demand":1.2,"supply":0.9,"volume":500}],
+  "profile": {
+    "model": "Magic 8 Ball",
+    "pattern": "Magic Hat",
+    "background": "Cyberpunk",
+    "issued": 128809,
+    "total_supply": 159750,
+    "value_rub_estimate": 976.0,
+    "value_score": 94,
+    "source_note": "Verified source"
+  }
+}
+```
+
 ## Деплой в интернет
 
 ### Вариант 1: Render (рекомендуется)
