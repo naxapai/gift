@@ -1,6 +1,6 @@
 # Telegram Gifts Market Intelligence
 
-Веб-приложение и Telegram-бот для анализа рынка Telegram-подарков.
+Веб-приложение и Telegram-бот (встроенный в web-сервис) для анализа рынка Telegram-подарков.
 
 ## Возможности
 
@@ -18,7 +18,7 @@
 - `server.py` - HTTP-сервер + API + отдача фронтенда.
 - `market_data.py` - генерация/хранение исторических данных.
 - `analytics.py` - расчет рыночных метрик и сигналов.
-- `bot.py` - Telegram-бот, отправляющий сигналы.
+- `bot.py` - legacy standalone-бот (опционально, не нужен для прод-схемы с webhook).
 - `static/index.html` - дашборд.
 - `static/styles.css` - современный интерфейс.
 - `static/app.js` - клиентская логика (график, скринер, сигналы).
@@ -41,6 +41,7 @@ python3 server.py
 - `GET /api/market/screener?sort_by=change_7d&order=desc&signal=BUY` - скринер.
 - `GET /api/signals/latest` - топ сигналов.
 - `GET /api/market/realtime-status` - состояние realtime-движка.
+- `POST /api/telegram/webhook` - webhook для Telegram-бота (без worker).
 - `POST /api/admin/refresh` - пересоздать датасет.
 
 ## Realtime режим
@@ -62,19 +63,28 @@ REALTIME_INTERVAL_SEC=2 python3 server.py
 PORTALS_GIFT_URL_TEMPLATE=\"https://portals.market/gifts/{gift_id}\" python3 server.py
 ```
 
-## Запуск Telegram-бота
+## Telegram-бот без worker (webhook)
 
 1. Создайте бота через [@BotFather](https://t.me/BotFather).
 2. Получите `chat_id` (например, через `getUpdates`).
-3. Запустите:
+3. Запустите web-сервис с переменными:
 
 ```bash
 cd /Users/nexapai/Downloads/подарки
 export TG_BOT_TOKEN="ваш_токен"
 export TG_CHAT_ID="ваш_chat_id"
-export BOT_POLL_INTERVAL=300
+export TG_WEBHOOK_SECRET="случайный_секрет"
+export BOT_SIGNAL_INTERVAL_SEC=300
 export BOT_MIN_INTENSITY=10
-python3 bot.py
+python3 server.py
+```
+
+4. Установите webhook:
+
+```bash
+curl -sS "https://api.telegram.org/bot<TG_BOT_TOKEN>/setWebhook" \
+  -d "url=https://<your-domain>/api/telegram/webhook" \
+  -d "secret_token=<TG_WEBHOOK_SECRET>"
 ```
 
 ## Важно
@@ -183,11 +193,12 @@ python3 sync_verified.py
 1. Загрузите проект в GitHub.
 2. В Render создайте `Blueprint` из репозитория.
 3. Render поднимет:
-   - `telegram-gifts-market` (web);
-   - `telegram-gifts-bot` (worker, опционально).
+   - `telegram-gifts-market` (web).
 4. Для бота задайте переменные:
    - `TG_BOT_TOKEN`
    - `TG_CHAT_ID`
+   - `TG_WEBHOOK_SECRET`
+   - `BOT_SIGNAL_INTERVAL_SEC`
 5. Проверьте health:
    - `https://<your-domain>/healthz`
 

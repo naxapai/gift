@@ -33,20 +33,13 @@ services:
         value: "Bearer "
       - key: REALTIME_INTERVAL_SEC
         value: "3"
-
-  - type: worker
-    name: telegram-gifts-bot
-    env: python
-    plan: free
-    buildCommand: ""
-    startCommand: "python3 bot.py"
-    autoDeploy: false
-    envVars:
-      - key: BOT_POLL_INTERVAL
-        value: "300"
       - key: BOT_MIN_INTENSITY
         value: "10"
+      - key: BOT_SIGNAL_INTERVAL_SEC
+        value: "300"
       - key: TG_BOT_TOKEN
         sync: false
       - key: TG_CHAT_ID
+        sync: false
+      - key: TG_WEBHOOK_SECRET
         sync: false

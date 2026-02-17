@@ -4,9 +4,12 @@ import json
 import os
 import threading
 import time
+import urllib.parse
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from datetime import datetime
 from urllib.parse import quote
 from urllib.parse import parse_qs, urlparse
 
@@ -166,6 +169,7 @@ class AppState:
                 "verified_only": self.verified_only,
                 "verified_source": os.getenv("VERIFIED_SOURCE", "file"),
                 "verified_refresh_sec": self.verified_refresh_sec,
+                "bot_enabled": TG_BRIDGE.enabled if "TG_BRIDGE" in globals() else False,
             }
 
     def details(self, gift_id: str) -> dict | None:
@@ -262,6 +266,131 @@ class AppState:
 
 
 STATE = AppState()
+
+
+class TelegramBridge:
+    def __init__(self, state: AppState) -> None:
+        self.state = state
+        self.bot_token = os.getenv("TG_BOT_TOKEN", "").strip()
+        self.default_chat_id = os.getenv("TG_CHAT_ID", "").strip()
+        self.webhook_secret = os.getenv("TG_WEBHOOK_SECRET", "").strip()
+        self.signal_interval_sec = int(os.getenv("BOT_SIGNAL_INTERVAL_SEC", "300"))
+        self.min_intensity = float(os.getenv("BOT_MIN_INTENSITY", "10"))
+        self.sent_cache: set[str] = set()
+        self.enabled = bool(self.bot_token)
+        if self.enabled:
+            self._start_signal_loop()
+
+    def _api_url(self, method: str) -> str:
+        return f"https://api.telegram.org/bot{self.bot_token}/{method}"
+
+    def _http_post(self, method: str, data: dict[str, str]) -> dict:
+        payload = urllib.parse.urlencode(data).encode("utf-8")
+        req = urllib.request.Request(self._api_url(method), data=payload, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw)
+
+    def send_message(self, chat_id: str, text: str) -> None:
+        if not self.enabled or not chat_id:
+            return
+        self._http_post("sendMessage", {"chat_id": chat_id, "text": text})
+
+    def verify_secret(self, header_value: str | None) -> bool:
+        if not self.webhook_secret:
+            return True
+        return (header_value or "").strip() == self.webhook_secret
+
+    def _score(self, row: dict) -> float:
+        return abs(row["change_7d"]) + abs(row["zscore_30d"]) * 2 + abs(row["volume_trend_7_vs_30"]) / 2
+
+    def _is_alertable(self, row: dict) -> bool:
+        if row["signal"] in {"BUY", "SELL"}:
+            return self._score(row) >= self.min_intensity
+        if row["signal"] == "ANOMALY":
+            return abs(row["zscore_30d"]) >= 2.2
+        return False
+
+    def _format_alert(self, row: dict) -> str:
+        price_ton = row.get("price_ton")
+        if price_ton is None:
+            price_ton = float(row.get("price", 0))
+        return (
+            f"[{row['signal']}] {row['name']}\n"
+            f"Цена: {float(price_ton):.4f} TON\n"
+            f"Изм. 1д: {row['change_1d']:+.2f}% | 7д: {row['change_7d']:+.2f}% | 30д: {row['change_30d']:+.2f}%\n"
+            f"Спрос/предложение: {row['demand_supply_ratio']:.2f}\n"
+            f"Тренд объема (7д/30д): {row['volume_trend_7_vs_30']:+.2f}%\n"
+            f"z-score: {row['zscore_30d']:+.2f}\n"
+            f"Комментарий: {row['commentary']}"
+        )
+
+    def _status_text(self) -> str:
+        summary = self.state.summary()
+        return (
+            "Статус рынка:\n"
+            f"- Состояние: {summary.get('market_state')}\n"
+            f"- Средний 7д: {summary.get('avg_change_7d'):+.2f}%\n"
+            f"- BUY: {summary.get('buy_signals')} | SELL: {summary.get('sell_signals')} | Аномалии: {summary.get('anomalies')}"
+        )
+
+    def _signals_text(self) -> str:
+        rows = [r for r in self.state.signals() if self._is_alertable(r)][:5]
+        if not rows:
+            return "Сигналы: значимых сигналов сейчас нет."
+        lines = ["Топ сигналы:"]
+        for r in rows:
+            lines.append(f"- [{r['signal']}] {r['name']} {r['change_7d']:+.2f}% (7д)")
+        return "\n".join(lines)
+
+    def handle_update(self, update: dict) -> None:
+        msg = update.get("message") or update.get("channel_post") or {}
+        text = str(msg.get("text") or "").strip()
+        chat = msg.get("chat") or {}
+        chat_id = str(chat.get("id") or self.default_chat_id)
+        if not text or not chat_id:
+            return
+        cmd = text.split()[0].lower()
+        if cmd in {"/start", "/help"}:
+            self.send_message(chat_id, "Команды:\n/status — статус рынка\n/signals — топ сигналов")
+            return
+        if cmd == "/status":
+            self.send_message(chat_id, self._status_text())
+            return
+        if cmd == "/signals":
+            self.send_message(chat_id, self._signals_text())
+            return
+
+    def signal_cycle(self) -> None:
+        if not self.default_chat_id:
+            return
+        rows = [r for r in self.state.signals() if self._is_alertable(r)]
+        now_tag = datetime.utcnow().strftime("%Y-%m-%d")
+        stale = [k for k in self.sent_cache if not k.startswith(now_tag + ":")]
+        for key in stale:
+            self.sent_cache.remove(key)
+        for row in rows[:8]:
+            key = f"{now_tag}:{row['gift_id']}:{row['signal']}"
+            if key in self.sent_cache:
+                continue
+            self.send_message(self.default_chat_id, self._format_alert(row))
+            self.sent_cache.add(key)
+
+    def _start_signal_loop(self) -> None:
+        def loop() -> None:
+            while True:
+                try:
+                    self.signal_cycle()
+                except Exception:
+                    pass
+                time.sleep(self.signal_interval_sec)
+
+        thread = threading.Thread(target=loop, daemon=True, name="telegram-signal-loop")
+        thread.start()
+
+
+TG_BRIDGE = TelegramBridge(STATE)
 
 
 def _gift_profile(gift_id: str, price_usd: float, signal: str) -> dict:
@@ -468,7 +597,29 @@ class RequestHandler(BaseHTTPRequestHandler):
         _serve_file(self, path.lstrip("/"))
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path == "/api/admin/refresh":
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/telegram/webhook":
+            if not TG_BRIDGE.enabled:
+                _error(self, "telegram bot disabled", code=503)
+                return
+            header_secret = self.headers.get("X-Telegram-Bot-Api-Secret-Token")
+            if not TG_BRIDGE.verify_secret(header_secret):
+                _error(self, "invalid webhook secret", code=403)
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except Exception:
+                _error(self, "invalid json", code=400)
+                return
+            TG_BRIDGE.handle_update(payload)
+            _json_response(self, {"ok": True})
+            return
+
+        if path == "/api/admin/refresh":
             STATE.refresh()
             _json_response(self, {"ok": True, "message": "dataset refreshed", "generated_at": STATE.dataset.get("generated_at")})
             return
