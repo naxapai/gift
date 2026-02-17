@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Telegram Gifts Market Intelligence</title>
+    <title>Аналитика рынка Telegram-подарков</title>
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
@@ -18,8 +18,8 @@
             <p id="liveStatus" class="live-status">LIVE: подключение...</p>
           </div>
           <div class="topbar-actions">
-            <input id="topSearchInput" type="search" placeholder="Search here..." />
-            <button id="refreshBtn" class="btn">Refresh</button>
+            <input id="topSearchInput" type="search" placeholder="Поиск..." />
+            <button id="refreshBtn" class="btn">Обновить</button>
           </div>
         </header>
 
@@ -27,7 +27,7 @@
 
         <section class="card chart-card">
           <div class="card-head">
-            <h2>Market Chart</h2>
+            <h2>График рынка</h2>
             <select id="giftSelect"></select>
           </div>
           <div class="chart-wrap">
@@ -39,33 +39,33 @@
           <div class="main-col">
             <section class="card">
               <div class="card-head">
-                <h2>Market Watch</h2>
+                <h2>Обзор рынка</h2>
                 <div class="filters">
-                  <input id="giftSearch" type="search" placeholder="Search gift..." />
+                  <input id="giftSearch" type="search" placeholder="Поиск подарка..." />
                   <select id="marketFilter">
-                    <option value="">All Market Statuses</option>
-                    <option value="sold">Sold</option>
-                    <option value="sale">For sale</option>
-                    <option value="auction">On auction</option>
+                    <option value="">Все статусы рынка</option>
+                    <option value="sold">Продано</option>
+                    <option value="sale">В продаже</option>
+                    <option value="auction">Аукцион</option>
                   </select>
                   <select id="signalFilter">
-                    <option value="">All Signals</option>
-                    <option value="BUY">BUY</option>
-                    <option value="SELL">SELL</option>
-                    <option value="ANOMALY">ANOMALY</option>
-                    <option value="HOLD">HOLD</option>
+                    <option value="">Все сигналы</option>
+                    <option value="BUY">Покупка (BUY)</option>
+                    <option value="SELL">Продажа (SELL)</option>
+                    <option value="ANOMALY">Аномалия</option>
+                    <option value="HOLD">Удержание (HOLD)</option>
                   </select>
-                  <label class="fav-only-label"><input id="favoritesOnly" type="checkbox" /> Favorites</label>
+                  <label class="fav-only-label"><input id="favoritesOnly" type="checkbox" /> Только избранное</label>
                   <select id="sortBy">
-                    <option value="change_7d">Growth 7d</option>
-                    <option value="change_30d">Growth 30d</option>
-                    <option value="demand_supply_ratio">Demand/Supply</option>
-                    <option value="volume_trend_7_vs_30">Volume Trend</option>
-                    <option value="zscore_30d">Anomaly</option>
+                    <option value="change_7d">Рост за 7д</option>
+                    <option value="change_30d">Рост за 30д</option>
+                    <option value="demand_supply_ratio">Спрос/Предложение</option>
+                    <option value="volume_trend_7_vs_30">Тренд объема</option>
+                    <option value="zscore_30d">Сила аномалии</option>
                   </select>
                   <select id="order">
-                    <option value="desc">Desc</option>
-                    <option value="asc">Asc</option>
+                    <option value="desc">По убыванию</option>
+                    <option value="asc">По возрастанию</option>
                   </select>
                 </div>
               </div>
@@ -73,16 +73,16 @@
                 <table>
                   <thead>
                     <tr>
-                      <th>Name</th>
-                      <th>Fav</th>
-                      <th>Price (TON)</th>
+                      <th>Название</th>
+                      <th>Избр.</th>
+                      <th>Цена (TON)</th>
                       <th>1d</th>
                       <th>7d</th>
                       <th>30d</th>
                       <th>D/S</th>
-                      <th>Volume</th>
-                      <th>Signal</th>
-                      <th>Commentary</th>
+                      <th>Объем</th>
+                      <th>Сигнал</th>
+                      <th>Комментарий</th>
                     </tr>
                   </thead>
                   <tbody id="screenerBody"></tbody>
@@ -90,20 +90,20 @@
               </div>
               <div class="pager">
                 <div class="pager-left">
-                  <label>Show
+                  <label>Показывать
                     <select id="pageSizeSelect">
                       <option value="10">10</option>
                       <option value="25" selected>25</option>
                       <option value="50">50</option>
                       <option value="100">100</option>
                     </select>
-                    entries
+                    строк
                   </label>
                 </div>
                 <div class="pager-right">
-                  <button id="prevPageBtn" class="pager-btn">Prev</button>
-                  <span id="pageInfo">Page 1/1</span>
-                  <button id="nextPageBtn" class="pager-btn">Next</button>
+                  <button id="prevPageBtn" class="pager-btn">Назад</button>
+                  <span id="pageInfo">Страница 1/1</span>
+                  <button id="nextPageBtn" class="pager-btn">Вперёд</button>
                 </div>
               </div>
             </section>
@@ -112,39 +112,39 @@
           <aside class="side-col">
             <section class="card favorites-card">
               <div class="card-head">
-                <h2>Favorites</h2>
+                <h2>Избранное</h2>
               </div>
               <ul id="favoritesList"></ul>
             </section>
 
             <section class="card advanced-filters-card">
               <div class="card-head">
-                <h2>Filters</h2>
+                <h2>Фильтры</h2>
               </div>
               <div class="advanced-filters-note">Для множественного выбора: удерживай Cmd/Ctrl и кликай по пунктам.</div>
               <div class="advanced-filters-grid">
                 <label class="adv-field">
-                  <span>Collection</span>
+                  <span>Коллекция</span>
                   <select id="collectionFilter">
-                    <option value="">All Collections</option>
+                    <option value="">Все коллекции</option>
                   </select>
                 </label>
                 <label class="adv-field">
-                  <span>Model (multi)</span>
+                  <span>Модель (множественный)</span>
                   <select id="modelFilter" multiple size="7" title="Cmd/Ctrl + click">
-                    <option value="">All Models</option>
+                    <option value="">Все модели</option>
                   </select>
                 </label>
                 <label class="adv-field">
-                  <span>Background (multi)</span>
+                  <span>Фон (множественный)</span>
                   <select id="backdropFilter" multiple size="7" title="Cmd/Ctrl + click">
-                    <option value="">All Backgrounds</option>
+                    <option value="">Все фоны</option>
                   </select>
                 </label>
                 <label class="adv-field">
-                  <span>Pattern (multi)</span>
+                  <span>Узор (множественный)</span>
                   <select id="symbolFilter" multiple size="7" title="Cmd/Ctrl + click">
-                    <option value="">All Symbols</option>
+                    <option value="">Все узоры</option>
                   </select>
                 </label>
               </div>
@@ -152,7 +152,7 @@
 
             <section class="card signals">
               <div class="card-head">
-                <h2>Market Previews</h2>
+                <h2>Сигналы рынка</h2>
               </div>
               <ul id="signalsList"></ul>
             </section>

@@ -159,7 +159,7 @@ function renderCollectionOptions(rows) {
   const collections = [...new Set(rows.map((r) => r.collection || ""))]
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
-  const options = ['<option value="">All Collections</option>']
+  const options = ['<option value="">Все коллекции</option>']
     .concat(collections.map((c) => `<option value="${c}">${c}</option>`))
     .join("");
   collectionFilter.innerHTML = options;
@@ -175,7 +175,7 @@ function renderModelOptions(rows) {
   const models = [...new Set(baseRows.map((r) => r.model || ""))]
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
-  const options = ['<option value="">All Models</option>']
+  const options = ['<option value="">Все модели</option>']
     .concat(models.map((m) => `<option value="${m}">${m}</option>`))
     .join("");
   modelFilter.innerHTML = options;
@@ -211,7 +211,7 @@ async function loadFilterOptions() {
 
   const collections = (f.collections || []).map((c) => c.slug || c.name).filter(Boolean);
   collectionFilter.innerHTML =
-    ['<option value="">All Collections</option>']
+    ['<option value="">Все коллекции</option>']
       .concat(collections.map((c) => `<option value="${c}">${c}</option>`))
       .join("");
   if (collections.includes(selectedCollection)) collectionFilter.value = selectedCollection;
@@ -362,7 +362,7 @@ function renderScreener(rows) {
   const end = start + pageSize;
   const pagedRows = filtered.slice(start, end);
 
-  pageInfo.textContent = `Page ${currentPage}/${totalPages} • ${totalItems}`;
+  pageInfo.textContent = `Страница ${currentPage}/${totalPages} • ${totalItems}`;
   prevPageBtn.disabled = currentPage <= 1;
   nextPageBtn.disabled = currentPage >= totalPages;
 
