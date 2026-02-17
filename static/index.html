@@ -36,6 +36,7 @@
         <div class="card-head">
           <h2>Скринер подарков</h2>
           <div class="filters">
+            <input id="giftSearch" type="search" placeholder="Поиск подарков..." />
             <select id="signalFilter">
               <option value="">Все сигналы</option>
               <option value="BUY">BUY</option>
@@ -43,6 +44,7 @@
               <option value="ANOMALY">ANOMALY</option>
               <option value="HOLD">HOLD</option>
             </select>
+            <label class="fav-only-label"><input id="favoritesOnly" type="checkbox" /> Только избранное</label>
             <select id="groupFilter">
               <option value="">Все группы</option>
             </select>
@@ -65,6 +67,7 @@
             <thead>
               <tr>
                 <th>Подарок</th>
+                <th>Избр.</th>
                 <th>Цена</th>
                 <th>1д</th>
                 <th>7д</th>
@@ -78,6 +81,13 @@
             <tbody id="screenerBody"></tbody>
           </table>
         </div>
+      </section>
+
+      <section class="card favorites-card">
+        <div class="card-head">
+          <h2>Избранные подарки</h2>
+        </div>
+        <ul id="favoritesList"></ul>
       </section>
 
       <section class="card signals">

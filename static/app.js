@@ -3,6 +3,7 @@ const giftSelect = document.getElementById("giftSelect");
 const lineChart = document.getElementById("lineChart");
 const screenerBody = document.getElementById("screenerBody");
 const signalsList = document.getElementById("signalsList");
+const favoritesList = document.getElementById("favoritesList");
 const applyFilterBtn = document.getElementById("applyFilterBtn");
 const refreshBtn = document.getElementById("refreshBtn");
 const liveStatus = document.getElementById("liveStatus");
@@ -15,10 +16,38 @@ const signalFilter = document.getElementById("signalFilter");
 const groupFilter = document.getElementById("groupFilter");
 const sortBy = document.getElementById("sortBy");
 const order = document.getElementById("order");
+const giftSearch = document.getElementById("giftSearch");
+const favoritesOnly = document.getElementById("favoritesOnly");
 
 let marketRows = [];
 let currentGiftId = "";
 let autoRefreshTimer = null;
+let favorites = new Set();
+let lastSummary = null;
+
+function loadFavorites() {
+  try {
+    const raw = localStorage.getItem("gift_favorites_v1");
+    const parsed = raw ? JSON.parse(raw) : [];
+    favorites = new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    favorites = new Set();
+  }
+}
+
+function saveFavorites() {
+  localStorage.setItem("gift_favorites_v1", JSON.stringify([...favorites]));
+}
+
+function isFavorite(giftId) {
+  return favorites.has(giftId);
+}
+
+function toggleFavorite(giftId) {
+  if (favorites.has(giftId)) favorites.delete(giftId);
+  else favorites.add(giftId);
+  saveFavorites();
+}
 
 function getGiftIcon(giftId = "") {
   const icons = ["🎁", "🌹", "🌷", "💎", "⭐", "🎈", "👑", "🧧", "🎀", "✨"];
@@ -46,10 +75,16 @@ function renderGiftNameCell(r) {
   return `<a href="#" class="gift-link" data-gift-id="${r.gift_id}">${getGiftIcon(r.gift_id)} ${r.name}</a>`;
 }
 
+function renderFavoriteButton(giftId) {
+  const active = isFavorite(giftId);
+  return `<button class="fav-btn ${active ? "active" : ""}" data-fav-id="${giftId}" title="${active ? "Убрать из избранного" : "В избранное"}">${active ? "★" : "☆"}</button>`;
+}
+
 function renderKpi(data) {
   const items = [
     ["Состояние рынка", data.market_state],
     ["Всего подарков", String(data.rows.length)],
+    ["В избранном", String(favorites.size)],
     ["Средний рост 7д", formatPct(data.avg_change_7d)],
     ["Средний рост 30д", formatPct(data.avg_change_30d)],
     ["BUY сигналы", String(data.buy_signals)],
@@ -84,6 +119,22 @@ function renderGroupOptions(rows) {
     .join("");
   groupFilter.innerHTML = options;
   if (groups.includes(selectedBefore)) groupFilter.value = selectedBefore;
+}
+
+function renderFavoritesList() {
+  const favRows = marketRows.filter((r) => isFavorite(r.gift_id));
+  if (favRows.length === 0) {
+    favoritesList.innerHTML = '<li class="empty-fav">Список избранного пуст</li>';
+    return;
+  }
+  favoritesList.innerHTML = favRows
+    .slice()
+    .sort((a, b) => b.change_7d - a.change_7d)
+    .map(
+      (r) =>
+        `<li><button class="fav-open" data-open-gift="${r.gift_id}">${getGiftIcon(r.gift_id)} ${r.name}</button> <span class="tag ${r.signal}">${r.signal}</span> <span class="${clsForValue(r.change_7d)}">${formatPct(r.change_7d)}</span></li>`
+    )
+    .join("");
 }
 
 function renderChart(series) {
@@ -141,13 +192,6 @@ function renderChart(series) {
     xTicks += `<line x1="${x.toFixed(1)}" y1="${padTop + h}" x2="${x.toFixed(1)}" y2="${padTop + h + 5}" stroke="#b9c7d3" />
     <text x="${x.toFixed(1)}" y="${padTop + h + 20}" text-anchor="middle" fill="#5f6b76" font-size="11">${label}</text>`;
   }
-  if ((prices.length - 1) % xTickStep !== 0) {
-    const x = padLeft + w;
-    const raw = String(series.dates[prices.length - 1] || "");
-    const label = raw.length > 10 ? raw.slice(11, 16) : raw.slice(5);
-    xTicks += `<line x1="${x.toFixed(1)}" y1="${padTop + h}" x2="${x.toFixed(1)}" y2="${padTop + h + 5}" stroke="#b9c7d3" />
-    <text x="${x.toFixed(1)}" y="${padTop + h + 20}" text-anchor="middle" fill="#5f6b76" font-size="11">${label}</text>`;
-  }
 
   lineChart.innerHTML = `
     <rect x="${padLeft}" y="${padTop}" width="${w}" height="${h}" fill="#ffffff" stroke="#d7dde3" />
@@ -162,8 +206,15 @@ function renderChart(series) {
 }
 
 function renderScreener(rows) {
+  const query = (giftSearch.value || "").trim().toLowerCase();
+  const filtered = rows.filter((r) => {
+    const matchesSearch = !query || r.name.toLowerCase().includes(query) || r.gift_id.toLowerCase().includes(query);
+    const matchesFavorite = !favoritesOnly.checked || isFavorite(r.gift_id);
+    return matchesSearch && matchesFavorite;
+  });
+
   const grouped = new Map();
-  for (const row of rows) {
+  for (const row of filtered) {
     const key = row.group || "Other";
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(row);
@@ -171,13 +222,12 @@ function renderScreener(rows) {
 
   const parts = [];
   for (const [groupName, items] of grouped.entries()) {
-    parts.push(
-      `<tr class="group-row"><td colspan="9">${groupName} <span class="group-count">${items.length}</span></td></tr>`
-    );
+    parts.push(`<tr class="group-row"><td colspan="10">${groupName} <span class="group-count">${items.length}</span></td></tr>`);
     for (const r of items) {
       parts.push(`
       <tr>
         <td>${renderGiftNameCell(r)}</td>
+        <td>${renderFavoriteButton(r.gift_id)}</td>
         <td>${r.price.toFixed(2)}</td>
         <td class="${clsForValue(r.change_1d)}">${formatPct(r.change_1d)}</td>
         <td class="${clsForValue(r.change_7d)}">${formatPct(r.change_7d)}</td>
@@ -189,6 +239,11 @@ function renderScreener(rows) {
       </tr>
     `);
     }
+  }
+
+  if (!parts.length) {
+    screenerBody.innerHTML = '<tr><td colspan="10">Ничего не найдено</td></tr>';
+    return;
   }
   screenerBody.innerHTML = parts.join("");
 }
@@ -251,11 +306,13 @@ async function fetchJson(url, options = {}) {
 
 async function loadSummary() {
   const resp = await fetchJson("/api/market/summary");
+  lastSummary = resp.data;
   marketRows = resp.data.rows;
   renderKpi(resp.data);
   renderGiftOptions(marketRows);
   renderGroupOptions(marketRows);
   await loadScreenerFiltered();
+  renderFavoritesList();
 
   if (currentGiftId) {
     await loadChart(currentGiftId);
@@ -304,6 +361,16 @@ document.addEventListener("keydown", (e) => {
 });
 
 screenerBody.addEventListener("click", async (e) => {
+  const favButton = e.target.closest(".fav-btn");
+  if (favButton) {
+    e.preventDefault();
+    toggleFavorite(favButton.dataset.favId);
+    if (lastSummary) renderKpi(lastSummary);
+    await loadScreenerFiltered();
+    renderFavoritesList();
+    return;
+  }
+
   const link = e.target.closest(".gift-link");
   if (!link) return;
   e.preventDefault();
@@ -315,7 +382,20 @@ screenerBody.addEventListener("click", async (e) => {
   }
 });
 
+favoritesList.addEventListener("click", async (e) => {
+  const openBtn = e.target.closest(".fav-open");
+  if (!openBtn) return;
+  e.preventDefault();
+  try {
+    await showGiftModal(openBtn.dataset.openGift);
+  } catch (err) {
+    console.error(err);
+  }
+});
+
 applyFilterBtn.addEventListener("click", loadScreenerFiltered);
+giftSearch.addEventListener("input", loadScreenerFiltered);
+favoritesOnly.addEventListener("change", loadScreenerFiltered);
 refreshBtn.addEventListener("click", async () => {
   refreshBtn.disabled = true;
   try {
@@ -338,6 +418,7 @@ function startAutoRefresh() {
   }, 5000);
 }
 
+loadFavorites();
 Promise.all([loadSummary(), loadSignals(), loadRealtimeStatus()])
   .then(() => startAutoRefresh())
   .catch((e) => {
