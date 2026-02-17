@@ -6,6 +6,10 @@ const signalsList = document.getElementById("signalsList");
 const applyFilterBtn = document.getElementById("applyFilterBtn");
 const refreshBtn = document.getElementById("refreshBtn");
 const liveStatus = document.getElementById("liveStatus");
+const giftModal = document.getElementById("giftModal");
+const giftModalBody = document.getElementById("giftModalBody");
+const giftModalTitle = document.getElementById("giftModalTitle");
+const giftModalClose = document.getElementById("giftModalClose");
 
 const signalFilter = document.getElementById("signalFilter");
 const groupFilter = document.getElementById("groupFilter");
@@ -36,6 +40,10 @@ function formatPct(v) {
 
 function formatPrice(v) {
   return Number(v).toFixed(2);
+}
+
+function renderGiftNameCell(r) {
+  return `<a href="#" class="gift-link" data-gift-id="${r.gift_id}">${getGiftIcon(r.gift_id)} ${r.name}</a>`;
 }
 
 function renderKpi(data) {
@@ -169,7 +177,7 @@ function renderScreener(rows) {
     for (const r of items) {
       parts.push(`
       <tr>
-        <td>${getGiftIcon(r.gift_id)} ${r.name}</td>
+        <td>${renderGiftNameCell(r)}</td>
         <td>${r.price.toFixed(2)}</td>
         <td class="${clsForValue(r.change_1d)}">${formatPct(r.change_1d)}</td>
         <td class="${clsForValue(r.change_7d)}">${formatPct(r.change_7d)}</td>
@@ -193,6 +201,46 @@ function renderSignals(rows) {
         `<li><strong>${getGiftIcon(r.gift_id)} ${r.name}</strong> <span class="tag ${r.signal}">${r.signal}</span> 7д: ${formatPct(r.change_7d)}, D/S: ${r.demand_supply_ratio.toFixed(2)}, z-score: ${r.zscore_30d.toFixed(2)}</li>`
     )
     .join("");
+}
+
+function openGiftModal() {
+  giftModal.classList.remove("hidden");
+}
+
+function closeGiftModal() {
+  giftModal.classList.add("hidden");
+}
+
+function buildRecentTrend(details) {
+  const prices = details.chart_tail?.prices || [];
+  if (prices.length < 2) return "Недостаточно данных";
+  const start = prices[0];
+  const end = prices[prices.length - 1];
+  const pct = ((end - start) / (start || 1)) * 100;
+  return `${formatPct(pct)} за последние ${prices.length} тиков`;
+}
+
+async function showGiftModal(giftId) {
+  const resp = await fetchJson(`/api/market/gift-details?gift_id=${encodeURIComponent(giftId)}`);
+  const d = resp.data;
+  const g = d.gift;
+  giftModalTitle.textContent = `${getGiftIcon(g.gift_id)} ${g.name}`;
+  giftModalBody.innerHTML = `
+    <div class="modal-price-line"><strong>Цена:</strong> ${formatPrice(d.price_usd)} USD | ${d.price_ton.toFixed(4)} TON | ${d.price_stars} ⭐</div>
+    <div><strong>Группа:</strong> ${g.group} | <strong>Сигнал:</strong> <span class="tag ${g.signal}">${g.signal}</span></div>
+    <div class="modal-grid">
+      <div class="modal-kpi"><div class="label">Изм. 1д</div><div class="value ${clsForValue(g.change_1d)}">${formatPct(g.change_1d)}</div></div>
+      <div class="modal-kpi"><div class="label">Изм. 7д</div><div class="value ${clsForValue(g.change_7d)}">${formatPct(g.change_7d)}</div></div>
+      <div class="modal-kpi"><div class="label">Изм. 30д</div><div class="value ${clsForValue(g.change_30d)}">${formatPct(g.change_30d)}</div></div>
+      <div class="modal-kpi"><div class="label">Спрос/Предложение</div><div class="value">${g.demand_supply_ratio.toFixed(2)}</div></div>
+      <div class="modal-kpi"><div class="label">Объём</div><div class="value">${g.volume}</div></div>
+      <div class="modal-kpi"><div class="label">Волатильность 30д</div><div class="value">${g.volatility_30d.toFixed(2)}%</div></div>
+    </div>
+    <div><strong>Краткий тренд:</strong> ${buildRecentTrend(d)}</div>
+    <div><strong>Аналитика:</strong> ${g.commentary}</div>
+    <div><a class="buy-link" href="${d.buy_url}" target="_blank" rel="noopener noreferrer">Купить подарок</a></div>
+  `;
+  openGiftModal();
 }
 
 async function fetchJson(url, options = {}) {
@@ -245,6 +293,28 @@ giftSelect.addEventListener("change", () => {
   currentGiftId = giftSelect.value;
   loadChart(currentGiftId);
 });
+
+giftModalClose.addEventListener("click", closeGiftModal);
+giftModal.addEventListener("click", (e) => {
+  if (e.target.dataset.close === "1") closeGiftModal();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeGiftModal();
+});
+
+screenerBody.addEventListener("click", async (e) => {
+  const link = e.target.closest(".gift-link");
+  if (!link) return;
+  e.preventDefault();
+  try {
+    await showGiftModal(link.dataset.giftId);
+  } catch (err) {
+    console.error(err);
+    alert("Не удалось загрузить детали подарка");
+  }
+});
+
 applyFilterBtn.addEventListener("click", loadScreenerFiltered);
 refreshBtn.addEventListener("click", async () => {
   refreshBtn.disabled = true;
@@ -271,6 +341,6 @@ function startAutoRefresh() {
 Promise.all([loadSummary(), loadSignals(), loadRealtimeStatus()])
   .then(() => startAutoRefresh())
   .catch((e) => {
-  console.error(e);
-  alert("Ошибка загрузки данных. Проверьте, что сервер запущен.");
-});
+    console.error(e);
+    alert("Ошибка загрузки данных. Проверьте, что сервер запущен.");
+  });

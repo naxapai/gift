@@ -52,9 +52,9 @@ body {
 .container {
   position: relative;
   z-index: 2;
-  max-width: 1240px;
+  width: min(96vw, 1760px);
   margin: 0 auto;
-  padding: 24px 16px 36px;
+  padding: 24px 20px 36px;
   display: grid;
   gap: 16px;
 }
@@ -174,7 +174,7 @@ select {
 
 table {
   width: 100%;
-  min-width: 980px;
+  min-width: 1320px;
   border-collapse: collapse;
 }
 
@@ -189,6 +189,17 @@ td {
 th {
   color: var(--muted);
   font-weight: 600;
+}
+
+.gift-link {
+  color: #005f93;
+  font-weight: 700;
+  text-decoration: none;
+  border-bottom: 1px dashed rgba(0, 95, 147, 0.4);
+}
+
+.gift-link:hover {
+  color: #0077b6;
 }
 
 .group-row td {
@@ -254,7 +265,96 @@ th {
   background: rgba(255, 255, 255, 0.85);
 }
 
+.modal.hidden {
+  display: none;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(14, 20, 28, 0.48);
+}
+
+.modal-card {
+  position: relative;
+  z-index: 21;
+  width: min(720px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  margin: 20px auto;
+  padding: 18px;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 14px 36px rgba(16, 25, 36, 0.25);
+}
+
+.modal-close {
+  position: absolute;
+  right: 12px;
+  top: 10px;
+  border: none;
+  background: transparent;
+  font-size: 28px;
+  cursor: pointer;
+  color: #5f6b76;
+}
+
+.modal-body {
+  margin-top: 10px;
+  display: grid;
+  gap: 12px;
+}
+
+.modal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.modal-kpi {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: #f9fbfd;
+}
+
+.modal-kpi .label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.modal-kpi .value {
+  margin-top: 6px;
+  font-weight: 700;
+}
+
+.modal-price-line {
+  font-size: 16px;
+}
+
+.buy-link {
+  display: inline-block;
+  margin-top: 4px;
+  text-decoration: none;
+  color: #fff;
+  background: linear-gradient(135deg, #006da9, #0096c7);
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
 @media (max-width: 900px) {
+  .container {
+    width: 100%;
+    padding: 16px 12px 28px;
+  }
+
   .topbar {
     align-items: flex-start;
     flex-direction: column;

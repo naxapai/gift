@@ -52,6 +52,16 @@ python3 server.py
 REALTIME_INTERVAL_SEC=2 python3 server.py
 ```
 
+## Настройки ссылок покупки
+
+- По умолчанию кнопка `Купить подарок` ведет на Portals:
+  - `https://portals.market/gifts/{gift_id}`
+- Шаблон можно переопределить переменной:
+
+```bash
+PORTALS_GIFT_URL_TEMPLATE=\"https://portals.market/gifts/{gift_id}\" python3 server.py
+```
+
 ## Запуск Telegram-бота
 
 1. Создайте бота через [@BotFather](https://t.me/BotFather).

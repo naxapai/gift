@@ -7,6 +7,7 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote
 from urllib.parse import parse_qs, urlparse
 
 from analytics import build_chart_series, build_market_summary, get_ranked_signals
@@ -56,6 +57,36 @@ class AppState:
                 "realtime_interval_sec": self.realtime_interval_sec,
                 "realtime_tick_count": self.realtime_tick_count,
                 "last_tick_at": self.last_tick_at,
+            }
+
+    def details(self, gift_id: str) -> dict | None:
+        with self.lock:
+            summary = build_market_summary(self.dataset)["rows"]
+            row = next((r for r in summary if r["gift_id"] == gift_id), None)
+            gift = next((g for g in self.dataset["gifts"] if g["gift_id"] == gift_id), None)
+            if not row or not gift:
+                return None
+
+            chart = build_chart_series(gift)
+            ton_usd = float(os.getenv("TON_USD_RATE", "4.2"))
+            star_usd = float(os.getenv("STAR_USD_RATE", "0.015"))
+            buy_url_template = os.getenv("PORTALS_GIFT_URL_TEMPLATE", "https://portals.market/gifts/{gift_id}")
+            price_usd = float(row["price"])
+            price_ton = round(price_usd / ton_usd, 4) if ton_usd > 0 else 0.0
+            price_stars = int(round(price_usd / star_usd)) if star_usd > 0 else 0
+            buy_url = buy_url_template.format(gift_id=quote(gift_id, safe=""))
+
+            return {
+                "gift": row,
+                "price_usd": round(price_usd, 4),
+                "price_ton": price_ton,
+                "price_stars": price_stars,
+                "buy_url": buy_url,
+                "chart_tail": {
+                    "dates": chart["dates"][-24:],
+                    "prices": chart["prices"][-24:],
+                    "volume": chart["volume"][-24:],
+                },
             }
 
     def _start_realtime_loop(self) -> None:
@@ -147,6 +178,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
             _json_response(self, {"ok": True, "data": chart})
+            return
+        if path == "/api/market/gift-details":
+            params = parse_qs(parsed.query)
+            gift_id = (params.get("gift_id") or [None])[0]
+            if not gift_id:
+                _error(self, "gift_id is required")
+                return
+            details = STATE.details(gift_id)
+            if not details:
+                _error(self, f"gift_id '{gift_id}' not found", code=404)
+                return
+            _json_response(self, {"ok": True, "data": details})
             return
 
         if path == "/api/market/screener":
