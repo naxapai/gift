@@ -675,12 +675,21 @@ class TelegramBridge:
         if not self.default_chat_id:
             return
         snapshot = self.state.gifts_snapshot()
-        current_ids = {x["gift_id"] for x in snapshot}
+        screener = self.state.screener()
+        active_ids = {
+            r.get("gift_id")
+            for r in screener
+            if int((r.get("market_statuses") or {}).get("sale", 0)) > 0
+            or int((r.get("market_statuses") or {}).get("auction", 0)) > 0
+        }
+        current_ids = {x["gift_id"] for x in snapshot if x.get("gift_id") in active_ids}
         new_ids = sorted(current_ids - self.known_gift_ids)
         if not new_ids:
             return
         by_id = {x["gift_id"]: x for x in snapshot}
         for gift_id in new_ids:
+            if gift_id not in active_ids:
+                continue
             item = by_id.get(gift_id) or {"gift_id": gift_id, "name": gift_id, "buy_url": ""}
             buy_url = str(item.get("buy_url") or "").strip()
             text = f"#новый\nПоявился новый подарок: <b>{escape(str(item.get('name') or gift_id))}</b>\nID: <code>{escape(gift_id)}</code>"
