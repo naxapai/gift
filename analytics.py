@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timedelta, timezone
 from statistics import mean, pstdev
 from typing import Dict, List, Tuple
 
@@ -34,6 +35,29 @@ def _rolling_zscore(values: List[float]) -> float:
     return (latest - mean(baseline)) / sigma
 
 
+def _parse_dt(value: str) -> datetime:
+    raw = (value or "").strip()
+    if not raw:
+        return datetime.now(timezone.utc)
+    try:
+        if len(raw) == 10:
+            return datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
+def _point_at_or_before(series: List[Dict], cutoff: datetime) -> Dict:
+    for p in reversed(series):
+        if _parse_dt(p.get("dt", "")) <= cutoff:
+            return p
+    return series[0]
+
+
+def _points_since(series: List[Dict], cutoff: datetime) -> List[Dict]:
+    return [p for p in series if _parse_dt(p.get("dt", "")) >= cutoff]
+
+
 def _signal_tag(change_7d: float, ratio: float, zscore: float) -> str:
     if change_7d > 6 and ratio > 1.05:
         return "BUY"
@@ -52,22 +76,28 @@ def summarize_gift(gift: Dict) -> Dict:
     volumes = [p["volume"] for p in series]
 
     latest = series[-1]
-    prev_1d = series[-2] if len(series) > 1 else series[-1]
-    prev_7d = series[-8] if len(series) > 8 else series[0]
-    prev_30d = series[-31] if len(series) > 31 else series[0]
+    latest_dt = _parse_dt(latest.get("dt", ""))
+    prev_1d = _point_at_or_before(series, latest_dt - timedelta(days=1))
+    prev_7d = _point_at_or_before(series, latest_dt - timedelta(days=7))
+    prev_30d = _point_at_or_before(series, latest_dt - timedelta(days=30))
 
     change_1d = _pct_change(latest["price"], prev_1d["price"])
     change_7d = _pct_change(latest["price"], prev_7d["price"])
     change_30d = _pct_change(latest["price"], prev_30d["price"])
 
     ratio = _safe_ratio(latest["demand"], latest["supply"])
-    volume_trend = _pct_change(mean(_slice_last(volumes, 7)), mean(_slice_last(volumes, 30)))
+    last_7d = _points_since(series, latest_dt - timedelta(days=7))
+    last_30d = _points_since(series, latest_dt - timedelta(days=30))
+    vol_7 = mean([p["volume"] for p in last_7d]) if last_7d else mean(volumes) if volumes else 0.0
+    vol_30 = mean([p["volume"] for p in last_30d]) if last_30d else mean(volumes) if volumes else 0.0
+    volume_trend = _pct_change(vol_7, vol_30)
 
+    prices_30d = [p["price"] for p in last_30d] if last_30d else prices
     returns = []
-    for i in range(1, len(prices)):
-        returns.append(_pct_change(prices[i], prices[i - 1]))
-    volatility = pstdev(_slice_last(returns, 30)) if returns else 0.0
-    zscore = _rolling_zscore(_slice_last(prices, 31))
+    for i in range(1, len(prices_30d)):
+        returns.append(_pct_change(prices_30d[i], prices_30d[i - 1]))
+    volatility = pstdev(_slice_last(returns, 90)) if returns else 0.0
+    zscore = _rolling_zscore(prices_30d[-90:]) if prices_30d else 0.0
 
     signal = _signal_tag(change_7d, ratio, zscore)
 

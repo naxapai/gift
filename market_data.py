@@ -10,7 +10,7 @@ import urllib.request
 from collections import defaultdict
 from http import cookiejar
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 from typing import Dict, List
@@ -533,7 +533,7 @@ def fetch_verified_dataset_from_fragment(
         "backdrops": {},
         "symbols": {},
     }
-    generated_at = datetime.utcnow().isoformat() + "Z"
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     gift_mode = os.getenv("FRAGMENT_GIFT_MODE", "lot").strip().lower()
 
     for collection in collections:
@@ -635,7 +635,7 @@ def fetch_verified_dataset_from_fragment(
                     lot_profile = dict(profile)
                     lot_profile["value_ton_estimate"] = lot_price
                     lot_profile["source_note"] = "fragment.com verified (lot snapshot)"
-                    lot_day = _fragment_to_iso_day(str(ev.get("datetime") or ""))
+                    lot_day = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                     lot_series = [
                         {
                             "dt": lot_day,
@@ -731,6 +731,7 @@ def _merge_fragment_analytics_store(dataset: Dict) -> None:
     store = _load_fragment_analytics_store()
     old_map = {g.get("gift_id"): g for g in store.get("gifts", []) if g.get("gift_id")}
     merged_gifts = []
+    max_points = int(os.getenv("FRAGMENT_SERIES_MAX_POINTS", "8640"))
 
     for gift in dataset.get("gifts", []):
         gift_id = gift.get("gift_id")
@@ -748,13 +749,13 @@ def _merge_fragment_analytics_store(dataset: Dict) -> None:
             if dt:
                 merged_by_dt[dt] = p
         merged = [merged_by_dt[k] for k in sorted(merged_by_dt.keys())]
-        if len(merged) > 1440:
-            merged = merged[-1440:]
+        if len(merged) > max_points:
+            merged = merged[-max_points:]
         gift["series"] = merged if merged else new_series
         merged_gifts.append({"gift_id": gift_id, "series": gift["series"]})
 
     store_payload = {
-        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "gifts": merged_gifts,
     }
     _save_fragment_analytics_store(store_payload)
