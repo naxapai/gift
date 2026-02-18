@@ -13,7 +13,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote
 from urllib.parse import parse_qs, urlparse
 
@@ -566,7 +566,7 @@ class TelegramBridge:
         if not self.default_chat_id:
             return
         rows = [r for r in self.state.signals() if self._is_alertable(r)]
-        now_tag = datetime.utcnow().strftime("%Y-%m-%d")
+        now_tag = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         stale = [k for k in self.sent_cache if not k.startswith(now_tag + ":")]
         for key in stale:
             self.sent_cache.remove(key)
@@ -791,7 +791,11 @@ def _json_response(
     if pending_cookie:
         handler.send_header("Set-Cookie", pending_cookie)
     handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        # Client closed connection before reading response body.
+        return
 
 
 def _error(handler: BaseHTTPRequestHandler, message: str, code: int = 400) -> None:
@@ -828,7 +832,11 @@ def _serve_file(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
     if pending_cookie:
         handler.send_header("Set-Cookie", pending_cookie)
     handler.end_headers()
-    handler.wfile.write(content)
+    try:
+        handler.wfile.write(content)
+    except (BrokenPipeError, ConnectionResetError):
+        # Client closed connection before reading response body.
+        return
 
 
 def _extract_user_id(handler: BaseHTTPRequestHandler) -> str:
