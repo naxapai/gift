@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -293,6 +294,8 @@ class TelegramBridge:
         self.signal_interval_sec = int(os.getenv("BOT_SIGNAL_INTERVAL_SEC", "300"))
         self.min_intensity = float(os.getenv("BOT_MIN_INTENSITY", "10"))
         self.sent_cache: set[str] = set()
+        self.photo_cache: dict[str, str] = {}
+        self.photo_cache_ts: dict[str, float] = {}
         self.enabled = bool(self.bot_token)
         if self.enabled:
             self._start_signal_loop()
@@ -310,6 +313,50 @@ class TelegramBridge:
             if not parsed.get("ok", False):
                 raise RuntimeError(f"telegram {method} failed: {parsed.get('description', 'unknown error')}")
             return parsed
+
+    def _http_get_text(self, url: str, timeout: int = 15) -> str:
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("User-Agent", "Mozilla/5.0 (compatible; GiftMarketZone/1.0)")
+        req.add_header("Accept", "text/html,application/xhtml+xml")
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+
+    def _extract_meta_image(self, html: str) -> str:
+        meta_re = re.compile(r"<meta\s+([^>]+)>", re.I)
+        attr_re = re.compile(r'([a-zA-Z_:.-]+)\s*=\s*"([^"]*)"')
+        for m in meta_re.finditer(html):
+            attrs = {k.lower(): v.strip() for k, v in attr_re.findall(m.group(1))}
+            marker = (attrs.get("property") or attrs.get("name") or "").lower()
+            if marker in {"og:image", "twitter:image"} and attrs.get("content"):
+                return attrs["content"]
+        return ""
+
+    def _resolve_photo_url(self, row: dict) -> str:
+        gift_id = str(row.get("gift_id") or "").strip()
+        direct = str(row.get("photo_url") or "").strip()
+        if direct:
+            return direct
+
+        now = time.time()
+        cache_ttl_sec = 6 * 3600
+        if gift_id in self.photo_cache and (now - self.photo_cache_ts.get(gift_id, 0)) < cache_ttl_sec:
+            return self.photo_cache[gift_id]
+
+        buy_url = str(row.get("buy_url") or "").strip()
+        if not buy_url:
+            self.photo_cache[gift_id] = ""
+            self.photo_cache_ts[gift_id] = now
+            return ""
+        try:
+            html = self._http_get_text(buy_url, timeout=12)
+            found = self._extract_meta_image(html)
+            self.photo_cache[gift_id] = found
+            self.photo_cache_ts[gift_id] = now
+            return found
+        except Exception:
+            self.photo_cache[gift_id] = ""
+            self.photo_cache_ts[gift_id] = now
+            return ""
 
     def send_message(self, chat_id: str, text: str) -> None:
         if not self.enabled or not chat_id:
@@ -421,7 +468,7 @@ class TelegramBridge:
             if key in self.sent_cache:
                 continue
             text = self._format_alert(row)
-            photo_url = str(row.get("photo_url") or "").strip()
+            photo_url = self._resolve_photo_url(row)
             buy_url = str(row.get("buy_url") or "").strip()
             if buy_url:
                 text = f"{text}\n<a href=\"{escape(buy_url, quote=True)}\">Купить</a>"
