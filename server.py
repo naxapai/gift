@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import urllib.parse
 import urllib.request
 from html import escape
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from datetime import datetime
@@ -20,6 +22,7 @@ from market_data import load_dataset, load_verified_dataset, load_verified_datas
 
 ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
+FAVORITES_STORE_FILE = ROOT / "data" / "favorites_by_user.json"
 VERIFIED_GIFT_OVERRIDES = {
     "input_key_magic_8_ball_60441": {
         "model": "Magic 8 Ball",
@@ -35,6 +38,77 @@ VERIFIED_GIFT_OVERRIDES = {
         "source_note": "User verified snapshot",
     }
 }
+
+
+class FavoritesStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.lock = threading.RLock()
+        self.data = self._load()
+
+    def _load(self) -> dict:
+        if not self.path.exists():
+            return {"users": {}}
+        try:
+            with self.path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, dict) and isinstance(payload.get("users"), dict):
+                return payload
+        except Exception:
+            pass
+        return {"users": {}}
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+
+    def get(self, user_id: str) -> list[str]:
+        with self.lock:
+            ids = self.data.get("users", {}).get(user_id, [])
+            if not isinstance(ids, list):
+                return []
+            # Keep deterministic order and avoid duplicates.
+            seen: set[str] = set()
+            out: list[str] = []
+            for v in ids:
+                gift_id = str(v or "").strip()
+                if not gift_id or gift_id in seen:
+                    continue
+                seen.add(gift_id)
+                out.append(gift_id)
+            return out
+
+    def set(self, user_id: str, gift_ids: list[str]) -> list[str]:
+        cleaned = []
+        seen: set[str] = set()
+        for x in gift_ids:
+            v = str(x or "").strip()
+            if not v or v in seen:
+                continue
+            seen.add(v)
+            cleaned.append(v)
+        with self.lock:
+            users = self.data.setdefault("users", {})
+            users[user_id] = cleaned
+            self._save()
+            return list(cleaned)
+
+    def toggle(self, user_id: str, gift_id: str) -> tuple[list[str], bool]:
+        gid = str(gift_id or "").strip()
+        if not gid:
+            return self.get(user_id), False
+        with self.lock:
+            users = self.data.setdefault("users", {})
+            ids = [str(x) for x in users.get(user_id, []) if str(x).strip()]
+            active = gid in ids
+            if active:
+                ids = [x for x in ids if x != gid]
+            else:
+                ids.append(gid)
+            users[user_id] = ids
+            self._save()
+            return list(ids), (not active)
 
 
 class AppState:
@@ -656,6 +730,7 @@ class TelegramBridge:
 
 
 TG_BRIDGE = TelegramBridge(STATE)
+FAVORITES = FavoritesStore(FAVORITES_STORE_FILE)
 
 
 def _gift_profile(gift_id: str, price_usd: float, signal: str) -> dict:
@@ -695,11 +770,22 @@ def _gift_profile(gift_id: str, price_usd: float, signal: str) -> dict:
     }
 
 
-def _json_response(handler: BaseHTTPRequestHandler, payload: dict, status: int = 200) -> None:
+def _json_response(
+    handler: BaseHTTPRequestHandler,
+    payload: dict,
+    status: int = 200,
+    headers: dict[str, str] | None = None,
+) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    if headers:
+        for k, v in headers.items():
+            handler.send_header(k, v)
+    pending_cookie = getattr(handler, "_pending_set_cookie", "")
+    if pending_cookie:
+        handler.send_header("Set-Cookie", pending_cookie)
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -734,8 +820,36 @@ def _serve_file(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
     handler.send_response(HTTPStatus.OK)
     handler.send_header("Content-Type", mime)
     handler.send_header("Content-Length", str(len(content)))
+    pending_cookie = getattr(handler, "_pending_set_cookie", "")
+    if pending_cookie:
+        handler.send_header("Set-Cookie", pending_cookie)
     handler.end_headers()
     handler.wfile.write(content)
+
+
+def _extract_user_id(handler: BaseHTTPRequestHandler) -> str:
+    raw = handler.headers.get("Cookie", "")
+    if raw:
+        try:
+            cookie = SimpleCookie()
+            cookie.load(raw)
+            value = cookie.get("gmz_uid")
+            if value:
+                uid = str(value.value).strip()
+                if uid and len(uid) <= 128 and all(ch.isalnum() or ch in {"_", "-"} for ch in uid):
+                    return uid
+        except Exception:
+            pass
+    return ""
+
+
+def _ensure_user_id(handler: BaseHTTPRequestHandler) -> str:
+    uid = _extract_user_id(handler)
+    if uid:
+        return uid
+    uid = secrets.token_urlsafe(24).replace("=", "")
+    handler._pending_set_cookie = f"gmz_uid={uid}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"
+    return uid
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -858,6 +972,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path == "/api/market/realtime-status":
             _json_response(self, {"ok": True, "data": STATE.status()})
             return
+        if path == "/api/user/favorites":
+            user_id = _ensure_user_id(self)
+            gift_ids = FAVORITES.get(user_id)
+            _json_response(self, {"ok": True, "data": {"gift_ids": gift_ids}})
+            return
 
         _serve_file(self, path.lstrip("/"))
 
@@ -887,6 +1006,46 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path == "/api/admin/refresh":
             STATE.refresh()
             _json_response(self, {"ok": True, "message": "dataset refreshed", "generated_at": STATE.dataset.get("generated_at")})
+            return
+
+        if path in {"/api/user/favorites/toggle", "/api/user/favorites/set"}:
+            user_id = _ensure_user_id(self)
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except Exception:
+                _error(self, "invalid json", code=400)
+                return
+            gift_id = str(payload.get("gift_id") or "").strip()
+            if not gift_id:
+                _error(self, "gift_id is required", code=400)
+                return
+            if path.endswith("/toggle"):
+                gift_ids, active = FAVORITES.toggle(user_id, gift_id)
+            else:
+                gift_ids = FAVORITES.set(user_id, [gift_id])
+                active = True
+            _json_response(self, {"ok": True, "data": {"gift_ids": gift_ids, "gift_id": gift_id, "active": active}})
+            return
+
+        if path == "/api/user/favorites/remove":
+            user_id = _ensure_user_id(self)
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except Exception:
+                _error(self, "invalid json", code=400)
+                return
+            gift_id = str(payload.get("gift_id") or "").strip()
+            if not gift_id:
+                _error(self, "gift_id is required", code=400)
+                return
+            current = FAVORITES.get(user_id)
+            next_ids = [x for x in current if x != gift_id]
+            FAVORITES.set(user_id, next_ids)
+            _json_response(self, {"ok": True, "data": {"gift_ids": next_ids, "gift_id": gift_id, "active": False}})
             return
 
         _error(self, "not found", code=404)

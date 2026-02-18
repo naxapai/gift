@@ -35,27 +35,28 @@ let currentPage = 1;
 let pageSize = 25;
 
 function loadFavorites() {
-  try {
-    const raw = localStorage.getItem("gift_favorites_v1");
-    const parsed = raw ? JSON.parse(raw) : [];
-    favorites = new Set(Array.isArray(parsed) ? parsed : []);
-  } catch {
-    favorites = new Set();
-  }
-}
-
-function saveFavorites() {
-  localStorage.setItem("gift_favorites_v1", JSON.stringify([...favorites]));
+  return fetchJson("/api/user/favorites")
+    .then((resp) => {
+      const ids = resp?.data?.gift_ids;
+      favorites = new Set(Array.isArray(ids) ? ids : []);
+    })
+    .catch(() => {
+      favorites = new Set();
+    });
 }
 
 function isFavorite(giftId) {
   return favorites.has(giftId);
 }
 
-function toggleFavorite(giftId) {
-  if (favorites.has(giftId)) favorites.delete(giftId);
-  else favorites.add(giftId);
-  saveFavorites();
+async function toggleFavorite(giftId) {
+  const resp = await fetchJson("/api/user/favorites/toggle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ gift_id: giftId }),
+  });
+  const ids = resp?.data?.gift_ids;
+  favorites = new Set(Array.isArray(ids) ? ids : []);
 }
 
 function getGiftIcon(giftId = "") {
@@ -538,10 +539,15 @@ screenerBody.addEventListener("click", async (e) => {
   const favButton = e.target.closest(".fav-btn");
   if (favButton) {
     e.preventDefault();
-    toggleFavorite(favButton.dataset.favId);
-    if (lastSummary) renderKpi(lastSummary);
-    await loadScreenerFiltered();
-    renderFavoritesList();
+    try {
+      await toggleFavorite(favButton.dataset.favId);
+      if (lastSummary) renderKpi(lastSummary);
+      await loadScreenerFiltered();
+      renderFavoritesList();
+    } catch (err) {
+      console.error(err);
+      alert("Не удалось обновить избранное");
+    }
     return;
   }
 
@@ -633,12 +639,11 @@ function startAutoRefresh() {
   }, 5000);
 }
 
-loadFavorites();
 bindMultiToggle(modelFilter);
 bindMultiToggle(backdropFilter);
 bindMultiToggle(symbolFilter);
 pageSize = Number(pageSizeSelect.value) || 25;
-Promise.all([loadSummary(), loadSignals(), loadRealtimeStatus()])
+Promise.all([loadFavorites(), loadSummary(), loadSignals(), loadRealtimeStatus()])
   .then(() => startAutoRefresh())
   .catch((e) => {
     console.error(e);
