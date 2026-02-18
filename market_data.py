@@ -534,6 +534,7 @@ def fetch_verified_dataset_from_fragment(
         "symbols": {},
     }
     generated_at = datetime.utcnow().isoformat() + "Z"
+    gift_mode = os.getenv("FRAGMENT_GIFT_MODE", "lot").strip().lower()
 
     for collection in collections:
         slug = collection["slug"]
@@ -610,26 +611,77 @@ def fetch_verified_dataset_from_fragment(
                 status_counts[key] = status_counts.get(key, 0) + 1
 
             gift_name = collection["name"] if collection["name"] else slug
-            gift_id = f"fragment_{slug}"
-            series = _fragment_build_series(events)
-            series = _apply_spot_price_to_series(series, profile.get("value_ton_estimate"), datetime.utcnow().date().isoformat())
-            gifts.append(
-                {
-                    "gift_id": gift_id,
-                    "name": gift_name,
-                    "group": "Fragment Gifts",
-                    "collection_slug": slug,
-                    "fragment_market_url": f"https://fragment.com/gifts/{slug}",
-                    "last_lot_id": last_event["gift_id"],
-                    "preview_image_url": preview_image_url,
-                    "available_models": [x["value"] for x in model_options],
-                    "available_backdrops": [x["value"] for x in backdrop_options],
-                    "available_symbols": [x["value"] for x in symbol_options],
-                    "status_counts": status_counts,
-                    "series": series,
-                    "profile": profile,
-                }
-            )
+            if gift_mode == "lot":
+                lot_latest: dict[str, dict] = {}
+                lot_status_counts: dict[str, dict[str, int]] = {}
+                for ev in events:
+                    lot_id = str(ev.get("gift_id") or "").strip()
+                    if not lot_id:
+                        continue
+                    prev = lot_latest.get(lot_id)
+                    if not prev or str(ev.get("datetime", "")) > str(prev.get("datetime", "")):
+                        lot_latest[lot_id] = ev
+                    st = str(ev.get("status") or "").strip().lower()
+                    if st:
+                        per_lot = lot_status_counts.setdefault(lot_id, {})
+                        per_lot[st] = per_lot.get(st, 0) + 1
+
+                for lot_id, ev in lot_latest.items():
+                    lot_price = float(ev.get("price_ton") or 0.0)
+                    if lot_price <= 0:
+                        continue
+                    lot_profile = dict(profile)
+                    lot_profile["value_ton_estimate"] = lot_price
+                    lot_profile["source_note"] = "fragment.com verified (lot snapshot)"
+                    lot_day = _fragment_to_iso_day(str(ev.get("datetime") or ""))
+                    lot_series = [
+                        {
+                            "dt": lot_day,
+                            "price": round(lot_price, 6),
+                            "demand": 1.0,
+                            "supply": 1.0,
+                            "volume": 1,
+                        }
+                    ]
+                    lot_suffix = lot_id.split("-")[-1]
+                    gifts.append(
+                        {
+                            "gift_id": f"fragment_lot_{lot_id.replace('-', '_')}",
+                            "name": f"{gift_name} #{lot_suffix}",
+                            "group": "Fragment Gifts",
+                            "collection_slug": slug,
+                            "fragment_market_url": f"https://fragment.com/gift/{lot_id}?sort=price",
+                            "last_lot_id": lot_id,
+                            "preview_image_url": preview_image_url,
+                            "available_models": [x["value"] for x in model_options],
+                            "available_backdrops": [x["value"] for x in backdrop_options],
+                            "available_symbols": [x["value"] for x in symbol_options],
+                            "status_counts": lot_status_counts.get(lot_id, {}),
+                            "series": lot_series,
+                            "profile": lot_profile,
+                        }
+                    )
+            else:
+                gift_id = f"fragment_{slug}"
+                series = _fragment_build_series(events)
+                series = _apply_spot_price_to_series(series, profile.get("value_ton_estimate"), datetime.utcnow().date().isoformat())
+                gifts.append(
+                    {
+                        "gift_id": gift_id,
+                        "name": gift_name,
+                        "group": "Fragment Gifts",
+                        "collection_slug": slug,
+                        "fragment_market_url": f"https://fragment.com/gifts/{slug}",
+                        "last_lot_id": last_event["gift_id"],
+                        "preview_image_url": preview_image_url,
+                        "available_models": [x["value"] for x in model_options],
+                        "available_backdrops": [x["value"] for x in backdrop_options],
+                        "available_symbols": [x["value"] for x in symbol_options],
+                        "status_counts": status_counts,
+                        "series": series,
+                        "profile": profile,
+                    }
+                )
         except Exception:
             # Skip broken collection and keep progressing through the catalog.
             continue
