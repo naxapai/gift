@@ -803,16 +803,24 @@ def _error(handler: BaseHTTPRequestHandler, message: str, code: int = 400) -> No
     _json_response(handler, {"ok": False, "error": message}, status=code)
 
 
+def _safe_send_error(handler: BaseHTTPRequestHandler, code: int) -> None:
+    try:
+        handler.send_error(code)
+    except (BrokenPipeError, ConnectionResetError):
+        # Client closed connection before reading error response.
+        return
+
+
 def _serve_file(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
     rel = rel_path.lstrip("/")
     target = (STATIC_DIR / rel).resolve()
 
     if not str(target).startswith(str(STATIC_DIR.resolve())):
-        handler.send_error(HTTPStatus.FORBIDDEN)
+        _safe_send_error(handler, HTTPStatus.FORBIDDEN)
         return
 
     if not target.exists() or not target.is_file():
-        handler.send_error(HTTPStatus.NOT_FOUND)
+        _safe_send_error(handler, HTTPStatus.NOT_FOUND)
         return
 
     mime = "text/plain"

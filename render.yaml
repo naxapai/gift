@@ -5,6 +5,7 @@ services:
     plan: free
     buildCommand: ""
     startCommand: "python3 server.py"
+    healthCheckPath: /healthz
     autoDeploy: true
     envVars:
       - key: HOST
