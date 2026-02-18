@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 DATA_FILE = Path(__file__).parent / "data" / "gifts_history.json"
 VERIFIED_DATA_FILE = Path(__file__).parent / "data" / "verified_gifts.json"
 FRAGMENT_ANALYTICS_STORE_FILE = Path(__file__).parent / "data" / "fragment_analytics_store.json"
+FRAGMENT_SNAPSHOT_META_FILE = Path(__file__).parent / "data" / "fragment_snapshot_meta.json"
 MIN_GIFTS_COUNT = 200
 REQUIRED_GIFT_IDS = {"input_key_magic_8_ball_60441"}
 
@@ -174,6 +175,12 @@ def _validate_verified_dataset(dataset: Dict) -> None:
             for key in ("dt", "price", "demand", "supply", "volume"):
                 if key not in point:
                     raise ValueError(f"Verified gift '{gift.get('gift_id')}' has invalid point: missing '{key}'.")
+            price = float(point.get("price") or 0)
+            demand = float(point.get("demand") or 0)
+            supply = float(point.get("supply") or 0)
+            volume = float(point.get("volume") or 0)
+            if price <= 0 or demand <= 0 or supply <= 0 or volume <= 0:
+                raise ValueError(f"Verified gift '{gift.get('gift_id')}' has non-positive metrics.")
         if "profile" not in gift:
             raise ValueError(f"Verified gift '{gift.get('gift_id')}' must include 'profile'.")
 
@@ -521,6 +528,7 @@ def fetch_verified_dataset_from_fragment(
 
     root_html = _get_text(root_url)
     collections = _fragment_parse_collections(root_html)
+    total_collections = len(collections)
     if collection_start > 0:
         collections = collections[collection_start:]
     if max_collections and max_collections > 0:
@@ -701,8 +709,19 @@ def fetch_verified_dataset_from_fragment(
             if symbol:
                 filter_index["symbols"][symbol] = int(filter_index["symbols"].get(symbol, 0)) + 1
 
-    dataset = {"generated_at": generated_at, "gifts": gifts, "filters": filter_index}
+    meta = {
+        "generated_at": generated_at,
+        "collections_total": total_collections,
+        "collections_used": len(collections),
+        "collection_start": collection_start,
+        "max_collections": max_collections,
+        "max_pages_per_collection": max_pages_per_collection,
+        "gifts": len(gifts),
+        "gift_mode": gift_mode,
+    }
+    dataset = {"generated_at": generated_at, "gifts": gifts, "filters": filter_index, "meta": meta}
     _merge_fragment_analytics_store(dataset)
+    _save_fragment_snapshot_meta(meta)
     _reconcile_dataset_spot_prices(dataset)
     _validate_verified_dataset(dataset)
     return dataset
@@ -719,6 +738,28 @@ def _load_fragment_analytics_store() -> Dict:
     except Exception:
         return {"gifts": []}
     return {"gifts": []}
+
+
+def _save_fragment_snapshot_meta(meta: Dict) -> None:
+    try:
+        FRAGMENT_SNAPSHOT_META_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with FRAGMENT_SNAPSHOT_META_FILE.open("w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception:
+        return
+
+
+def load_fragment_snapshot_meta() -> Dict:
+    if not FRAGMENT_SNAPSHOT_META_FILE.exists():
+        return {}
+    try:
+        with FRAGMENT_SNAPSHOT_META_FILE.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+            if isinstance(payload, dict):
+                return payload
+    except Exception:
+        return {}
+    return {}
 
 
 def _save_fragment_analytics_store(store: Dict) -> None:
@@ -790,15 +831,19 @@ def load_verified_dataset_source() -> Dict:
         max_collections = int(os.getenv("FRAGMENT_MAX_COLLECTIONS", "0"))
         max_pages_per_collection = int(os.getenv("FRAGMENT_MAX_PAGES_PER_COLLECTION", "500"))
         collection_start = int(os.getenv("FRAGMENT_COLLECTION_START", "0"))
-        dataset = fetch_verified_dataset_from_fragment(
-            root_url=root_url,
-            timeout_sec=timeout_sec,
-            max_collections=max_collections,
-            max_pages_per_collection=max_pages_per_collection,
-            collection_start=collection_start,
-        )
-        save_verified_dataset(dataset, file_path)
-        return dataset
+        try:
+            dataset = fetch_verified_dataset_from_fragment(
+                root_url=root_url,
+                timeout_sec=timeout_sec,
+                max_collections=max_collections,
+                max_pages_per_collection=max_pages_per_collection,
+                collection_start=collection_start,
+            )
+            save_verified_dataset(dataset, file_path)
+            return dataset
+        except Exception:
+            # Fallback to last known snapshot if live fetch failed.
+            return load_verified_dataset(file_path)
 
     raise ValueError("VERIFIED_SOURCE must be one of: 'file', 'api', 'fragment'")
 

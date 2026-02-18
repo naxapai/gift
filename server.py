@@ -18,7 +18,7 @@ from urllib.parse import quote
 from urllib.parse import parse_qs, urlparse
 
 from analytics import build_chart_series, build_market_summary, get_ranked_signals
-from market_data import load_dataset, load_verified_dataset, load_verified_dataset_source, refresh_dataset, tick_realtime
+from market_data import load_dataset, load_fragment_snapshot_meta, load_verified_dataset, load_verified_dataset_source, refresh_dataset, tick_realtime
 
 ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
@@ -245,6 +245,11 @@ class AppState:
 
     def status(self) -> dict:
         with self.lock:
+            meta = (
+                load_fragment_snapshot_meta()
+                if self.verified_only and os.getenv("VERIFIED_SOURCE", "file").strip().lower() == "fragment"
+                else {}
+            )
             return {
                 "realtime_interval_sec": self.realtime_interval_sec,
                 "realtime_tick_count": self.realtime_tick_count,
@@ -257,6 +262,7 @@ class AppState:
                 "last_verified_refresh_at": self.last_verified_refresh_at,
                 "last_verified_refresh_error": self.last_verified_refresh_error,
                 "bot_enabled": TG_BRIDGE.enabled if "TG_BRIDGE" in globals() else False,
+                "fragment_meta": meta,
             }
 
     def details(self, gift_id: str) -> dict | None:
