@@ -1052,7 +1052,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
             reverse = order.lower() != "asc"
-            rows = sorted(rows, key=lambda x: x[sort_by], reverse=reverse)
+            def _sort_key(row: dict):
+                val = row.get(sort_by)
+                if isinstance(val, (int, float)):
+                    return float(val)
+                if val is None:
+                    return 0.0
+                try:
+                    return float(val)
+                except Exception:
+                    return 0.0
+
+            rows = sorted(rows, key=_sort_key, reverse=reverse)
             _json_response(self, {"ok": True, "data": rows})
             return
         if path == "/api/market/filters":
