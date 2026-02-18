@@ -189,6 +189,7 @@ def load_verified_dataset(path: str | None = None) -> Dict:
     with source.open("r", encoding="utf-8") as f:
         dataset = json.load(f)
     _validate_verified_dataset(dataset)
+    _reconcile_dataset_spot_prices(dataset)
     return dataset
 
 
@@ -272,6 +273,55 @@ def _fragment_build_series(events: List[dict]) -> List[dict]:
             }
         )
     return series
+
+
+def _apply_spot_price_to_series(series: List[dict], spot_ton: float | None, asof_day: str) -> List[dict]:
+    if not isinstance(series, list) or not series:
+        return series
+    if spot_ton is None:
+        return series
+    try:
+        spot = float(spot_ton)
+    except Exception:
+        return series
+    if spot <= 0:
+        return series
+
+    out = list(series)
+    last = dict(out[-1])
+    last_dt = str(last.get("dt", "")).strip()
+    today = (asof_day or "").strip() or datetime.utcnow().date().isoformat()
+    # Keep historical points intact; append a latest market snapshot (floor/spot).
+    if last_dt != today:
+        out.append(
+            {
+                "dt": today,
+                "price": round(spot, 6),
+                "demand": float(last.get("demand", 1.0) or 1.0),
+                "supply": float(last.get("supply", 1.0) or 1.0),
+                "volume": int(last.get("volume", 1) or 1),
+            }
+        )
+    else:
+        out[-1]["price"] = round(spot, 6)
+    return out
+
+
+def _reconcile_dataset_spot_prices(dataset: Dict) -> None:
+    if not isinstance(dataset, dict):
+        return
+    asof_day = datetime.utcnow().date().isoformat()
+    gifts = dataset.get("gifts")
+    if not isinstance(gifts, list):
+        return
+    for gift in gifts:
+        profile = gift.get("profile") if isinstance(gift, dict) else None
+        series = gift.get("series") if isinstance(gift, dict) else None
+        spot = None
+        if isinstance(profile, dict):
+            spot = profile.get("value_ton_estimate")
+        if isinstance(series, list) and series:
+            gift["series"] = _apply_spot_price_to_series(series, spot, asof_day)
 
 
 def _fragment_parse_collections(html: str) -> List[dict]:
@@ -562,6 +612,7 @@ def fetch_verified_dataset_from_fragment(
             gift_name = collection["name"] if collection["name"] else slug
             gift_id = f"fragment_{slug}"
             series = _fragment_build_series(events)
+            series = _apply_spot_price_to_series(series, profile.get("value_ton_estimate"), datetime.utcnow().date().isoformat())
             gifts.append(
                 {
                     "gift_id": gift_id,
@@ -598,6 +649,7 @@ def fetch_verified_dataset_from_fragment(
 
     dataset = {"generated_at": generated_at, "gifts": gifts, "filters": filter_index}
     _merge_fragment_analytics_store(dataset)
+    _reconcile_dataset_spot_prices(dataset)
     _validate_verified_dataset(dataset)
     return dataset
 
