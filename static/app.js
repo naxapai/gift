@@ -73,8 +73,9 @@ function clsForValue(v) {
 }
 
 function formatPct(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
   const sign = v > 0 ? "+" : "";
-  return `${sign}${v.toFixed(2)}%`;
+  return `${sign}${Number(v).toFixed(2)}%`;
 }
 
 function formatPrice(v) {
@@ -131,6 +132,7 @@ function renderFavoriteButton(giftId) {
 }
 
 function renderKpi(data) {
+  if (!kpiGrid) return;
   const items = [
     ["Состояние рынка", data.market_state],
     ["Всего подарков", String(data.rows.length)],
@@ -149,6 +151,19 @@ function renderKpi(data) {
       return `<div class="kpi"><div class="label">${label}</div><div class="value ${cl}">${value}</div></div>`;
     })
     .join("");
+}
+
+function normalizeSummary(data) {
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  return {
+    market_state: data?.market_state || "—",
+    avg_change_7d: Number.isFinite(data?.avg_change_7d) ? data.avg_change_7d : 0,
+    avg_change_30d: Number.isFinite(data?.avg_change_30d) ? data.avg_change_30d : 0,
+    buy_signals: Number.isFinite(data?.buy_signals) ? data.buy_signals : 0,
+    sell_signals: Number.isFinite(data?.sell_signals) ? data.sell_signals : 0,
+    anomalies: Number.isFinite(data?.anomalies) ? data.anomalies : 0,
+    rows,
+  };
 }
 
 function renderGiftOptions(rows) {
@@ -390,8 +405,8 @@ function renderScreener(rows) {
         <td>${renderFavoriteButton(r.gift_id)}</td>
         <td>${formatTon(r.price_ton ?? 0)}</td>
         <td class="${clsForValue(r.change_1d)}">${formatPct(r.change_1d)}</td>
-        <td class="${clsForValue(r.change_7d)}">${formatPct(r.change_7d)}</td>
-        <td class="${clsForValue(r.change_30d)}">${formatPct(r.change_30d)}</td>
+        <td class="${clsForValue(r.change_7d ?? 0)}">${formatPct(r.change_7d)}</td>
+        <td class="${clsForValue(r.change_30d ?? 0)}">${formatPct(r.change_30d)}</td>
         <td>${r.demand_supply_ratio.toFixed(2)}</td>
         <td>${r.volume}</td>
         <td><span class="tag ${r.signal}">${r.signal}</span></td>
@@ -451,8 +466,8 @@ async function showGiftModal(giftId) {
       <div class="modal-kpi"><div class="label">Наличие</div><div class="value">${p.issued ?? "-"} / ${p.total_supply ?? "-"}</div></div>
       <div class="modal-kpi"><div class="label">Ценность</div><div class="value">${p.value_ton_estimate ? `~${formatTon(p.value_ton_estimate)} TON` : p.value_rub_estimate ? `~${Number(p.value_rub_estimate).toFixed(2)} ₽` : `${p.value_score ?? "-"} / 100`}</div></div>
       <div class="modal-kpi"><div class="label">Изм. 1д</div><div class="value ${clsForValue(g.change_1d)}">${formatPct(g.change_1d)}</div></div>
-      <div class="modal-kpi"><div class="label">Изм. 7д</div><div class="value ${clsForValue(g.change_7d)}">${formatPct(g.change_7d)}</div></div>
-      <div class="modal-kpi"><div class="label">Изм. 30д</div><div class="value ${clsForValue(g.change_30d)}">${formatPct(g.change_30d)}</div></div>
+      <div class="modal-kpi"><div class="label">Изм. 7д</div><div class="value ${clsForValue(g.change_7d ?? 0)}">${formatPct(g.change_7d)}</div></div>
+      <div class="modal-kpi"><div class="label">Изм. 30д</div><div class="value ${clsForValue(g.change_30d ?? 0)}">${formatPct(g.change_30d)}</div></div>
       <div class="modal-kpi"><div class="label">Спрос/Предложение</div><div class="value">${g.demand_supply_ratio.toFixed(2)}</div></div>
       <div class="modal-kpi"><div class="label">Объём</div><div class="value">${g.volume}</div></div>
       <div class="modal-kpi"><div class="label">Волатильность 30д</div><div class="value">${g.volatility_30d.toFixed(2)}%</div></div>
@@ -473,9 +488,10 @@ async function fetchJson(url, options = {}) {
 
 async function loadSummary() {
   const resp = await fetchJson("/api/market/summary");
-  lastSummary = resp.data;
-  marketRows = resp.data.rows;
-  renderKpi(resp.data);
+  const summary = normalizeSummary(resp?.data || {});
+  lastSummary = summary;
+  marketRows = summary.rows;
+  renderKpi(summary);
   renderGiftOptions(marketRows);
   renderCollectionOptions(marketRows);
   renderModelOptions(marketRows);

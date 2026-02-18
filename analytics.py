@@ -77,20 +77,33 @@ def summarize_gift(gift: Dict) -> Dict:
 
     latest = series[-1]
     latest_dt = _parse_dt(latest.get("dt", ""))
+    first_dt = _parse_dt(series[0].get("dt", ""))
+    history_span_days = max(0.0, (latest_dt - first_dt).total_seconds() / 86400.0)
     prev_1d = _point_at_or_before(series, latest_dt - timedelta(days=1))
     prev_7d = _point_at_or_before(series, latest_dt - timedelta(days=7))
     prev_30d = _point_at_or_before(series, latest_dt - timedelta(days=30))
+    prev_6h = _point_at_or_before(series, latest_dt - timedelta(hours=6))
 
     change_1d = _pct_change(latest["price"], prev_1d["price"])
-    change_7d = _pct_change(latest["price"], prev_7d["price"])
-    change_30d = _pct_change(latest["price"], prev_30d["price"])
+    change_7d = _pct_change(latest["price"], prev_7d["price"]) if history_span_days >= 7 else None
+    change_30d = _pct_change(latest["price"], prev_30d["price"]) if history_span_days >= 30 else None
+    change_6h = _pct_change(latest["price"], prev_6h["price"])
 
     ratio = _safe_ratio(latest["demand"], latest["supply"])
     last_7d = _points_since(series, latest_dt - timedelta(days=7))
     last_30d = _points_since(series, latest_dt - timedelta(days=30))
-    vol_7 = mean([p["volume"] for p in last_7d]) if last_7d else mean(volumes) if volumes else 0.0
-    vol_30 = mean([p["volume"] for p in last_30d]) if last_30d else mean(volumes) if volumes else 0.0
-    volume_trend = _pct_change(vol_7, vol_30)
+    last_6h = _points_since(series, latest_dt - timedelta(hours=6))
+    last_24h = _points_since(series, latest_dt - timedelta(hours=24))
+    vol_7 = mean([p["volume"] for p in last_7d]) if last_7d else None
+    vol_30 = mean([p["volume"] for p in last_30d]) if last_30d else None
+    vol_6h = mean([p["volume"] for p in last_6h]) if last_6h else None
+    vol_24h = mean([p["volume"] for p in last_24h]) if last_24h else None
+    if vol_7 is not None and vol_30 is not None and history_span_days >= 7:
+        volume_trend = _pct_change(vol_7, vol_30)
+    elif vol_6h is not None and vol_24h is not None:
+        volume_trend = _pct_change(vol_6h, vol_24h)
+    else:
+        volume_trend = 0.0
 
     prices_30d = [p["price"] for p in last_30d] if last_30d else prices
     returns = []
@@ -99,7 +112,8 @@ def summarize_gift(gift: Dict) -> Dict:
     volatility = pstdev(_slice_last(returns, 90)) if returns else 0.0
     zscore = _rolling_zscore(prices_30d[-90:]) if prices_30d else 0.0
 
-    signal = _signal_tag(change_7d, ratio, zscore)
+    effective_change = change_7d if change_7d is not None else change_1d if history_span_days >= 1 else change_6h
+    signal = _signal_tag(effective_change, ratio, zscore)
 
     return {
         "gift_id": gift["gift_id"],
@@ -113,8 +127,9 @@ def summarize_gift(gift: Dict) -> Dict:
         "price": round(latest["price"], 4),
         "date": latest["dt"],
         "change_1d": round(change_1d, 2),
-        "change_7d": round(change_7d, 2),
-        "change_30d": round(change_30d, 2),
+        "change_6h": round(change_6h, 2),
+        "change_7d": round(change_7d, 2) if change_7d is not None else None,
+        "change_30d": round(change_30d, 2) if change_30d is not None else None,
         "demand": round(latest["demand"], 3),
         "supply": round(latest["supply"], 3),
         "demand_supply_ratio": round(ratio, 3),
@@ -123,7 +138,8 @@ def summarize_gift(gift: Dict) -> Dict:
         "volatility_30d": round(volatility, 2),
         "zscore_30d": round(zscore, 2),
         "signal": signal,
-        "commentary": make_commentary(change_7d, change_30d, ratio, volume_trend, signal),
+        "commentary": make_commentary(effective_change, change_30d or 0.0, ratio, volume_trend, signal),
+        "history_span_days": round(history_span_days, 2),
     }
 
 
@@ -152,8 +168,10 @@ def make_commentary(
 
 def build_market_summary(dataset: Dict) -> Dict:
     rows = [summarize_gift(g) for g in dataset["gifts"]]
-    avg_7d = mean([r["change_7d"] for r in rows]) if rows else 0.0
-    avg_30d = mean([r["change_30d"] for r in rows]) if rows else 0.0
+    avg_7d_vals = [r["change_7d"] for r in rows if isinstance(r.get("change_7d"), (int, float))]
+    avg_30d_vals = [r["change_30d"] for r in rows if isinstance(r.get("change_30d"), (int, float))]
+    avg_7d = mean(avg_7d_vals) if avg_7d_vals else None
+    avg_30d = mean(avg_30d_vals) if avg_30d_vals else None
     buy_count = sum(1 for r in rows if r["signal"] == "BUY")
     sell_count = sum(1 for r in rows if r["signal"] == "SELL")
     anomaly_count = sum(1 for r in rows if r["signal"] == "ANOMALY")
@@ -163,8 +181,8 @@ def build_market_summary(dataset: Dict) -> Dict:
     return {
         "generated_at": dataset.get("generated_at"),
         "market_state": market_state,
-        "avg_change_7d": round(avg_7d, 2),
-        "avg_change_30d": round(avg_30d, 2),
+        "avg_change_7d": round(avg_7d, 2) if avg_7d is not None else None,
+        "avg_change_30d": round(avg_30d, 2) if avg_30d is not None else None,
         "buy_signals": buy_count,
         "sell_signals": sell_count,
         "anomalies": anomaly_count,
