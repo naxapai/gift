@@ -380,18 +380,21 @@ class TelegramBridge:
             self.photo_cache_ts[gift_id] = now
             return ""
 
-    def send_message(self, chat_id: str, text: str) -> None:
+    def send_message(self, chat_id: str, text: str, buy_url: str = "") -> None:
         if not self.enabled or not chat_id:
             return
-        self._http_post(
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": "true",
-            },
-        )
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        }
+        if buy_url:
+            payload["reply_markup"] = json.dumps(
+                {"inline_keyboard": [[{"text": "Купить на Fragment", "url": buy_url}]]},
+                ensure_ascii=False,
+            )
+        self._http_post("sendMessage", payload)
 
     def send_photo(self, chat_id: str, photo_url: str, caption: str, buy_url: str = "") -> None:
         if not self.enabled or not chat_id or not photo_url:
@@ -494,15 +497,13 @@ class TelegramBridge:
             text = self._format_alert(row)
             photo_url = self._resolve_photo_url(row)
             buy_url = str(row.get("buy_url") or "").strip()
-            if buy_url:
-                text = f"{text}\n<a href=\"{escape(buy_url, quote=True)}\">Купить</a>"
             if photo_url:
                 try:
                     self.send_photo(self.default_chat_id, photo_url, text, buy_url)
                 except Exception:
-                    self.send_message(self.default_chat_id, text)
+                    self.send_message(self.default_chat_id, text, buy_url=buy_url)
             else:
-                self.send_message(self.default_chat_id, text)
+                self.send_message(self.default_chat_id, text, buy_url=buy_url)
             self.sent_cache.add(key)
 
     def _new_gifts_cycle(self) -> None:
@@ -518,9 +519,7 @@ class TelegramBridge:
             item = by_id.get(gift_id) or {"gift_id": gift_id, "name": gift_id, "buy_url": ""}
             buy_url = str(item.get("buy_url") or "").strip()
             text = f"#новый\nПоявился новый подарок: <b>{escape(str(item.get('name') or gift_id))}</b>\nID: <code>{escape(gift_id)}</code>"
-            if buy_url:
-                text = f"{text}\n<a href=\"{escape(buy_url, quote=True)}\">Купить</a>"
-            self.send_message(self.default_chat_id, text)
+            self.send_message(self.default_chat_id, text, buy_url=buy_url)
         self.known_gift_ids = current_ids
 
     def _promo_text(self) -> str:
@@ -592,9 +591,7 @@ class TelegramBridge:
                         f"Появился новый подарок: <b>{escape(str(item.get('name') or item.get('gift_id') or 'Gift'))}</b>\n"
                         f"ID: <code>{escape(str(item.get('gift_id') or ''))}</code>"
                     )
-                    if buy_url:
-                        text = f"{text}\n<a href=\"{escape(buy_url, quote=True)}\">Купить</a>"
-                    self.send_message(self.default_chat_id, text)
+                    self.send_message(self.default_chat_id, text, buy_url=buy_url)
             except Exception:
                 pass
             try:
