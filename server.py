@@ -44,6 +44,8 @@ class AppState:
         self.lock = threading.RLock()
         self.realtime_tick_count = 0
         self.last_tick_at = ""
+        self.last_verified_refresh_at = ""
+        self.last_verified_refresh_error = ""
         self.realtime_interval_sec = float(os.getenv("REALTIME_INTERVAL_SEC", "3"))
         self.dataset = self._load_initial_dataset()
         if self.verified_only:
@@ -171,9 +173,13 @@ class AppState:
                 "realtime_interval_sec": self.realtime_interval_sec,
                 "realtime_tick_count": self.realtime_tick_count,
                 "last_tick_at": self.last_tick_at,
+                "dataset_generated_at": self.dataset.get("generated_at", "") if isinstance(self.dataset, dict) else "",
+                "gifts_count": len(self.dataset.get("gifts", [])) if isinstance(self.dataset, dict) else 0,
                 "verified_only": self.verified_only,
                 "verified_source": os.getenv("VERIFIED_SOURCE", "file"),
                 "verified_refresh_sec": self.verified_refresh_sec,
+                "last_verified_refresh_at": self.last_verified_refresh_at,
+                "last_verified_refresh_error": self.last_verified_refresh_error,
                 "bot_enabled": TG_BRIDGE.enabled if "TG_BRIDGE" in globals() else False,
             }
 
@@ -245,16 +251,19 @@ class AppState:
     def _start_verified_reload_loop(self) -> None:
         def loop() -> None:
             while True:
-                time.sleep(self.verified_refresh_sec)
                 try:
                     new_dataset = load_verified_dataset_source()
                     with self.lock:
                         self.dataset = new_dataset
                         self.realtime_tick_count += 1
                         self.last_tick_at = time.strftime("%Y-%m-%d %H:%M:%S")
-                except Exception:
+                        self.last_verified_refresh_at = self.last_tick_at
+                        self.last_verified_refresh_error = ""
+                except Exception as e:
                     # Keep last known verified snapshot if source read failed.
-                    pass
+                    with self.lock:
+                        self.last_verified_refresh_error = f"verified refresh failed: {type(e).__name__}: {str(e)[:240]}"
+                time.sleep(self.verified_refresh_sec)
 
         thread = threading.Thread(target=loop, daemon=True, name="verified-reloader")
         thread.start()
