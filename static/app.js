@@ -367,9 +367,13 @@ function renderChart(series) {
 }
 
 function renderScreener(rows) {
+  const onlyActive = rows.filter((r) => {
+    const statuses = r.market_statuses || {};
+    return (statuses.sale || 0) > 0 || (statuses.auction || 0) > 0;
+  });
   const queryRaw = (giftSearch.value || "").trim();
   const queryNorm = normalizeText(queryRaw);
-  const filtered = rows.filter((r) => {
+  const filtered = onlyActive.filter((r) => {
     const plain = `${r.name} ${r.gift_id} ${r.collection || ""} ${r.model || ""}`.toLowerCase();
     const norm = normalizeText(`${r.name} ${r.gift_id} ${r.collection || ""} ${r.model || ""}`);
     const matchesSearch = !queryRaw || plain.includes(queryRaw.toLowerCase()) || (queryNorm && norm.includes(queryNorm));
