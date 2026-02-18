@@ -424,7 +424,7 @@ class TelegramBridge:
             photo_url = str(row.get("photo_url") or "").strip()
             buy_url = str(row.get("buy_url") or "").strip()
             if buy_url:
-                text = f"{text}\nКупить: {escape(buy_url)}"
+                text = f"{text}\n<a href=\"{escape(buy_url, quote=True)}\">Купить</a>"
             if photo_url:
                 try:
                     self.send_photo(self.default_chat_id, photo_url, text, buy_url)
