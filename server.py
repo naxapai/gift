@@ -317,6 +317,7 @@ class TelegramBridge:
         self.known_gift_ids: set[str] = {x["gift_id"] for x in self.state.gifts_snapshot()}
         self.enabled = bool(self.bot_token)
         if self.enabled:
+            self._start_boot_messages()
             self._start_signal_loop()
             self._start_new_gifts_loop()
             self._start_promo_loop()
@@ -570,6 +571,38 @@ class TelegramBridge:
                     pass
 
         thread = threading.Thread(target=loop, daemon=True, name="telegram-promo-loop")
+        thread.start()
+
+    def _start_boot_messages(self) -> None:
+        def loop() -> None:
+            time.sleep(12)
+            if not self.default_chat_id:
+                return
+            try:
+                self.send_message(self.default_chat_id, self._status_text())
+            except Exception:
+                pass
+            try:
+                snapshot = self.state.gifts_snapshot()
+                if snapshot:
+                    item = snapshot[0]
+                    buy_url = str(item.get("buy_url") or "").strip()
+                    text = (
+                        f"#новый\n"
+                        f"Появился новый подарок: <b>{escape(str(item.get('name') or item.get('gift_id') or 'Gift'))}</b>\n"
+                        f"ID: <code>{escape(str(item.get('gift_id') or ''))}</code>"
+                    )
+                    if buy_url:
+                        text = f"{text}\n<a href=\"{escape(buy_url, quote=True)}\">Купить</a>"
+                    self.send_message(self.default_chat_id, text)
+            except Exception:
+                pass
+            try:
+                self.send_message(self.default_chat_id, self._promo_text())
+            except Exception:
+                pass
+
+        thread = threading.Thread(target=loop, daemon=True, name="telegram-boot-messages")
         thread.start()
 
 
