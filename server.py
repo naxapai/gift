@@ -309,6 +309,7 @@ class TelegramBridge:
         self.webhook_secret = os.getenv("TG_WEBHOOK_SECRET", "").strip()
         self.signal_interval_sec = int(os.getenv("BOT_SIGNAL_INTERVAL_SEC", "300"))
         self.promo_interval_sec = int(os.getenv("BOT_PROMO_INTERVAL_SEC", "21600"))
+        self.news_interval_sec = int(os.getenv("BOT_NEWS_INTERVAL_SEC", "86400"))
         self.new_gifts_check_sec = int(os.getenv("BOT_NEW_GIFTS_CHECK_SEC", "120"))
         self.min_intensity = float(os.getenv("BOT_MIN_INTENSITY", "10"))
         self.sent_cache: set[str] = set()
@@ -321,6 +322,7 @@ class TelegramBridge:
             self._start_signal_loop()
             self._start_new_gifts_loop()
             self._start_promo_loop()
+            self._start_news_loop()
 
     def _api_url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self.bot_token}/{method}"
@@ -535,6 +537,43 @@ class TelegramBridge:
             f"Если ты собираешь, торгуешь или просто хочешь понимать рынок — <a href=\"{url}\">тебе сюда</a>."
         )
 
+    def _news_text(self) -> str:
+        summary = self.state.summary()
+        rows = self.state.screener()
+        if not rows:
+            return "#новости\nДанных по рынку подарков пока недостаточно."
+
+        gainers = sorted(rows, key=lambda x: x.get("change_1d", 0), reverse=True)[:3]
+        losers = sorted(rows, key=lambda x: x.get("change_1d", 0))[:3]
+        signals = self.state.signals()
+        hot = [r for r in signals if r.get("signal") in {"BUY", "SELL", "ANOMALY"}][:3]
+
+        lines = [
+            "#новости",
+            "Суточная сводка рынка подарков:",
+            f"Состояние: {summary.get('market_state')} | Ср. 7д: {summary.get('avg_change_7d', 0):+.2f}%",
+            f"BUY: {summary.get('buy_signals', 0)} | SELL: {summary.get('sell_signals', 0)} | Аномалии: {summary.get('anomalies', 0)}",
+            "",
+            "Лидеры роста (1д):",
+        ]
+        for r in gainers:
+            lines.append(f"• {r.get('name')} {r.get('change_1d', 0):+.2f}%")
+
+        lines.append("")
+        lines.append("Лидеры падения (1д):")
+        for r in losers:
+            lines.append(f"• {r.get('name')} {r.get('change_1d', 0):+.2f}%")
+
+        if hot:
+            lines.append("")
+            lines.append("Ключевые сигналы:")
+            for r in hot:
+                lines.append(f"• [{r.get('signal')}] {r.get('name')} 7д: {r.get('change_7d', 0):+.2f}%")
+
+        lines.append("")
+        lines.append("Детали: <a href=\"https://telegram-gifts-market.onrender.com\">открыть GiftMarketZone</a>")
+        return "\n".join(lines)
+
     def _start_signal_loop(self) -> None:
         def loop() -> None:
             while True:
@@ -570,6 +609,19 @@ class TelegramBridge:
                     pass
 
         thread = threading.Thread(target=loop, daemon=True, name="telegram-promo-loop")
+        thread.start()
+
+    def _start_news_loop(self) -> None:
+        def loop() -> None:
+            while True:
+                time.sleep(self.news_interval_sec)
+                try:
+                    if self.default_chat_id:
+                        self.send_message(self.default_chat_id, self._news_text())
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=loop, daemon=True, name="telegram-news-loop")
         thread.start()
 
     def _start_boot_messages(self) -> None:
