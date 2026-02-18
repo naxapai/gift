@@ -129,11 +129,12 @@ class AppState:
             self._start_realtime_loop()
 
     def refresh(self) -> None:
+        if self.verified_only:
+            new_dataset = load_verified_dataset_source()
+        else:
+            new_dataset = refresh_dataset()
         with self.lock:
-            if self.verified_only:
-                self.dataset = load_verified_dataset_source()
-            else:
-                self.dataset = refresh_dataset()
+            self.dataset = new_dataset
             self.realtime_tick_count = 0
             self.last_tick_at = ""
 
