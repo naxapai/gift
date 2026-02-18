@@ -306,7 +306,10 @@ class TelegramBridge:
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
         with urllib.request.urlopen(req, timeout=20) as response:
             raw = response.read().decode("utf-8")
-            return json.loads(raw)
+            parsed = json.loads(raw)
+            if not parsed.get("ok", False):
+                raise RuntimeError(f"telegram {method} failed: {parsed.get('description', 'unknown error')}")
+            return parsed
 
     def send_message(self, chat_id: str, text: str) -> None:
         if not self.enabled or not chat_id:
@@ -420,11 +423,14 @@ class TelegramBridge:
             text = self._format_alert(row)
             photo_url = str(row.get("photo_url") or "").strip()
             buy_url = str(row.get("buy_url") or "").strip()
+            if buy_url:
+                text = f"{text}\nКупить: {escape(buy_url)}"
             if photo_url:
-                self.send_photo(self.default_chat_id, photo_url, text, buy_url)
+                try:
+                    self.send_photo(self.default_chat_id, photo_url, text, buy_url)
+                except Exception:
+                    self.send_message(self.default_chat_id, text)
             else:
-                if buy_url:
-                    text = f"{text}\n<a href=\"{escape(buy_url, quote=True)}\">Купить на Fragment</a>"
                 self.send_message(self.default_chat_id, text)
             self.sent_cache.add(key)
 

@@ -384,12 +384,14 @@ def _fragment_parse_detail_profile(html: str) -> dict:
 
 
 def _fragment_parse_og_image(html: str) -> str:
-    m = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)"', html, re.I)
-    if m:
-        return _clean_fragment_text(m.group(1))
-    m = re.search(r'<meta\s+name="twitter:image"\s+content="([^"]+)"', html, re.I)
-    if m:
-        return _clean_fragment_text(m.group(1))
+    meta_re = re.compile(r"<meta\s+([^>]+)>", re.I)
+    attr_re = re.compile(r'([a-zA-Z_:.-]+)\s*=\s*"([^"]*)"')
+    for m in meta_re.finditer(html):
+        attrs_raw = m.group(1)
+        attrs = {k.lower(): _clean_fragment_text(v) for k, v in attr_re.findall(attrs_raw)}
+        marker = attrs.get("property") or attrs.get("name") or ""
+        if marker.lower() in {"og:image", "twitter:image"} and attrs.get("content"):
+            return attrs["content"]
     return ""
 
 
