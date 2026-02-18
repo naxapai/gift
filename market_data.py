@@ -678,6 +678,7 @@ def fetch_verified_dataset_from_fragment(
                             "available_backdrops": [x["value"] for x in backdrop_options],
                             "available_symbols": [x["value"] for x in symbol_options],
                             "status_counts": lot_status_counts.get(lot_id, {}),
+                            "latest_status": latest_status,
                             "series": lot_series,
                             "profile": lot_profile,
                         }
@@ -694,6 +695,7 @@ def fetch_verified_dataset_from_fragment(
                         "collection_slug": slug,
                         "fragment_market_url": f"https://fragment.com/gifts/{slug}",
                         "last_lot_id": last_event["gift_id"],
+                        "latest_status": str(last_event.get("status") or "").strip().lower(),
                         "preview_image_url": preview_image_url,
                         "available_models": [x["value"] for x in model_options],
                         "available_backdrops": [x["value"] for x in backdrop_options],

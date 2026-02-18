@@ -124,6 +124,7 @@ def summarize_gift(gift: Dict) -> Dict:
         "backdrop": str((gift.get("profile") or {}).get("background") or ""),
         "symbol": str((gift.get("profile") or {}).get("pattern") or ""),
         "market_statuses": dict(gift.get("status_counts") or {}),
+        "latest_status": str(gift.get("latest_status") or "").strip().lower(),
         "price": round(latest["price"], 4),
         "date": latest["dt"],
         "change_1d": round(change_1d, 2),

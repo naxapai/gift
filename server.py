@@ -535,8 +535,9 @@ class TelegramBridge:
 
     def _is_alertable(self, row: dict) -> bool:
         statuses = row.get("market_statuses") or {}
+        latest_status = str(row.get("latest_status") or "").strip().lower()
         has_active = int(statuses.get("sale", 0)) > 0 or int(statuses.get("auction", 0)) > 0
-        if not has_active:
+        if latest_status == "sold" or not has_active:
             return False
         if row["signal"] in {"BUY", "SELL"}:
             return self._score(row) >= self.min_intensity
@@ -692,6 +693,7 @@ class TelegramBridge:
             for r in screener
             if int((r.get("market_statuses") or {}).get("sale", 0)) > 0
             or int((r.get("market_statuses") or {}).get("auction", 0)) > 0
+            and str(r.get("latest_status") or "").strip().lower() != "sold"
         }
         current_ids = {x["gift_id"] for x in snapshot if x.get("gift_id") in active_ids}
         new_ids = sorted(current_ids - self.known_gift_ids)
