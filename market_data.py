@@ -383,6 +383,16 @@ def _fragment_parse_detail_profile(html: str) -> dict:
     }
 
 
+def _fragment_parse_og_image(html: str) -> str:
+    m = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)"', html, re.I)
+    if m:
+        return _clean_fragment_text(m.group(1))
+    m = re.search(r'<meta\s+name="twitter:image"\s+content="([^"]+)"', html, re.I)
+    if m:
+        return _clean_fragment_text(m.group(1))
+    return ""
+
+
 def _fragment_parse_attribute_options(html: str, label: str) -> List[dict]:
     # Extract filter options from Fragment sidebar blocks for Model/Backdrop/Symbol.
     box_re = re.compile(
@@ -533,6 +543,7 @@ def fetch_verified_dataset_from_fragment(
             last_event = events[-1]
             detail_html = _get_text(f"https://fragment.com/gift/{last_event['gift_id']}?sort=price")
             profile = _fragment_parse_detail_profile(detail_html)
+            preview_image_url = _fragment_parse_og_image(detail_html)
             if not profile.get("total_supply"):
                 profile["total_supply"] = collection.get("total_supply", 0)
             if not profile.get("issued"):
@@ -557,6 +568,7 @@ def fetch_verified_dataset_from_fragment(
                     "collection_slug": slug,
                     "fragment_market_url": f"https://fragment.com/gifts/{slug}",
                     "last_lot_id": last_event["gift_id"],
+                    "preview_image_url": preview_image_url,
                     "available_models": [x["value"] for x in model_options],
                     "available_backdrops": [x["value"] for x in backdrop_options],
                     "available_symbols": [x["value"] for x in symbol_options],

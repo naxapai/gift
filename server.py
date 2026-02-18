@@ -6,6 +6,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -151,13 +152,17 @@ class AppState:
     def signals(self) -> list[dict]:
         with self.lock:
             rows = get_ranked_signals(self.dataset)
+            gift_map = {g.get("gift_id"): g for g in self.dataset.get("gifts", [])}
             ton_usd = self._ton_usd_rate()
             ton_native = self._price_is_ton_native()
             for row in rows:
+                gift = gift_map.get(row.get("gift_id")) or {}
                 if ton_native:
                     row["price_ton"] = round(float(row["price"]), 4)
                 else:
                     row["price_ton"] = round(float(row["price"]) / ton_usd, 4) if ton_usd > 0 else 0.0
+                row["buy_url"] = self._resolve_buy_url(row.get("gift_id", ""), gift)
+                row["photo_url"] = str(gift.get("preview_image_url") or "").strip()
             return rows
 
     def status(self) -> dict:
@@ -183,7 +188,6 @@ class AppState:
             chart = build_chart_series(gift)
             ton_usd = float(os.getenv("TON_USD_RATE", "4.2"))
             star_usd = float(os.getenv("STAR_USD_RATE", "0.015"))
-            buy_url_template = os.getenv("PORTALS_GIFT_URL_TEMPLATE", "https://portals.market/gifts/{gift_id}")
             ton_native = self._price_is_ton_native()
             if ton_native:
                 price_ton = round(float(row["price"]), 4)
@@ -192,12 +196,7 @@ class AppState:
                 price_usd = float(row["price"])
                 price_ton = round(price_usd / ton_usd, 4) if ton_usd > 0 else 0.0
             price_stars = int(round(price_usd / star_usd)) if star_usd > 0 else 0
-            if gift.get("last_lot_id"):
-                buy_url = f"https://fragment.com/gift/{quote(gift['last_lot_id'], safe='')}?sort=price"
-            elif gift.get("fragment_market_url"):
-                buy_url = gift["fragment_market_url"]
-            else:
-                buy_url = buy_url_template.format(gift_id=quote(gift_id, safe=""))
+            buy_url = self._resolve_buy_url(gift_id, gift)
             profile = gift.get("profile") if self.verified_only else _gift_profile(gift_id, price_usd, row["signal"])
             if not profile:
                 return None
@@ -215,6 +214,14 @@ class AppState:
                     "volume": chart["volume"][-24:],
                 },
             }
+
+    def _resolve_buy_url(self, gift_id: str, gift: dict) -> str:
+        buy_url_template = os.getenv("PORTALS_GIFT_URL_TEMPLATE", "https://portals.market/gifts/{gift_id}")
+        if gift.get("last_lot_id"):
+            return f"https://fragment.com/gift/{quote(str(gift['last_lot_id']), safe='')}?sort=price"
+        if gift.get("fragment_market_url"):
+            return str(gift["fragment_market_url"])
+        return buy_url_template.format(gift_id=quote(str(gift_id), safe=""))
 
     def _ton_usd_rate(self) -> float:
         return float(os.getenv("TON_USD_RATE", "4.2"))
@@ -295,7 +302,31 @@ class TelegramBridge:
     def send_message(self, chat_id: str, text: str) -> None:
         if not self.enabled or not chat_id:
             return
-        self._http_post("sendMessage", {"chat_id": chat_id, "text": text})
+        self._http_post(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": "true",
+            },
+        )
+
+    def send_photo(self, chat_id: str, photo_url: str, caption: str, buy_url: str = "") -> None:
+        if not self.enabled or not chat_id or not photo_url:
+            return
+        payload = {
+            "chat_id": chat_id,
+            "photo": photo_url,
+            "caption": caption,
+            "parse_mode": "HTML",
+        }
+        if buy_url:
+            payload["reply_markup"] = json.dumps(
+                {"inline_keyboard": [[{"text": "Купить на Fragment", "url": buy_url}]]},
+                ensure_ascii=False,
+            )
+        self._http_post("sendPhoto", payload)
 
     def verify_secret(self, header_value: str | None) -> bool:
         if not self.webhook_secret:
@@ -316,14 +347,17 @@ class TelegramBridge:
         price_ton = row.get("price_ton")
         if price_ton is None:
             price_ton = float(row.get("price", 0))
+        signal = escape(str(row.get("signal", "HOLD")))
+        name = escape(str(row.get("name", "")))
+        commentary = escape(str(row.get("commentary", "")))
+        gift_id = escape(str(row.get("gift_id", "")))
         return (
-            f"[{row['signal']}] {row['name']}\n"
-            f"Цена: {float(price_ton):.4f} TON\n"
+            f"<b>{signal}</b> | <b>{name}</b>\n"
+            f"ID: <code>{gift_id}</code>\n"
+            f"Цена: <b>{float(price_ton):.4f} TON</b>\n"
             f"Изм. 1д: {row['change_1d']:+.2f}% | 7д: {row['change_7d']:+.2f}% | 30д: {row['change_30d']:+.2f}%\n"
-            f"Спрос/предложение: {row['demand_supply_ratio']:.2f}\n"
-            f"Тренд объема (7д/30д): {row['volume_trend_7_vs_30']:+.2f}%\n"
-            f"z-score: {row['zscore_30d']:+.2f}\n"
-            f"Комментарий: {row['commentary']}"
+            f"D/S: {row['demand_supply_ratio']:.2f} | Объем 7/30: {row['volume_trend_7_vs_30']:+.2f}% | z: {row['zscore_30d']:+.2f}\n"
+            f"{commentary}"
         )
 
     def _status_text(self) -> str:
@@ -374,7 +408,15 @@ class TelegramBridge:
             key = f"{now_tag}:{row['gift_id']}:{row['signal']}"
             if key in self.sent_cache:
                 continue
-            self.send_message(self.default_chat_id, self._format_alert(row))
+            text = self._format_alert(row)
+            photo_url = str(row.get("photo_url") or "").strip()
+            buy_url = str(row.get("buy_url") or "").strip()
+            if photo_url:
+                self.send_photo(self.default_chat_id, photo_url, text, buy_url)
+            else:
+                if buy_url:
+                    text = f"{text}\n<a href=\"{escape(buy_url, quote=True)}\">Купить на Fragment</a>"
+                self.send_message(self.default_chat_id, text)
             self.sent_cache.add(key)
 
     def _start_signal_loop(self) -> None:
