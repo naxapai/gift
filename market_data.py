@@ -573,19 +573,21 @@ def fetch_verified_dataset_from_fragment(
                 "attr[Symbol]": "",
             }
             first = _post_json(api_hash, page_url, params)
-            html_block = first.get("html", "")
-            events = _fragment_parse_item_cards(html_block)
-            next_offset = _fragment_extract_next_offset(html_block)
+            first_html = first.get("html") or first.get("body") or ""
+            first_foot = first.get("foot") or ""
+            events = _fragment_parse_item_cards(first_html)
+            next_offset = _fragment_extract_next_offset(first_foot or first_html)
 
             page_no = 1
             while next_offset and page_no < max_pages_per_collection:
                 page_no += 1
                 params["offset_id"] = next_offset
                 part = _post_json(api_hash, page_url, params)
-                body_html = part.get("body", "")
-                foot_html = part.get("foot", "")
-                events.extend(_fragment_parse_item_cards(body_html))
-                next_offset = _fragment_extract_next_offset(foot_html)
+                body_html = part.get("body") or part.get("html") or ""
+                foot_html = part.get("foot") or ""
+                if body_html:
+                    events.extend(_fragment_parse_item_cards(body_html))
+                next_offset = _fragment_extract_next_offset(foot_html or body_html)
                 if not body_html:
                     break
 
