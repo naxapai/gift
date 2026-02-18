@@ -210,7 +210,12 @@ def get_ranked_signals(dataset: Dict) -> List[Dict]:
 
     def score(row: Dict) -> Tuple[int, float]:
         label_rank = {"BUY": 0, "SELL": 1, "ANOMALY": 2, "HOLD": 3}
-        intensity = abs(row["change_7d"]) + abs(row["zscore_30d"]) * 2 + abs(row["volume_trend_7_vs_30"]) / 2
+        change = row.get("change_7d")
+        if change is None:
+            change = row.get("change_1d")
+        if change is None:
+            change = row.get("change_6h", 0.0)
+        intensity = abs(float(change or 0)) + abs(row["zscore_30d"]) * 2 + abs(row["volume_trend_7_vs_30"]) / 2
         return (label_rank[row["signal"]], -intensity)
 
     return sorted(rows, key=score)

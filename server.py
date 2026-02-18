@@ -517,7 +517,12 @@ class TelegramBridge:
         return (header_value or "").strip() == self.webhook_secret
 
     def _score(self, row: dict) -> float:
-        return abs(row["change_7d"]) + abs(row["zscore_30d"]) * 2 + abs(row["volume_trend_7_vs_30"]) / 2
+        change = row.get("change_7d")
+        if change is None:
+            change = row.get("change_1d")
+        if change is None:
+            change = row.get("change_6h", 0.0)
+        return abs(float(change or 0)) + abs(row["zscore_30d"]) * 2 + abs(row["volume_trend_7_vs_30"]) / 2
 
     def _fmt_ton(self, value: float) -> str:
         text = f"{float(value):.4f}".rstrip("0").rstrip(".")
@@ -611,11 +616,17 @@ class TelegramBridge:
 
     def _status_text(self) -> str:
         summary = self.state.summary()
+        avg_7d = summary.get("avg_change_7d")
+        avg_30d = summary.get("avg_change_30d")
+        def _fmt(v: float | None) -> str:
+            if v is None:
+                return "—"
+            return f"{v:+.2f}%"
         return (
             "#аналитика\n"
             "Статус рынка:\n"
             f"- Состояние: {summary.get('market_state')}\n"
-            f"- Средний 7д: {summary.get('avg_change_7d'):+.2f}%\n"
+            f"- Средний 7д: {_fmt(avg_7d)}\n"
             f"- BUY: {summary.get('buy_signals')} | SELL: {summary.get('sell_signals')} | Аномалии: {summary.get('anomalies')}"
         )
 
@@ -710,7 +721,7 @@ class TelegramBridge:
         lines = [
             "#новости",
             "Суточная сводка рынка подарков:",
-            f"Состояние: {summary.get('market_state')} | Ср. 7д: {summary.get('avg_change_7d', 0):+.2f}%",
+            f"Состояние: {summary.get('market_state')} | Ср. 7д: {self._fmt_pct(summary.get('avg_change_7d'))}",
             f"BUY: {summary.get('buy_signals', 0)} | SELL: {summary.get('sell_signals', 0)} | Аномалии: {summary.get('anomalies', 0)}",
             "",
             "Лидеры роста (1д):",
