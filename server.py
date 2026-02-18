@@ -329,15 +329,9 @@ class AppState:
 
     def _load_initial_dataset(self) -> dict:
         if self.verified_only:
-            if os.getenv("VERIFIED_SOURCE", "file").strip().lower() == "fragment":
-                use_cache = os.getenv("FRAGMENT_BOOTSTRAP_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
-                cache_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
-                if use_cache:
-                    try:
-                        return load_verified_dataset(cache_path)
-                    except Exception:
-                        pass
-                # Non-blocking start: serve health/UI while verified data loads in background.
+            source = os.getenv("VERIFIED_SOURCE", "file").strip().lower()
+            if source == "fragment":
+                # Non-blocking start for Fragment: serve health/UI while data loads in background.
                 return {"generated_at": "", "gifts": []}
             try:
                 return load_verified_dataset_source()
@@ -347,6 +341,19 @@ class AppState:
 
     def _start_verified_reload_loop(self) -> None:
         def loop() -> None:
+            source = os.getenv("VERIFIED_SOURCE", "file").strip().lower()
+            if source == "fragment":
+                use_cache = os.getenv("FRAGMENT_BOOTSTRAP_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
+                cache_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
+                if use_cache:
+                    try:
+                        cached = load_verified_dataset(cache_path)
+                        with self.lock:
+                            self.dataset = cached
+                            self.last_verified_refresh_at = time.strftime("%Y-%m-%d %H:%M:%S")
+                            self.last_verified_refresh_error = ""
+                    except Exception:
+                        pass
             while True:
                 try:
                     new_dataset = load_verified_dataset_source()
