@@ -230,6 +230,22 @@ class AppState:
             return str(gift["fragment_market_url"])
         return buy_url_template.format(gift_id=quote(str(gift_id), safe=""))
 
+    def gifts_snapshot(self) -> list[dict]:
+        with self.lock:
+            out: list[dict] = []
+            for gift in self.dataset.get("gifts", []):
+                gift_id = str(gift.get("gift_id") or "").strip()
+                if not gift_id:
+                    continue
+                out.append(
+                    {
+                        "gift_id": gift_id,
+                        "name": str(gift.get("name") or gift_id),
+                        "buy_url": self._resolve_buy_url(gift_id, gift),
+                    }
+                )
+            return out
+
     def _ton_usd_rate(self) -> float:
         return float(os.getenv("TON_USD_RATE", "4.2"))
 
@@ -292,13 +308,18 @@ class TelegramBridge:
         self.default_chat_id = os.getenv("TG_CHAT_ID", "").strip()
         self.webhook_secret = os.getenv("TG_WEBHOOK_SECRET", "").strip()
         self.signal_interval_sec = int(os.getenv("BOT_SIGNAL_INTERVAL_SEC", "300"))
+        self.promo_interval_sec = int(os.getenv("BOT_PROMO_INTERVAL_SEC", "21600"))
+        self.new_gifts_check_sec = int(os.getenv("BOT_NEW_GIFTS_CHECK_SEC", "120"))
         self.min_intensity = float(os.getenv("BOT_MIN_INTENSITY", "10"))
         self.sent_cache: set[str] = set()
         self.photo_cache: dict[str, str] = {}
         self.photo_cache_ts: dict[str, float] = {}
+        self.known_gift_ids: set[str] = {x["gift_id"] for x in self.state.gifts_snapshot()}
         self.enabled = bool(self.bot_token)
         if self.enabled:
             self._start_signal_loop()
+            self._start_new_gifts_loop()
+            self._start_promo_loop()
 
     def _api_url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self.bot_token}/{method}"
@@ -411,6 +432,7 @@ class TelegramBridge:
         commentary = escape(str(row.get("commentary", "")))
         gift_id = escape(str(row.get("gift_id", "")))
         return (
+            f"#аналитика\n"
             f"<b>{signal}</b> | <b>{name}</b>\n"
             f"ID: <code>{gift_id}</code>\n"
             f"Цена: <b>{float(price_ton):.4f} TON</b>\n"
@@ -422,6 +444,7 @@ class TelegramBridge:
     def _status_text(self) -> str:
         summary = self.state.summary()
         return (
+            "#аналитика\n"
             "Статус рынка:\n"
             f"- Состояние: {summary.get('market_state')}\n"
             f"- Средний 7д: {summary.get('avg_change_7d'):+.2f}%\n"
@@ -431,8 +454,8 @@ class TelegramBridge:
     def _signals_text(self) -> str:
         rows = [r for r in self.state.signals() if self._is_alertable(r)][:5]
         if not rows:
-            return "Сигналы: значимых сигналов сейчас нет."
-        lines = ["Топ сигналы:"]
+            return "#аналитика\nСигналы: значимых сигналов сейчас нет."
+        lines = ["#аналитика", "Топ сигналы:"]
         for r in rows:
             lines.append(f"- [{r['signal']}] {r['name']} {r['change_7d']:+.2f}% (7д)")
         return "\n".join(lines)
@@ -481,6 +504,37 @@ class TelegramBridge:
                 self.send_message(self.default_chat_id, text)
             self.sent_cache.add(key)
 
+    def _new_gifts_cycle(self) -> None:
+        if not self.default_chat_id:
+            return
+        snapshot = self.state.gifts_snapshot()
+        current_ids = {x["gift_id"] for x in snapshot}
+        new_ids = sorted(current_ids - self.known_gift_ids)
+        if not new_ids:
+            return
+        by_id = {x["gift_id"]: x for x in snapshot}
+        for gift_id in new_ids:
+            item = by_id.get(gift_id) or {"gift_id": gift_id, "name": gift_id, "buy_url": ""}
+            buy_url = str(item.get("buy_url") or "").strip()
+            text = f"#новый\nПоявился новый подарок: <b>{escape(str(item.get('name') or gift_id))}</b>\nID: <code>{escape(gift_id)}</code>"
+            if buy_url:
+                text = f"{text}\n<a href=\"{escape(buy_url, quote=True)}\">Купить</a>"
+            self.send_message(self.default_chat_id, text)
+        self.known_gift_ids = current_ids
+
+    def _promo_text(self) -> str:
+        url = "https://telegram-gifts-market.onrender.com"
+        return (
+            "🎁 Telegram Gifts Market Analytics — аналитика, которая экономит время и деньги.\n"
+            "✅ Что внутри:\n"
+            "📈 тренды и импульсы рынка\n"
+            "💰 цены, объемы, лидеры роста\n"
+            "🧊 ликвидность и “что реально продаётся”\n"
+            "🧠 разборы — почему растёт/падает\n"
+            "⚡️ быстрые апдейты без воды\n"
+            f"Если ты собираешь, торгуешь или просто хочешь понимать рынок — <a href=\"{url}\">тебе сюда</a>."
+        )
+
     def _start_signal_loop(self) -> None:
         def loop() -> None:
             while True:
@@ -491,6 +545,31 @@ class TelegramBridge:
                 time.sleep(self.signal_interval_sec)
 
         thread = threading.Thread(target=loop, daemon=True, name="telegram-signal-loop")
+        thread.start()
+
+    def _start_new_gifts_loop(self) -> None:
+        def loop() -> None:
+            while True:
+                try:
+                    self._new_gifts_cycle()
+                except Exception:
+                    pass
+                time.sleep(self.new_gifts_check_sec)
+
+        thread = threading.Thread(target=loop, daemon=True, name="telegram-new-gifts-loop")
+        thread.start()
+
+    def _start_promo_loop(self) -> None:
+        def loop() -> None:
+            while True:
+                time.sleep(self.promo_interval_sec)
+                try:
+                    if self.default_chat_id:
+                        self.send_message(self.default_chat_id, self._promo_text())
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=loop, daemon=True, name="telegram-promo-loop")
         thread.start()
 
 
