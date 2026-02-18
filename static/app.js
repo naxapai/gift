@@ -81,6 +81,12 @@ function formatPrice(v) {
   return Number(v).toFixed(2);
 }
 
+function formatTon(v, maxDecimals = 4) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  return n.toFixed(maxDecimals).replace(/\.?0+$/, "");
+}
+
 function withShare(label, share) {
   return share ? `${label} (${share})` : label;
 }
@@ -296,7 +302,7 @@ function renderChart(series) {
     const y = padTop + (i / yGridCount) * h;
     grid += `<line x1="${padLeft}" y1="${y.toFixed(1)}" x2="${(padLeft + w).toFixed(1)}" y2="${y.toFixed(1)}" stroke="#ece7fb" stroke-width="1" />`;
     const val = yMax - (i / yGridCount) * yRange;
-    yAxisLabels += `<text x="${(padLeft - 8).toFixed(1)}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#8f84ae">${val.toFixed(2)}</text>`;
+    yAxisLabels += `<text x="${(padLeft - 8).toFixed(1)}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#8f84ae">${formatTon(val, 2)}</text>`;
   }
   let xAxisLabels = "";
   for (let i = 0; i <= xGridCount; i++) {
@@ -322,7 +328,7 @@ function renderChart(series) {
     .filter((_, idx) => idx % valueStep === 0 || idx === pointsRaw.length - 1)
     .map(
       (p) => `
-        <text x="${p.x.toFixed(2)}" y="${(p.y - 9).toFixed(2)}" text-anchor="middle" font-size="10" font-weight="700" fill="#5f4aa1">${p.price.toFixed(2)}</text>
+        <text x="${p.x.toFixed(2)}" y="${(p.y - 9).toFixed(2)}" text-anchor="middle" font-size="10" font-weight="700" fill="#5f4aa1">${formatTon(p.price, 2)}</text>
       `
     )
     .join("");
@@ -382,7 +388,7 @@ function renderScreener(rows) {
       <tr>
         <td>${renderGiftNameCell(r)}</td>
         <td>${renderFavoriteButton(r.gift_id)}</td>
-        <td>${(r.price_ton ?? 0).toFixed(4)}</td>
+        <td>${formatTon(r.price_ton ?? 0)}</td>
         <td class="${clsForValue(r.change_1d)}">${formatPct(r.change_1d)}</td>
         <td class="${clsForValue(r.change_7d)}">${formatPct(r.change_7d)}</td>
         <td class="${clsForValue(r.change_30d)}">${formatPct(r.change_30d)}</td>
@@ -436,14 +442,14 @@ async function showGiftModal(giftId) {
   const p = d.profile || {};
   giftModalTitle.textContent = `${getGiftIcon(g.gift_id)} ${g.name}`;
   giftModalBody.innerHTML = `
-    <div class="modal-price-line"><strong>Цена:</strong> ${d.price_ton.toFixed(4)} TON | ${d.price_stars} ⭐</div>
+    <div class="modal-price-line"><strong>Цена:</strong> ${formatTon(d.price_ton)} TON | ${d.price_stars} ⭐</div>
     <div><strong>Группа:</strong> ${g.group} | <strong>Сигнал:</strong> <span class="tag ${g.signal}">${g.signal}</span></div>
     <div class="modal-grid">
       <div class="modal-kpi"><div class="label">Модель</div><div class="value">${withShare(p.model || "-", p.model_share)}</div></div>
       <div class="modal-kpi"><div class="label">Узор</div><div class="value">${withShare(p.pattern || "-", p.pattern_share)}</div></div>
       <div class="modal-kpi"><div class="label">Фон</div><div class="value">${withShare(p.background || "-", p.background_share)}</div></div>
       <div class="modal-kpi"><div class="label">Наличие</div><div class="value">${p.issued ?? "-"} / ${p.total_supply ?? "-"}</div></div>
-      <div class="modal-kpi"><div class="label">Ценность</div><div class="value">${p.value_ton_estimate ? `~${Number(p.value_ton_estimate).toFixed(4)} TON` : p.value_rub_estimate ? `~${Number(p.value_rub_estimate).toFixed(2)} ₽` : `${p.value_score ?? "-"} / 100`}</div></div>
+      <div class="modal-kpi"><div class="label">Ценность</div><div class="value">${p.value_ton_estimate ? `~${formatTon(p.value_ton_estimate)} TON` : p.value_rub_estimate ? `~${Number(p.value_rub_estimate).toFixed(2)} ₽` : `${p.value_score ?? "-"} / 100`}</div></div>
       <div class="modal-kpi"><div class="label">Изм. 1д</div><div class="value ${clsForValue(g.change_1d)}">${formatPct(g.change_1d)}</div></div>
       <div class="modal-kpi"><div class="label">Изм. 7д</div><div class="value ${clsForValue(g.change_7d)}">${formatPct(g.change_7d)}</div></div>
       <div class="modal-kpi"><div class="label">Изм. 30д</div><div class="value ${clsForValue(g.change_30d)}">${formatPct(g.change_30d)}</div></div>

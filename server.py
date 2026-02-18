@@ -496,6 +496,10 @@ class TelegramBridge:
     def _score(self, row: dict) -> float:
         return abs(row["change_7d"]) + abs(row["zscore_30d"]) * 2 + abs(row["volume_trend_7_vs_30"]) / 2
 
+    def _fmt_ton(self, value: float) -> str:
+        text = f"{float(value):.4f}".rstrip("0").rstrip(".")
+        return text or "0"
+
     def _is_alertable(self, row: dict) -> bool:
         if row["signal"] in {"BUY", "SELL"}:
             return self._score(row) >= self.min_intensity
@@ -515,7 +519,7 @@ class TelegramBridge:
             f"#аналитика\n"
             f"<b>{signal}</b> | <b>{name}</b>\n"
             f"ID: <code>{gift_id}</code>\n"
-            f"Цена: <b>{float(price_ton):.4f} TON</b>\n"
+            f"Цена: <b>{self._fmt_ton(float(price_ton))} TON</b>\n"
             f"Изм. 1д: {row['change_1d']:+.2f}% | 7д: {row['change_7d']:+.2f}% | 30д: {row['change_30d']:+.2f}%\n"
             f"D/S: {row['demand_supply_ratio']:.2f} | Объем 7/30: {row['volume_trend_7_vs_30']:+.2f}% | z: {row['zscore_30d']:+.2f}\n"
             f"{commentary}"
