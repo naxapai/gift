@@ -401,7 +401,6 @@ class TelegramBridge:
         self.default_chat_id = os.getenv("TG_CHAT_ID", "").strip()
         self.webhook_secret = os.getenv("TG_WEBHOOK_SECRET", "").strip()
         self.signal_interval_sec = int(os.getenv("BOT_SIGNAL_INTERVAL_SEC", "300"))
-        self.promo_interval_sec = int(os.getenv("BOT_PROMO_INTERVAL_SEC", "21600"))
         self.news_interval_sec = int(os.getenv("BOT_NEWS_INTERVAL_SEC", "86400"))
         self.new_gifts_check_sec = int(os.getenv("BOT_NEW_GIFTS_CHECK_SEC", "120"))
         self.min_intensity = float(os.getenv("BOT_MIN_INTENSITY", "10"))
@@ -420,7 +419,6 @@ class TelegramBridge:
             self._start_boot_messages()
             self._start_signal_loop()
             self._start_new_gifts_loop()
-            self._start_promo_loop()
             self._start_news_loop()
 
     def _api_url(self, method: str) -> str:
@@ -689,19 +687,6 @@ class TelegramBridge:
             self.send_message(self.default_chat_id, text, buy_url=buy_url)
         self.known_gift_ids = current_ids
 
-    def _promo_text(self) -> str:
-        url = "https://telegram-gifts-market.onrender.com"
-        return (
-            "🎁 Telegram Gifts Market Analytics — аналитика, которая экономит время и деньги.\n"
-            "✅ Что внутри:\n"
-            "📈 тренды и импульсы рынка\n"
-            "💰 цены, объемы, лидеры роста\n"
-            "🧊 ликвидность и “что реально продаётся”\n"
-            "🧠 разборы — почему растёт/падает\n"
-            "⚡️ быстрые апдейты без воды\n"
-            f"Если ты собираешь, торгуешь или просто хочешь понимать рынок — <a href=\"{url}\">тебе сюда</a>."
-        )
-
     def _news_text(self) -> str:
         summary = self.state.summary()
         rows = self.state.screener()
@@ -763,19 +748,6 @@ class TelegramBridge:
         thread = threading.Thread(target=loop, daemon=True, name="telegram-new-gifts-loop")
         thread.start()
 
-    def _start_promo_loop(self) -> None:
-        def loop() -> None:
-            while True:
-                time.sleep(self.promo_interval_sec)
-                try:
-                    if self.default_chat_id:
-                        self.send_message(self.default_chat_id, self._promo_text())
-                except Exception:
-                    pass
-
-        thread = threading.Thread(target=loop, daemon=True, name="telegram-promo-loop")
-        thread.start()
-
     def _start_news_loop(self) -> None:
         def loop() -> None:
             while True:
@@ -809,10 +781,6 @@ class TelegramBridge:
                         f"ID: <code>{escape(str(item.get('gift_id') or ''))}</code>"
                     )
                     self.send_message(self.default_chat_id, text, buy_url=buy_url)
-            except Exception:
-                pass
-            try:
-                self.send_message(self.default_chat_id, self._promo_text())
             except Exception:
                 pass
 
