@@ -520,6 +520,10 @@ class TelegramBridge:
         return text or "0"
 
     def _is_alertable(self, row: dict) -> bool:
+        statuses = row.get("market_statuses") or {}
+        has_active = int(statuses.get("sale", 0)) > 0 or int(statuses.get("auction", 0)) > 0
+        if not has_active:
+            return False
         if row["signal"] in {"BUY", "SELL"}:
             return self._score(row) >= self.min_intensity
         if row["signal"] == "ANOMALY":

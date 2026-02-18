@@ -360,6 +360,13 @@ def _fragment_parse_collections(html: str) -> List[dict]:
 
 def _fragment_parse_item_cards(html: str) -> List[dict]:
     cards: List[dict] = []
+    status_map = {
+        "sold": "sold",
+        "for sale": "sale",
+        "sale": "sale",
+        "on auction": "auction",
+        "auction": "auction",
+    }
     pattern = re.compile(
         r'<a href="/gift/(?P<gift_id>[a-z0-9\-]+)(?:\?[^"]*)?" class="tm-grid-item">.*?'
         r'<time datetime="(?P<dt>[^"]+)"[^>]*>.*?</time>.*?'
@@ -369,12 +376,13 @@ def _fragment_parse_item_cards(html: str) -> List[dict]:
     )
     for m in pattern.finditer(html):
         try:
+            raw_status = _clean_fragment_text(m.group("status")).lower()
             cards.append(
                 {
                     "gift_id": _clean_fragment_text(m.group("gift_id")),
                     "datetime": _clean_fragment_text(m.group("dt")),
                     "price_ton": float(_clean_fragment_text(m.group("price"))),
-                    "status": _clean_fragment_text(m.group("status")),
+                    "status": status_map.get(raw_status, raw_status),
                 }
             )
         except ValueError:
@@ -637,6 +645,9 @@ def fetch_verified_dataset_from_fragment(
                         per_lot[st] = per_lot.get(st, 0) + 1
 
                 for lot_id, ev in lot_latest.items():
+                    latest_status = str(ev.get("status") or "").strip().lower()
+                    if latest_status == "sold":
+                        continue
                     lot_price = float(ev.get("price_ton") or 0.0)
                     if lot_price <= 0:
                         continue
