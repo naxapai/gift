@@ -328,16 +328,21 @@ class AppState:
         return self.verified_only and os.getenv("VERIFIED_SOURCE", "file").strip().lower() == "fragment"
 
     def _load_initial_dataset(self) -> dict:
-        if self.verified_only and os.getenv("VERIFIED_SOURCE", "file").strip().lower() == "fragment":
-            use_cache = os.getenv("FRAGMENT_BOOTSTRAP_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
-            cache_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
-            if use_cache:
-                try:
-                    return load_verified_dataset(cache_path)
-                except Exception:
-                    pass
         if self.verified_only:
-            return load_verified_dataset_source()
+            if os.getenv("VERIFIED_SOURCE", "file").strip().lower() == "fragment":
+                use_cache = os.getenv("FRAGMENT_BOOTSTRAP_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
+                cache_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
+                if use_cache:
+                    try:
+                        return load_verified_dataset(cache_path)
+                    except Exception:
+                        pass
+                # Non-blocking start: serve health/UI while verified data loads in background.
+                return {"generated_at": "", "gifts": []}
+            try:
+                return load_verified_dataset_source()
+            except Exception:
+                return {"generated_at": "", "gifts": []}
         return load_dataset()
 
     def _start_verified_reload_loop(self) -> None:
