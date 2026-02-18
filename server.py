@@ -405,7 +405,13 @@ class TelegramBridge:
         self.news_interval_sec = int(os.getenv("BOT_NEWS_INTERVAL_SEC", "86400"))
         self.new_gifts_check_sec = int(os.getenv("BOT_NEW_GIFTS_CHECK_SEC", "120"))
         self.min_intensity = float(os.getenv("BOT_MIN_INTENSITY", "10"))
+        self.min_price_delta_pct = float(os.getenv("BOT_MIN_PRICE_DELTA_PCT", "1.5"))
+        self.min_change_delta = float(os.getenv("BOT_MIN_CHANGE_DELTA", "0.5"))
+        self.min_zscore_delta = float(os.getenv("BOT_MIN_ZSCORE_DELTA", "0.4"))
+        self.min_volume_trend_delta = float(os.getenv("BOT_MIN_VOLUME_TREND_DELTA", "5"))
+        self.min_resend_hours = float(os.getenv("BOT_MIN_RESEND_HOURS", "12"))
         self.sent_cache: set[str] = set()
+        self.last_sent_stats: dict[str, dict] = {}
         self.photo_cache: dict[str, str] = {}
         self.photo_cache_ts: dict[str, float] = {}
         self.known_gift_ids: set[str] = {x["gift_id"] for x in self.state.gifts_snapshot()}
@@ -519,6 +525,11 @@ class TelegramBridge:
         text = f"{float(value):.4f}".rstrip("0").rstrip(".")
         return text or "0"
 
+    def _fmt_pct(self, value: float | None) -> str:
+        if value is None:
+            return "—"
+        return f"{value:+.2f}%"
+
     def _is_alertable(self, row: dict) -> bool:
         statuses = row.get("market_statuses") or {}
         has_active = int(statuses.get("sale", 0)) > 0 or int(statuses.get("auction", 0)) > 0
@@ -529,6 +540,58 @@ class TelegramBridge:
         if row["signal"] == "ANOMALY":
             return abs(row["zscore_30d"]) >= 2.2
         return False
+
+    def _has_material_change(self, row: dict) -> bool:
+        gid = str(row.get("gift_id") or "")
+        if not gid:
+            return False
+        now = time.time()
+        prev = self.last_sent_stats.get(gid)
+        if not prev:
+            return True
+
+        last_ts = float(prev.get("ts") or 0)
+        if self.min_resend_hours > 0 and (now - last_ts) < self.min_resend_hours * 3600:
+            # Too soon to resend without strong change.
+            pass
+
+        def _get_num(val, default=0.0):
+            try:
+                return float(val)
+            except Exception:
+                return default
+
+        price = _get_num(row.get("price_ton", row.get("price")))
+        prev_price = _get_num(prev.get("price"))
+        price_delta_pct = ((price - prev_price) / prev_price * 100) if prev_price else 0.0
+
+        change_1d = _get_num(row.get("change_1d"))
+        prev_change_1d = _get_num(prev.get("change_1d"))
+        zscore = _get_num(row.get("zscore_30d"))
+        prev_zscore = _get_num(prev.get("zscore_30d"))
+        vol_trend = _get_num(row.get("volume_trend_7_vs_30"))
+        prev_vol_trend = _get_num(prev.get("volume_trend_7_vs_30"))
+
+        signal_changed = str(row.get("signal")) != str(prev.get("signal"))
+        price_changed = abs(price_delta_pct) >= self.min_price_delta_pct
+        change_changed = abs(change_1d - prev_change_1d) >= self.min_change_delta
+        zscore_changed = abs(zscore - prev_zscore) >= self.min_zscore_delta
+        vol_changed = abs(vol_trend - prev_vol_trend) >= self.min_volume_trend_delta
+
+        return signal_changed or price_changed or change_changed or zscore_changed or vol_changed
+
+    def _remember_sent(self, row: dict) -> None:
+        gid = str(row.get("gift_id") or "")
+        if not gid:
+            return
+        self.last_sent_stats[gid] = {
+            "ts": time.time(),
+            "price": float(row.get("price_ton", row.get("price", 0)) or 0),
+            "change_1d": row.get("change_1d") or 0,
+            "zscore_30d": row.get("zscore_30d") or 0,
+            "volume_trend_7_vs_30": row.get("volume_trend_7_vs_30") or 0,
+            "signal": row.get("signal"),
+        }
 
     def _format_alert(self, row: dict) -> str:
         price_ton = row.get("price_ton")
@@ -543,7 +606,7 @@ class TelegramBridge:
             f"<b>{signal}</b> | <b>{name}</b>\n"
             f"ID: <code>{gift_id}</code>\n"
             f"Цена: <b>{self._fmt_ton(float(price_ton))} TON</b>\n"
-            f"Изм. 1д: {row['change_1d']:+.2f}% | 7д: {row['change_7d']:+.2f}% | 30д: {row['change_30d']:+.2f}%\n"
+            f"Изм. 1д: {self._fmt_pct(row.get('change_1d'))} | 7д: {self._fmt_pct(row.get('change_7d'))} | 30д: {self._fmt_pct(row.get('change_30d'))}\n"
             f"D/S: {row['demand_supply_ratio']:.2f} | Объем 7/30: {row['volume_trend_7_vs_30']:+.2f}% | z: {row['zscore_30d']:+.2f}\n"
             f"{commentary}"
         )
@@ -564,7 +627,7 @@ class TelegramBridge:
             return "#аналитика\nСигналы: значимых сигналов сейчас нет."
         lines = ["#аналитика", "Топ сигналы:"]
         for r in rows:
-            lines.append(f"- [{r['signal']}] {r['name']} {r['change_7d']:+.2f}% (7д)")
+            lines.append(f"- [{r['signal']}] {r['name']} {self._fmt_pct(r.get('change_7d'))} (7д)")
         return "\n".join(lines)
 
     def handle_update(self, update: dict) -> None:
@@ -588,7 +651,7 @@ class TelegramBridge:
     def signal_cycle(self) -> None:
         if not self.default_chat_id:
             return
-        rows = [r for r in self.state.signals() if self._is_alertable(r)]
+        rows = [r for r in self.state.signals() if self._is_alertable(r) and self._has_material_change(r)]
         now_tag = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         stale = [k for k in self.sent_cache if not k.startswith(now_tag + ":")]
         for key in stale:
@@ -607,6 +670,7 @@ class TelegramBridge:
                     self.send_message(self.default_chat_id, text, buy_url=buy_url)
             else:
                 self.send_message(self.default_chat_id, text, buy_url=buy_url)
+            self._remember_sent(row)
             self.sent_cache.add(key)
 
     def _new_gifts_cycle(self) -> None:
