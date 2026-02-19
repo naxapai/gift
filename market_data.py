@@ -358,7 +358,7 @@ def _fragment_parse_collections(html: str) -> List[dict]:
     return collections
 
 
-def _fragment_parse_item_cards(html: str) -> List[dict]:
+def _fragment_parse_item_cards(html: str, default_status: str | None = None) -> List[dict]:
     cards: List[dict] = []
     status_map = {
         "sold": "sold",
@@ -366,6 +366,7 @@ def _fragment_parse_item_cards(html: str) -> List[dict]:
         "sale": "sale",
         "on auction": "auction",
         "auction": "auction",
+        "available": "sale",
     }
     pattern = re.compile(
         r'<a href="/gift/(?P<gift_id>[a-z0-9\-]+)(?:\?[^"]*)?" class="tm-grid-item">.*?'
@@ -377,12 +378,15 @@ def _fragment_parse_item_cards(html: str) -> List[dict]:
     for m in pattern.finditer(html):
         try:
             raw_status = _clean_fragment_text(m.group("status")).lower()
+            status = status_map.get(raw_status, raw_status)
+            if status not in {"sold", "sale", "auction"} and default_status:
+                status = default_status
             cards.append(
                 {
                     "gift_id": _clean_fragment_text(m.group("gift_id")),
                     "datetime": _clean_fragment_text(m.group("dt")),
                     "price_ton": float(_clean_fragment_text(m.group("price"))),
-                    "status": status_map.get(raw_status, raw_status),
+                    "status": status,
                 }
             )
         except ValueError:
@@ -536,6 +540,15 @@ def fetch_verified_dataset_from_fragment(
 
     root_html = _get_text(root_url)
     collections = _fragment_parse_collections(root_html)
+    active_only = os.getenv("FRAGMENT_ACTIVE_ONLY", "true").strip().lower() in {"1", "true", "yes", "on"}
+    if active_only:
+        sale_html = _get_text(f"{root_url}?sort=price&filter=sale")
+        auction_html = _get_text(f"{root_url}?sort=price&filter=auction")
+        sale_cols = _fragment_parse_collections(sale_html)
+        auction_cols = _fragment_parse_collections(auction_html)
+        merged = {c["slug"]: c for c in sale_cols + auction_cols}
+        # Keep stable ordering by name
+        collections = sorted(merged.values(), key=lambda x: x.get("name", ""))
     total_collections = len(collections)
     if collection_start > 0:
         collections = collections[collection_start:]
@@ -554,8 +567,44 @@ def fetch_verified_dataset_from_fragment(
 
     for collection in collections:
         slug = collection["slug"]
-        page_url = f"https://fragment.com/gifts/{slug}?sort=price"
         try:
+            def _fetch_events(filter_value: str) -> list[dict]:
+                page_url = f"https://fragment.com/gifts/{slug}?sort=price&filter={filter_value}"
+                collection_html = _get_text(page_url)
+                api_hash = _fragment_extract_api_hash(collection_html)
+                params = {
+                    "method": "searchAuctions",
+                    "type": "gifts",
+                    "collection": slug,
+                    "sort": "price",
+                    "filter": filter_value,
+                    "view": "",
+                    "query": "",
+                    "attr[Model]": "",
+                    "attr[Backdrop]": "",
+                    "attr[Symbol]": "",
+                }
+                first = _post_json(api_hash, page_url, params)
+                first_html = first.get("html") or first.get("body") or ""
+                first_foot = first.get("foot") or ""
+                events = _fragment_parse_item_cards(first_html, default_status=filter_value)
+                next_offset = _fragment_extract_next_offset(first_foot or first_html)
+
+                page_no = 1
+                while next_offset and page_no < max_pages_per_collection:
+                    page_no += 1
+                    params["offset_id"] = next_offset
+                    part = _post_json(api_hash, page_url, params)
+                    body_html = part.get("body") or part.get("html") or ""
+                    foot_html = part.get("foot") or ""
+                    if body_html:
+                        events.extend(_fragment_parse_item_cards(body_html, default_status=filter_value))
+                    next_offset = _fragment_extract_next_offset(foot_html or body_html)
+                    if not body_html:
+                        break
+                return events
+
+            page_url = f"https://fragment.com/gifts/{slug}?sort=price"
             collection_html = _get_text(page_url)
             api_hash = _fragment_extract_api_hash(collection_html)
             model_options = _fragment_parse_attribute_options(collection_html, "Model")
@@ -576,36 +625,7 @@ def fetch_verified_dataset_from_fragment(
             for item in symbol_options:
                 filter_index["symbols"][item["value"]] = filter_index["symbols"].get(item["value"], 0) + item["count"]
 
-            params = {
-                "method": "searchAuctions",
-                "type": "gifts",
-                "collection": slug,
-                "sort": "price",
-                "filter": "",
-                "view": "",
-                "query": "",
-                "attr[Model]": "",
-                "attr[Backdrop]": "",
-                "attr[Symbol]": "",
-            }
-            first = _post_json(api_hash, page_url, params)
-            first_html = first.get("html") or first.get("body") or ""
-            first_foot = first.get("foot") or ""
-            events = _fragment_parse_item_cards(first_html)
-            next_offset = _fragment_extract_next_offset(first_foot or first_html)
-
-            page_no = 1
-            while next_offset and page_no < max_pages_per_collection:
-                page_no += 1
-                params["offset_id"] = next_offset
-                part = _post_json(api_hash, page_url, params)
-                body_html = part.get("body") or part.get("html") or ""
-                foot_html = part.get("foot") or ""
-                if body_html:
-                    events.extend(_fragment_parse_item_cards(body_html))
-                next_offset = _fragment_extract_next_offset(foot_html or body_html)
-                if not body_html:
-                    break
+            events = _fetch_events("sale") + _fetch_events("auction")
 
             if not events:
                 continue
@@ -854,9 +874,25 @@ def load_verified_dataset_source() -> Dict:
             )
             save_verified_dataset(dataset, file_path)
             return dataset
-        except Exception:
+        except Exception as e:
             # Fallback to last known snapshot if live fetch failed.
-            return load_verified_dataset(file_path)
+            fallback = load_verified_dataset(file_path)
+            err = f"fragment fetch failed: {type(e).__name__}: {str(e)[:240]}"
+            try:
+                if isinstance(fallback, dict):
+                    meta = dict(fallback.get("meta") or {})
+                    meta.update(
+                        {
+                            "source_fallback": "file",
+                            "error": err,
+                            "failed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        }
+                    )
+                    fallback["meta"] = meta
+                    _save_fragment_snapshot_meta(meta)
+            except Exception:
+                pass
+            return fallback
 
     raise ValueError("VERIFIED_SOURCE must be one of: 'file', 'api', 'fragment'")
 
