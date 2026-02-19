@@ -177,7 +177,10 @@ def build_market_summary(dataset: Dict) -> Dict:
     sell_count = sum(1 for r in rows if r["signal"] == "SELL")
     anomaly_count = sum(1 for r in rows if r["signal"] == "ANOMALY")
 
-    market_state = "Рост" if avg_7d > 2 else "Падение" if avg_7d < -2 else "Боковик"
+    if avg_7d is None:
+        market_state = "Недостаточно данных"
+    else:
+        market_state = "Рост" if avg_7d > 2 else "Падение" if avg_7d < -2 else "Боковик"
 
     return {
         "generated_at": dataset.get("generated_at"),
