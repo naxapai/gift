@@ -1,7 +1,7 @@
 {
-  "url": "http://127.0.0.1:8080",
+  "url": "https://telegram-gifts-market.onrender.com",
   "name": "GiftMarketZone",
-  "iconUrl": "http://127.0.0.1:8080/assets/logo-mask.svg",
-  "termsOfUseUrl": "http://127.0.0.1:8080/index.html",
-  "privacyPolicyUrl": "http://127.0.0.1:8080/index.html"
+  "iconUrl": "https://telegram-gifts-market.onrender.com/assets/logo-mask.svg",
+  "termsOfUseUrl": "https://telegram-gifts-market.onrender.com/index.html",
+  "privacyPolicyUrl": "https://telegram-gifts-market.onrender.com/index.html"
 }
