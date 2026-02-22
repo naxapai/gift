@@ -65,6 +65,9 @@ const state = {
     botUsername: "",
     user: null,
     webappLoginTried: false,
+    webappDetected: false,
+    webappAutoLoginInFlight: false,
+    webappRetryTimer: null,
   },
   ton: {
     required: false,
@@ -376,6 +379,7 @@ function renderAuthUi() {
   const isLoggedIn = Boolean(state.auth.authenticated && state.auth.user);
   const mustLogin = Boolean(state.auth.required && !isLoggedIn);
   const authEnabled = Boolean(state.auth.enabled);
+  const webAppMode = Boolean(state.auth.webappDetected);
 
   if (isLoggedIn) {
     el.authUser.textContent = authDisplayName(state.auth.user);
@@ -391,7 +395,11 @@ function renderAuthUi() {
   el.authLogoutBtn.classList.add("hidden");
   el.telegramLoginWrap.classList.add("hidden");
   if (authEnabled) {
-    renderTelegramWidget(el.authGateLoginWrap);
+    if (!webAppMode) {
+      renderTelegramWidget(el.authGateLoginWrap);
+    } else {
+      el.authGateLoginWrap.innerHTML = `<div class="muted small">Авторизация внутри Telegram…</div>`;
+    }
   } else {
     const msg = "Telegram Auth не настроен на сервере (TELEGRAM_BOT_TOKEN / TELEGRAM_BOT_USERNAME).";
     el.telegramLoginWrap.innerHTML = "";
@@ -443,12 +451,18 @@ async function initAuth() {
 }
 
 async function tryTelegramWebAppLogin() {
-  if (state.auth.webappLoginTried) return false;
-  state.auth.webappLoginTried = true;
+  if (state.auth.webappAutoLoginInFlight) return false;
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
   if (!tg) return false;
+  state.auth.webappDetected = true;
+  if (typeof tg.ready === "function") {
+    try {
+      tg.ready();
+    } catch (_e) {}
+  }
   const initData = String(tg.initData || "").trim();
   if (!initData) return false;
+  state.auth.webappAutoLoginInFlight = true;
   try {
     await fetchJson("/api/auth/telegram/webapp-login", {
       method: "POST",
@@ -456,12 +470,44 @@ async function tryTelegramWebAppLogin() {
       body: JSON.stringify({ init_data: initData }),
       cache: "no-store",
     });
+    state.auth.webappLoginTried = true;
     await refreshAuthMe();
     renderAuthUi();
+    state.auth.webappAutoLoginInFlight = false;
     return true;
   } catch (e) {
+    state.auth.webappAutoLoginInFlight = false;
     return false;
   }
+}
+
+function scheduleWebAppAuthRetry() {
+  if (!state.auth.webappDetected) return;
+  if (state.auth.webappRetryTimer) return;
+  let attempts = 0;
+  const maxAttempts = 20;
+  state.auth.webappRetryTimer = setInterval(async () => {
+    if (!state.auth.required || state.auth.authenticated) {
+      clearInterval(state.auth.webappRetryTimer);
+      state.auth.webappRetryTimer = null;
+      return;
+    }
+    attempts += 1;
+    const ok = await tryTelegramWebAppLogin();
+    if (ok || attempts >= maxAttempts) {
+      clearInterval(state.auth.webappRetryTimer);
+      state.auth.webappRetryTimer = null;
+      if (!ok && state.auth.required && !state.auth.authenticated) {
+        el.authGateLoginWrap.innerHTML = `<button id="webappRetryBtn" class="btn secondary">Повторить вход в Telegram</button>`;
+        const btn = document.getElementById("webappRetryBtn");
+        if (btn) btn.addEventListener("click", async () => {
+          el.authGateLoginWrap.innerHTML = `<div class="muted small">Авторизация внутри Telegram…</div>`;
+          state.auth.webappLoginTried = false;
+          scheduleWebAppAuthRetry();
+        }, { once: true });
+      }
+    }
+  }, 400);
 }
 
 window.onTelegramAuth = async function onTelegramAuth(user) {
@@ -1870,8 +1916,11 @@ function startAutoSync() {
 async function bootstrap() {
   bindEvents();
   const tonInitPromise = initTonAuth();
-  await tryTelegramWebAppLogin();
+  const webAppPreAuth = await tryTelegramWebAppLogin();
   const ready = await initAuth();
+  if (!webAppPreAuth) {
+    scheduleWebAppAuthRetry();
+  }
   const url = new URL(window.location.href);
   const authState = url.searchParams.get("auth");
   if (authState === "telegram_failed") {
