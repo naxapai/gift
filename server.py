@@ -435,6 +435,15 @@ def _safe_send_error(handler: BaseHTTPRequestHandler, code: int) -> None:
         return
 
 
+def _redirect(handler: BaseHTTPRequestHandler, location: str, *, set_cookies: list[str] | None = None) -> None:
+    handler.send_response(HTTPStatus.FOUND)
+    handler.send_header("Location", location)
+    _add_security_headers(handler)
+    for cookie in set_cookies or []:
+        handler.send_header("Set-Cookie", cookie)
+    handler.end_headers()
+
+
 def _serve_file(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
     rel = rel_path.lstrip("/")
     target = (STATIC_DIR / rel).resolve()
@@ -535,6 +544,25 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "user": user,
                 },
                 cache_control="no-store",
+            )
+            return
+
+        if path == "/api/auth/telegram/callback":
+            params = parse_qs(parsed.query)
+            payload = {k: (v[0] if isinstance(v, list) and v else "") for k, v in params.items()}
+            ok, reason, user = AUTH.verify_telegram_payload(payload)
+            if not ok or not user:
+                _redirect(
+                    self,
+                    f"/index.html?auth=telegram_failed&reason={reason}#overview",
+                    set_cookies=[_build_clear_session_cookie(self)],
+                )
+                return
+            session = AUTH.create_session(user)
+            _redirect(
+                self,
+                "/index.html?auth=telegram_ok#overview",
+                set_cookies=[_build_session_cookie(self, session["sid"], AUTH_SESSION_TTL_SEC)],
             )
             return
 

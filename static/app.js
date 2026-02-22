@@ -348,7 +348,7 @@ function renderTelegramWidget(container) {
   script.setAttribute("data-radius", "8");
   script.setAttribute("data-userpic", "false");
   script.setAttribute("data-request-access", "write");
-  script.setAttribute("data-onauth", "onTelegramAuth(user)");
+  script.setAttribute("data-auth-url", `${window.location.origin}/api/auth/telegram/callback`);
   container.appendChild(script);
 }
 
@@ -1821,6 +1821,19 @@ async function bootstrap() {
   bindEvents();
   await initTonAuth();
   const ready = await initAuth();
+  const url = new URL(window.location.href);
+  const authState = url.searchParams.get("auth");
+  if (authState === "telegram_failed") {
+    const reason = url.searchParams.get("reason") || "unknown";
+    showToast(`Ошибка входа Telegram: ${reason}`);
+  }
+  if (authState) {
+    url.searchParams.delete("auth");
+    url.searchParams.delete("reason");
+    history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    await refreshAuthMe();
+    renderAuthUi();
+  }
   if (ready) {
     await loadAll();
     startAutoSync();
