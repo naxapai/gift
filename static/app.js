@@ -338,8 +338,19 @@ function setAuthLocked(locked, text = "") {
 
 function renderTelegramWidget(container) {
   if (!container) return;
+  if (container.querySelector("iframe")) return;
   container.innerHTML = "";
   if (!state.auth.enabled || !state.auth.botUsername) return;
+
+  const callbackUrl = `${window.location.origin}/api/auth/telegram/callback`;
+  const renderIframeFallback = () => {
+    if (container.querySelector("iframe")) return;
+    const origin = encodeURIComponent(window.location.origin);
+    const authUrl = encodeURIComponent(callbackUrl);
+    const src = `https://oauth.telegram.org/embed/${encodeURIComponent(state.auth.botUsername)}?origin=${origin}&request_access=write&size=large&userpic=false&auth_url=${authUrl}`;
+    container.innerHTML = `<iframe src="${src}" width="238" height="52" frameborder="0" scrolling="no" title="Telegram Login"></iframe>`;
+  };
+
   const script = document.createElement("script");
   script.async = true;
   script.src = "https://telegram.org/js/telegram-widget.js?22";
@@ -348,8 +359,16 @@ function renderTelegramWidget(container) {
   script.setAttribute("data-radius", "8");
   script.setAttribute("data-userpic", "false");
   script.setAttribute("data-request-access", "write");
-  script.setAttribute("data-auth-url", `${window.location.origin}/api/auth/telegram/callback`);
+  script.setAttribute("data-auth-url", callbackUrl);
+  script.onerror = () => renderIframeFallback();
   container.appendChild(script);
+
+  // Safari/adblock fallback: if script loaded but button iframe wasn't injected.
+  setTimeout(() => {
+    if (!container.querySelector("iframe")) {
+      renderIframeFallback();
+    }
+  }, 1200);
 }
 
 function renderAuthUi() {

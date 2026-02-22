@@ -111,10 +111,24 @@ button {
 .telegram-login-wrap {
   display: inline-flex;
   align-items: center;
+  min-height: 52px;
 }
 
 .telegram-login-wrap iframe {
   border: 0;
+}
+
+.tg-widget-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 0 14px;
+  border-radius: 8px;
+  text-decoration: none;
+  background: #2aabee;
+  color: #fff;
+  font-weight: 700;
 }
 
 .auth-gate {
