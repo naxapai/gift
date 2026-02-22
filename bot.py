@@ -18,6 +18,7 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
 HTTP_TIMEOUT_SEC = int(os.getenv("BOT_HTTP_TIMEOUT_SEC", "90"))
 HTTP_RETRIES = int(os.getenv("BOT_HTTP_RETRIES", "3"))
 HTTP_BACKOFF_SEC = float(os.getenv("BOT_HTTP_BACKOFF_SEC", "1.5"))
+API_WARMUP_MAX_SEC = int(os.getenv("BOT_API_WARMUP_MAX_SEC", "120"))
 POLL_INTERVAL_SEC = int(os.getenv("BOT_POLL_INTERVAL", "300"))
 MIN_CONFIDENCE = int(os.getenv("BOT_MIN_CONFIDENCE", "60"))
 DYNAMICS_PCT = float(os.getenv("BOT_DYNAMICS_PCT", "5"))
@@ -39,6 +40,8 @@ def _http_get(url: str) -> Dict:
                 return json.loads(response.read().decode("utf-8"))
         except Exception as e:  # noqa: BLE001
             last_error = e
+            if isinstance(e, urllib.error.HTTPError) and e.code in {400, 401, 403, 404}:
+                break
             if attempt >= max(1, HTTP_RETRIES):
                 break
             time.sleep(HTTP_BACKOFF_SEC * attempt)
@@ -150,8 +153,30 @@ def _signal_fingerprint(item: Dict) -> str:
     return "|".join(parts)
 
 
+def _wait_api_ready() -> None:
+    started = time.time()
+    while True:
+        try:
+            _http_get(f"{API_BASE_URL}/healthz")
+            return
+        except Exception:
+            if time.time() - started >= API_WARMUP_MAX_SEC:
+                return
+            time.sleep(2)
+
+
 def cycle(cache: Dict) -> None:
-    resp = _http_get(f"{API_BASE_URL}/api/recommendations?scope=all&entity=variant&ai=1")
+    _wait_api_ready()
+    try:
+        resp = _http_get(f"{API_BASE_URL}/api/recommendations?scope=all&entity=variant&ai=1")
+    except Exception as e:
+        # Fallback path for Render cold starts / heavy AI pipeline windows.
+        if isinstance(e, TimeoutError) or (
+            isinstance(e, urllib.error.HTTPError) and e.code in {502, 503, 504}
+        ):
+            resp = _http_get(f"{API_BASE_URL}/api/recommendations?scope=all&entity=variant&ai=0")
+        else:
+            raise
     items = sorted(resp.get("items") or [], key=lambda x: float(x.get("confidence", 0) or 0), reverse=True)
     now_tag = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     now_ts = int(time.time())
