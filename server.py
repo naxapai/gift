@@ -514,9 +514,29 @@ def _tonconnect_manifest(handler: BaseHTTPRequestHandler) -> None:
 
 
 class RequestHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path == "/api/auth/bootstrap":
+            user = _auth_user_from_request(self)
+            _json_response(
+                self,
+                {
+                    "ok": True,
+                    "required": AUTH_REQUIRED,
+                    "enabled": AUTH.enabled(),
+                    "bot_username": TELEGRAM_BOT_USERNAME,
+                    "session_ttl_sec": AUTH_SESSION_TTL_SEC,
+                    "max_auth_age_sec": TELEGRAM_AUTH_MAX_AGE_SEC,
+                    "authenticated": bool(user),
+                    "user": user,
+                },
+                cache_control="no-store",
+            )
+            return
 
         if path == "/tonconnect-manifest.json":
             _tonconnect_manifest(self)

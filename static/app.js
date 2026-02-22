@@ -369,13 +369,12 @@ function renderAuthUi() {
 
   el.authUser.classList.add("hidden");
   el.authLogoutBtn.classList.add("hidden");
-  el.telegramLoginWrap.classList.remove("hidden");
+  el.telegramLoginWrap.classList.add("hidden");
   if (authEnabled) {
-    renderTelegramWidget(el.telegramLoginWrap);
     renderTelegramWidget(el.authGateLoginWrap);
   } else {
     const msg = "Telegram Auth не настроен на сервере (TELEGRAM_BOT_TOKEN / TELEGRAM_BOT_USERNAME).";
-    el.telegramLoginWrap.innerHTML = `<span class="muted small">${msg}</span>`;
+    el.telegramLoginWrap.innerHTML = "";
     el.authGateLoginWrap.innerHTML = `<span class="muted small">${msg}</span>`;
   }
   if (mustLogin) {
@@ -400,16 +399,25 @@ async function refreshAuthMe() {
 
 async function initAuth() {
   try {
-    const cfg = await fetchJson("/api/auth/config", { cache: "no-store" });
-    state.auth.required = Boolean(cfg.required);
-    state.auth.enabled = Boolean(cfg.enabled);
-    state.auth.botUsername = String(cfg.bot_username || "").trim();
+    const boot = await fetchJson("/api/auth/bootstrap", { cache: "no-store" });
+    state.auth.required = Boolean(boot.required);
+    state.auth.enabled = Boolean(boot.enabled);
+    state.auth.botUsername = String(boot.bot_username || "").trim();
+    state.auth.authenticated = Boolean(boot.authenticated);
+    state.auth.user = boot.user || null;
   } catch (e) {
-    state.auth.required = true;
-    state.auth.enabled = false;
-    state.auth.botUsername = "";
+    try {
+      const cfg = await fetchJson("/api/auth/config", { cache: "no-store" });
+      state.auth.required = Boolean(cfg.required);
+      state.auth.enabled = Boolean(cfg.enabled);
+      state.auth.botUsername = String(cfg.bot_username || "").trim();
+      await refreshAuthMe();
+    } catch (_e) {
+      state.auth.required = true;
+      state.auth.enabled = false;
+      state.auth.botUsername = "";
+    }
   }
-  await refreshAuthMe();
   renderAuthUi();
   return !state.auth.required || state.auth.authenticated;
 }
@@ -1819,7 +1827,7 @@ function startAutoSync() {
 
 async function bootstrap() {
   bindEvents();
-  await initTonAuth();
+  const tonInitPromise = initTonAuth();
   const ready = await initAuth();
   const url = new URL(window.location.href);
   const authState = url.searchParams.get("auth");
@@ -1838,6 +1846,7 @@ async function bootstrap() {
     await loadAll();
     startAutoSync();
   }
+  await tonInitPromise;
 }
 
 bootstrap();
