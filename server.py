@@ -22,6 +22,7 @@ STATE = GiftAnalyticsService()
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "true").strip().lower() in {"1", "true", "yes", "on"}
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
+API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
 AUTH_SESSION_TTL_SEC = max(300, int(os.getenv("AUTH_SESSION_TTL_SEC", "86400")))
 TELEGRAM_AUTH_MAX_AGE_SEC = max(30, int(os.getenv("TELEGRAM_AUTH_MAX_AGE_SEC", "300")))
 SESSION_COOKIE_NAME = os.getenv("AUTH_SESSION_COOKIE", "gmz_session").strip() or "gmz_session"
@@ -393,6 +394,10 @@ def _validate_ton_verify_payload(handler: BaseHTTPRequestHandler, payload: dict)
 def _require_auth(handler: BaseHTTPRequestHandler) -> dict | None:
     if not AUTH_REQUIRED:
         return {"id": 0, "username": "", "first_name": "", "last_name": "", "photo_url": ""}
+    if API_AUTH_TOKEN:
+        auth_header = (handler.headers.get("Authorization", "") or "").strip()
+        if auth_header == f"Bearer {API_AUTH_TOKEN}":
+            return {"id": -1, "username": "service", "first_name": "Service", "last_name": "", "photo_url": ""}
     user = _auth_user_from_request(handler)
     if user:
         return user

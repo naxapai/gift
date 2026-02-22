@@ -14,6 +14,7 @@ from typing import Dict
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TG_CHAT_ID", "").strip()
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8080").strip()
+API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
 POLL_INTERVAL_SEC = int(os.getenv("BOT_POLL_INTERVAL", "300"))
 MIN_CONFIDENCE = int(os.getenv("BOT_MIN_CONFIDENCE", "60"))
 DYNAMICS_PCT = float(os.getenv("BOT_DYNAMICS_PCT", "5"))
@@ -26,6 +27,8 @@ MAX_MESSAGES_PER_CYCLE = int(os.getenv("BOT_MAX_MESSAGES_PER_CYCLE", "8"))
 def _http_get(url: str) -> Dict:
     req = urllib.request.Request(url, method="GET")
     req.add_header("Accept", "application/json")
+    if API_AUTH_TOKEN:
+        req.add_header("Authorization", f"Bearer {API_AUTH_TOKEN}")
     with urllib.request.urlopen(req, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
