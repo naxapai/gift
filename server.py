@@ -17,7 +17,18 @@ from core import GiftAnalyticsService
 ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
 
-STATE = GiftAnalyticsService()
+_STATE: GiftAnalyticsService | None = None
+_STATE_LOCK = threading.Lock()
+
+
+def _state() -> GiftAnalyticsService:
+    global _STATE
+    if _STATE is not None:
+        return _STATE
+    with _STATE_LOCK:
+        if _STATE is None:
+            _STATE = GiftAnalyticsService()
+    return _STATE
 
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "true").strip().lower() in {"1", "true", "yes", "on"}
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -691,26 +702,27 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
         if path == "/api/rates/stars":
-            _json_response(self, STATE.stars_rate())
+            _json_response(self, _state().stars_rate())
             return
 
         if path == "/api/ai/status":
             params = parse_qs(parsed.query)
             probe = ((params.get("probe") or ["0"])[0]).strip().lower() in {"1", "true", "yes", "on"}
-            _json_response(self, STATE.ai_status(probe=probe))
+            _json_response(self, _state().ai_status(probe=probe))
             return
 
         if path == "/api/market/overview":
-            _json_response(self, STATE.market_overview())
+            _json_response(self, _state().market_overview())
             return
 
         if path == "/api/bases":
-            _json_response(self, {"items": STATE.list_bases(), "stars_rate": STATE.stars_rate()})
+            svc = _state()
+            _json_response(self, {"items": svc.list_bases(), "stars_rate": svc.stars_rate()})
             return
 
         if path.startswith("/api/bases/") and path.count("/") == 3:
             base_id = unquote(path.split("/")[-1])
-            base = STATE.get_base(base_id)
+            base = _state().get_base(base_id)
             if not base:
                 _safe_send_error(self, HTTPStatus.NOT_FOUND)
                 return
@@ -722,8 +734,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             dim_type = (params.get("type") or ["model"])[0]
             period = (params.get("period") or ["24h"])[0]
-            data = STATE.list_dimensions(base_id, dim_type, period)
-            data["stars_rate"] = STATE.stars_rate()
+            svc = _state()
+            data = svc.list_dimensions(base_id, dim_type, period)
+            data["stars_rate"] = svc.stars_rate()
             _json_response(self, data)
             return
 
@@ -739,7 +752,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "background_id": params.get("background_id") or [],
                 "pattern_id": params.get("pattern_id") or [],
             }
-            data = STATE.list_variants(
+            svc = _state()
+            data = svc.list_variants(
                 base_id=base_id,
                 filters=filters,
                 sort=sort,
@@ -747,13 +761,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 page_size=page_size,
                 include_ai=include_ai,
             )
-            data["stars_rate"] = STATE.stars_rate()
+            data["stars_rate"] = svc.stars_rate()
             _json_response(self, data)
             return
 
         if path.startswith("/api/variants/") and path.count("/") == 3:
             variant_id = unquote(path.split("/")[-1])
-            data = STATE.get_variant(variant_id)
+            data = _state().get_variant(variant_id)
             if not data:
                 _json_response(
                     self,
@@ -770,7 +784,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/variants/") and path.endswith("/listings"):
             variant_id = unquote(path.split("/")[3])
-            data = STATE.list_variant_listings(variant_id)
+            data = _state().list_variant_listings(variant_id)
             _json_response(self, data)
             return
 
@@ -779,7 +793,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             metric = (params.get("metric") or ["floor"])[0]
             period = (params.get("period") or ["24h"])[0]
-            data = STATE.list_variant_timeseries(variant_id, metric, period)
+            data = _state().list_variant_timeseries(variant_id, metric, period)
             _json_response(self, data)
             return
 
@@ -790,7 +804,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             period = (params.get("period") or ["24h"])[0]
             metric_type = (params.get("type") or ["price"])[0]
             include_ai = ((params.get("ai") or ["0"])[0]).strip().lower() in {"1", "true", "yes", "on"}
-            data = STATE.screeners(screener, entity, period, metric_type, include_ai=include_ai)
+            data = _state().screeners(screener, entity, period, metric_type, include_ai=include_ai)
             _json_response(self, data)
             return
 
@@ -799,12 +813,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             scope = (params.get("scope") or ["all"])[0]
             entity = (params.get("entity") or ["variant"])[0]
             include_ai = ((params.get("ai") or ["0"])[0]).strip().lower() in {"1", "true", "yes", "on"}
-            data = STATE.recommendations(scope, entity, include_ai=include_ai)
+            data = _state().recommendations(scope, entity, include_ai=include_ai)
             _json_response(self, data)
             return
 
         if path == "/api/alerts":
-            _json_response(self, {"items": STATE.alerts_list()})
+            _json_response(self, {"items": _state().alerts_list()})
             return
 
         _safe_send_error(self, HTTPStatus.NOT_FOUND)
@@ -917,12 +931,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
         if parsed.path == "/api/admin/refresh":
-            threading.Thread(target=STATE.ingest_safe, daemon=True).start()
+            threading.Thread(target=lambda: _state().ingest_safe(), daemon=True).start()
             _json_response(self, {"ok": True, "message": "refresh started"})
             return
         if parsed.path == "/api/alerts":
             rule = _read_json_body(self)
-            _json_response(self, STATE.alerts_create(rule), status=201)
+            _json_response(self, _state().alerts_create(rule), status=201)
             return
         _safe_send_error(self, HTTPStatus.NOT_FOUND)
 
@@ -934,7 +948,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/alerts/"):
             alert_id = parsed.path.split("/")[-1]
             rule = _read_json_body(self)
-            updated = STATE.alerts_update(alert_id, rule)
+            updated = _state().alerts_update(alert_id, rule)
             if not updated:
                 _safe_send_error(self, HTTPStatus.NOT_FOUND)
                 return
@@ -949,7 +963,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
         if parsed.path.startswith("/api/alerts/"):
             alert_id = parsed.path.split("/")[-1]
-            ok = STATE.alerts_delete(alert_id)
+            ok = _state().alerts_delete(alert_id)
             if not ok:
                 _safe_send_error(self, HTTPStatus.NOT_FOUND)
                 return
@@ -965,6 +979,8 @@ def run() -> None:
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8091"))
     server = ThreadingHTTPServer((host, port), RequestHandler)
+    # Warm-up analytics state in background: healthcheck becomes fast while data stack initializes.
+    threading.Thread(target=_state, daemon=True, name="state-warmup").start()
     print(f"Server started on http://{host}:{port}")
     server.serve_forever()
 
