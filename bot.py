@@ -15,6 +15,9 @@ BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TG_CHAT_ID", "").strip()
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8080").strip()
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
+HTTP_TIMEOUT_SEC = int(os.getenv("BOT_HTTP_TIMEOUT_SEC", "90"))
+HTTP_RETRIES = int(os.getenv("BOT_HTTP_RETRIES", "3"))
+HTTP_BACKOFF_SEC = float(os.getenv("BOT_HTTP_BACKOFF_SEC", "1.5"))
 POLL_INTERVAL_SEC = int(os.getenv("BOT_POLL_INTERVAL", "300"))
 MIN_CONFIDENCE = int(os.getenv("BOT_MIN_CONFIDENCE", "60"))
 DYNAMICS_PCT = float(os.getenv("BOT_DYNAMICS_PCT", "5"))
@@ -25,20 +28,38 @@ MAX_MESSAGES_PER_CYCLE = int(os.getenv("BOT_MAX_MESSAGES_PER_CYCLE", "8"))
 
 
 def _http_get(url: str) -> Dict:
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("Accept", "application/json")
-    if API_AUTH_TOKEN:
-        req.add_header("Authorization", f"Bearer {API_AUTH_TOKEN}")
-    with urllib.request.urlopen(req, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    last_error = None
+    for attempt in range(1, max(1, HTTP_RETRIES) + 1):
+        try:
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("Accept", "application/json")
+            if API_AUTH_TOKEN:
+                req.add_header("Authorization", f"Bearer {API_AUTH_TOKEN}")
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            if attempt >= max(1, HTTP_RETRIES):
+                break
+            time.sleep(HTTP_BACKOFF_SEC * attempt)
+    raise last_error
 
 
 def _http_post(url: str, data: Dict[str, str]) -> Dict:
-    payload = urllib.parse.urlencode(data).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, method="POST")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    with urllib.request.urlopen(req, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    last_error = None
+    for attempt in range(1, max(1, HTTP_RETRIES) + 1):
+        try:
+            payload = urllib.parse.urlencode(data).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            if attempt >= max(1, HTTP_RETRIES):
+                break
+            time.sleep(HTTP_BACKOFF_SEC * attempt)
+    raise last_error
 
 
 def send_message(text: str) -> None:
