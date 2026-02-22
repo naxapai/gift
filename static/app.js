@@ -64,6 +64,7 @@ const state = {
     authenticated: false,
     botUsername: "",
     user: null,
+    webappLoginTried: false,
   },
   ton: {
     required: false,
@@ -439,6 +440,28 @@ async function initAuth() {
   }
   renderAuthUi();
   return !state.auth.required || state.auth.authenticated;
+}
+
+async function tryTelegramWebAppLogin() {
+  if (state.auth.webappLoginTried) return false;
+  state.auth.webappLoginTried = true;
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  if (!tg) return false;
+  const initData = String(tg.initData || "").trim();
+  if (!initData) return false;
+  try {
+    await fetchJson("/api/auth/telegram/webapp-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ init_data: initData }),
+      cache: "no-store",
+    });
+    await refreshAuthMe();
+    renderAuthUi();
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 window.onTelegramAuth = async function onTelegramAuth(user) {
@@ -1847,6 +1870,7 @@ function startAutoSync() {
 async function bootstrap() {
   bindEvents();
   const tonInitPromise = initTonAuth();
+  await tryTelegramWebAppLogin();
   const ready = await initAuth();
   const url = new URL(window.location.href);
   const authState = url.searchParams.get("auth");

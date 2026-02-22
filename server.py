@@ -95,6 +95,62 @@ class AuthStore:
         }
         return True, "ok", user
 
+    def verify_telegram_webapp_init_data(self, init_data_raw: str) -> tuple[bool, str, dict | None]:
+        if not self.enabled():
+            return False, "telegram_auth_not_configured", None
+        raw = str(init_data_raw or "").strip()
+        if not raw:
+            return False, "empty_init_data", None
+        params = parse_qs(raw, keep_blank_values=True)
+        flat: dict[str, str] = {}
+        for k, v in params.items():
+            flat[k] = v[0] if isinstance(v, list) and v else ""
+        recv_hash = str(flat.get("hash", "")).strip()
+        if not recv_hash:
+            return False, "missing_hash", None
+        check_lines: list[str] = []
+        for key in sorted(flat.keys()):
+            if key == "hash":
+                continue
+            check_lines.append(f"{key}={flat.get(key, '')}")
+        data_check_string = "\n".join(check_lines)
+        secret_key = hmac.new(b"WebAppData", TELEGRAM_BOT_TOKEN.encode("utf-8"), hashlib.sha256).digest()
+        computed_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(computed_hash, recv_hash):
+            return False, "signature_mismatch", None
+
+        auth_date_raw = flat.get("auth_date", "0")
+        try:
+            auth_date = int(str(auth_date_raw))
+        except (TypeError, ValueError):
+            return False, "invalid_auth_date", None
+        now_ts = int(time.time())
+        if auth_date > now_ts + 30:
+            return False, "auth_date_in_future", None
+        if now_ts - auth_date > TELEGRAM_AUTH_MAX_AGE_SEC:
+            return False, "auth_date_expired", None
+
+        user_raw = flat.get("user", "")
+        try:
+            user_obj = json.loads(user_raw) if user_raw else {}
+        except json.JSONDecodeError:
+            return False, "invalid_user_json", None
+        if not isinstance(user_obj, dict):
+            return False, "invalid_user_payload", None
+        try:
+            user_id = int(str(user_obj.get("id")))
+        except (TypeError, ValueError):
+            return False, "invalid_user_id", None
+        user = {
+            "id": user_id,
+            "username": str(user_obj.get("username", "") or ""),
+            "first_name": str(user_obj.get("first_name", "") or ""),
+            "last_name": str(user_obj.get("last_name", "") or ""),
+            "photo_url": str(user_obj.get("photo_url", "") or ""),
+            "auth_date": auth_date,
+        }
+        return True, "ok", user
+
     def create_session(self, user: dict) -> dict:
         sid = secrets.token_urlsafe(32)
         now = time.time()
@@ -771,6 +827,28 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(
                 self,
                 {"ok": True, "authenticated": True, "user": session.get("user")},
+                cache_control="no-store",
+                set_cookies=[_build_session_cookie(self, session["sid"], AUTH_SESSION_TTL_SEC)],
+            )
+            return
+
+        if parsed.path == "/api/auth/telegram/webapp-login":
+            payload = _read_json_body(self)
+            init_data = payload.get("init_data") if isinstance(payload, dict) else ""
+            ok, reason, user = AUTH.verify_telegram_webapp_init_data(str(init_data or ""))
+            if not ok or not user:
+                _json_response(
+                    self,
+                    {"ok": False, "error": "auth_failed", "reason": reason},
+                    status=HTTPStatus.UNAUTHORIZED,
+                    cache_control="no-store",
+                    set_cookies=[_build_clear_session_cookie(self)],
+                )
+                return
+            session = AUTH.create_session(user)
+            _json_response(
+                self,
+                {"ok": True, "authenticated": True, "user": session.get("user"), "source": "telegram_webapp"},
                 cache_control="no-store",
                 set_cookies=[_build_session_cookie(self, session["sid"], AUTH_SESSION_TTL_SEC)],
             )
