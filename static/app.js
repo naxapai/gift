@@ -682,6 +682,15 @@ async function connectTonWallet() {
     return;
   }
   try {
+    // If wallet is connected locally but server proof/session is missing,
+    // force reconnect to request a fresh tonProof.
+    if (state.ton.ui.wallet && !state.ton.connected) {
+      try {
+        await state.ton.ui.disconnect();
+      } catch (e) {
+        // noop
+      }
+    }
     const challengeResp = await fetchJson("/api/auth/ton/challenge", {
       method: "POST",
       cache: "no-store",
