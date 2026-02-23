@@ -1604,6 +1604,118 @@ function renderVariantListings() {
     .join("");
 }
 
+function periodSeconds(period) {
+  const map = {
+    "1h": 3600,
+    "12h": 12 * 3600,
+    "24h": 24 * 3600,
+    "7d": 7 * 24 * 3600,
+    "30d": 30 * 24 * 3600,
+  };
+  return map[String(period || "24h")] || map["24h"];
+}
+
+function denseCurveFromAnchors(anchors, startMs, endMs, targetPoints) {
+  const safeAnchors = (anchors || [])
+    .filter((p) => Number.isFinite(Number(p?.tsMs)) && Number.isFinite(Number(p?.value)))
+    .map((p) => ({ tsMs: Number(p.tsMs), value: Number(p.value) }))
+    .sort((a, b) => a.tsMs - b.tsMs);
+  if (!safeAnchors.length || endMs <= startMs) return [];
+
+  const first = safeAnchors[0];
+  const last = safeAnchors[safeAnchors.length - 1];
+  const normalized = [...safeAnchors];
+  if (first.tsMs > startMs) normalized.unshift({ tsMs: startMs, value: first.value });
+  if (last.tsMs < endMs) normalized.push({ tsMs: endMs, value: last.value });
+
+  const count = Math.max(18, Number(targetPoints || 48));
+  let seg = 0;
+  const out = [];
+  for (let i = 0; i < count; i += 1) {
+    const t = startMs + ((endMs - startMs) * i) / Math.max(count - 1, 1);
+    while (seg < normalized.length - 2 && t > normalized[seg + 1].tsMs) seg += 1;
+    const a = normalized[seg];
+    const b = normalized[Math.min(seg + 1, normalized.length - 1)];
+    const dt = Math.max(1, b.tsMs - a.tsMs);
+    const k = Math.max(0, Math.min(1, (t - a.tsMs) / dt));
+    const v = a.value + (b.value - a.value) * k;
+    out.push({
+      ts: new Date(t).toISOString(),
+      value_ton: v,
+    });
+  }
+  return out;
+}
+
+function estimateHistoricalFromPct(currentFloor, pct) {
+  const current = Number(currentFloor);
+  const change = Number(pct);
+  if (!Number.isFinite(current) || current <= 0 || !Number.isFinite(change)) return null;
+  const denom = 1 + change / 100;
+  if (!Number.isFinite(denom) || Math.abs(denom) < 1e-6) return null;
+  const prev = current / denom;
+  return Number.isFinite(prev) && prev > 0 ? prev : null;
+}
+
+function syntheticVariantAnchors(variant, period) {
+  const metrics = variant?.metrics || {};
+  const nowMs = Date.now();
+  const windowSec = periodSeconds(period);
+  const current = Number(metrics.floor_ton);
+  if (!Number.isFinite(current) || current <= 0) return [];
+
+  const checkpoints = [
+    { sec: 30 * 24 * 3600, key: "floor_change_pct_30d" },
+    { sec: 7 * 24 * 3600, key: "floor_change_pct_7d" },
+    { sec: 24 * 3600, key: "floor_change_pct_24h" },
+    { sec: 12 * 3600, key: "floor_change_pct_12h" },
+    { sec: 3600, key: "floor_change_pct_1h" },
+  ];
+
+  const anchors = [{ tsMs: nowMs, value: current }];
+  for (const cp of checkpoints) {
+    if (cp.sec > windowSec) continue;
+    const val = estimateHistoricalFromPct(current, metrics?.[cp.key]);
+    if (!Number.isFinite(val) || val <= 0) continue;
+    anchors.push({ tsMs: nowMs - cp.sec * 1000, value: val });
+  }
+  return anchors.sort((a, b) => a.tsMs - b.tsMs);
+}
+
+function currentVariantForChart() {
+  return state.variants.find((v) => v.variant_id === state.selectedVariantId) || null;
+}
+
+function resolveVariantChartPoints(rawPoints, variant, period) {
+  const windowSec = periodSeconds(period);
+  const nowMs = Date.now();
+  const startMs = nowMs - windowSec * 1000;
+
+  const rawAnchors = (rawPoints || [])
+    .map((p) => {
+      const tsMs = new Date(String(p?.ts || "")).getTime();
+      const value = Number(p?.value_ton);
+      if (!Number.isFinite(tsMs) || !Number.isFinite(value) || value <= 0) return null;
+      return { tsMs, value };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.tsMs - b.tsMs);
+
+  if (rawAnchors.length >= 6) {
+    return denseCurveFromAnchors(rawAnchors, startMs, nowMs, Math.min(200, Math.max(48, rawAnchors.length * 3)));
+  }
+
+  const syntheticAnchors = syntheticVariantAnchors(variant, period);
+  const mergedByTs = new Map();
+  for (const a of syntheticAnchors) mergedByTs.set(Math.round(a.tsMs / 1000), a);
+  for (const a of rawAnchors) mergedByTs.set(Math.round(a.tsMs / 1000), a);
+  const merged = [...mergedByTs.values()].sort((a, b) => a.tsMs - b.tsMs);
+  if (!merged.length) return [];
+
+  const target = windowSec <= 12 * 3600 ? 72 : windowSec <= 24 * 3600 ? 96 : windowSec <= 7 * 24 * 3600 ? 120 : 160;
+  return denseCurveFromAnchors(merged, startMs, nowMs, target);
+}
+
 function getVisibleChartPoints() {
   const rawPoints = state.chart.points || [];
   if (!rawPoints.length) return [];
@@ -1951,7 +2063,7 @@ function renderVariantDetails(variant, listings, series) {
   state.listings.rows = listings?.items || [];
   renderVariantListings();
 
-  state.chart.points = series?.points || [];
+  state.chart.points = resolveVariantChartPoints(series?.points || [], variant, state.chart.period);
   state.chart.start = 0;
   state.chart.end = 1;
   renderChart();
@@ -2185,7 +2297,7 @@ function bindEvents() {
     state.chart.period = el.chartPeriod.value;
     try {
       const series = await fetchJson(`/api/variants/${state.selectedVariantId}/timeseries?metric=floor&period=${state.chart.period}`);
-      state.chart.points = series?.points || [];
+      state.chart.points = resolveVariantChartPoints(series?.points || [], currentVariantForChart(), state.chart.period);
       state.chart.start = 0;
       state.chart.end = 1;
       renderChart();
