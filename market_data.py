@@ -579,9 +579,11 @@ def fetch_verified_dataset_from_fragment(
     if active_only:
         sale_html = _get_text(f"{root_url}?sort=price&filter=sale")
         auction_html = _get_text(f"{root_url}?sort=price&filter=auction")
+        sold_html = _get_text(f"{root_url}?sort=price&filter=sold")
         sale_cols = _fragment_parse_collections(sale_html)
         auction_cols = _fragment_parse_collections(auction_html)
-        merged = {c["slug"]: c for c in sale_cols + auction_cols}
+        sold_cols = _fragment_parse_collections(sold_html)
+        merged = {c["slug"]: c for c in sale_cols + auction_cols + sold_cols}
         # Keep stable ordering by name
         collections = sorted(merged.values(), key=lambda x: x.get("name", ""))
     total_collections = len(collections)
@@ -599,6 +601,7 @@ def fetch_verified_dataset_from_fragment(
     }
     generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     gift_mode = os.getenv("FRAGMENT_GIFT_MODE", "lot").strip().lower()
+    include_sold = os.getenv("FRAGMENT_INCLUDE_SOLD", "true").strip().lower() in {"1", "true", "yes", "on"}
     total_for_sale = 0
     total_sold = 0
     total_auction = 0
@@ -667,7 +670,10 @@ def fetch_verified_dataset_from_fragment(
             for item in symbol_options:
                 filter_index["symbols"][item["value"]] = filter_index["symbols"].get(item["value"], 0) + item["count"]
 
-            events = _fetch_events("sale") + _fetch_events("auction")
+            sale_events = _fetch_events("sale")
+            auction_events = _fetch_events("auction")
+            sold_events = _fetch_events("sold") if include_sold else []
+            events = sale_events + auction_events + sold_events
 
             if not events:
                 continue
