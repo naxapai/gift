@@ -953,13 +953,13 @@ body.auth-locked #staleBanner {
 
 .signals-table th:nth-child(1),
 .signals-table td:nth-child(1) {
-  width: 38%;
+  width: 31%;
 }
 
 .signals-table th:nth-child(2),
 .signals-table td:nth-child(2) {
-  width: 16%;
-  text-align: center;
+  width: 9%;
+  text-align: right;
 }
 
 .signals-table th:nth-child(3),
@@ -970,9 +970,15 @@ body.auth-locked #staleBanner {
 .signals-table td:nth-child(5),
 .signals-table th:nth-child(6),
 .signals-table td:nth-child(6) {
-  width: 11.5%;
+  width: 10%;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.signals-table th:nth-child(7),
+.signals-table td:nth-child(7) {
+  width: 20%;
+  text-align: center;
 }
 
 .signals-table td:nth-child(1) .gift-cell {
@@ -982,7 +988,7 @@ body.auth-locked #staleBanner {
   text-align: left;
 }
 
-.signals-table td:nth-child(2) .chip {
+.signals-table td:nth-child(7) .chip {
   padding: 4px 8px;
   font-size: 0.76rem;
 }
@@ -1707,7 +1713,7 @@ select:focus-visible {
   }
   .signals-table th:nth-child(2),
   .signals-table td:nth-child(2) {
-    width: 18%;
+    width: 10%;
   }
   .signals-table th:nth-child(3),
   .signals-table td:nth-child(3),
@@ -1718,6 +1724,10 @@ select:focus-visible {
   .signals-table th:nth-child(6),
   .signals-table td:nth-child(6) {
     width: 10%;
+  }
+  .signals-table th:nth-child(7),
+  .signals-table td:nth-child(7) {
+    width: 18%;
   }
   .screeners-table .gift-cell {
     padding: 2px 4px;

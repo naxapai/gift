@@ -1524,7 +1524,7 @@ function renderSignals() {
 
   if (!filtered.length) {
     const label = activeFilter === "buy" ? "BUY" : activeFilter === "sell" ? "SELL" : "BUY/SELL";
-    el.signalsBody.innerHTML = `<tr><td colspan="6"><div class="empty-state">Сигналы ${label} не найдены</div></td></tr>`;
+    el.signalsBody.innerHTML = `<tr><td colspan="7"><div class="empty-state">Сигналы ${label} не найдены</div></td></tr>`;
     return;
   }
 
@@ -1532,20 +1532,22 @@ function renderSignals() {
     .map((v) => {
       const action = String(v?.reco?.action || "HOLD").toUpperCase();
       const floor = Number(v?.metrics?.floor_ton || 0);
+      const stars = Number(v?.metrics?.floor_stars_est || starsFromTon(floor) || 0);
+      const delta1h = metricDelta(v?.metrics, "1h");
+      const delta12h = metricDelta(v?.metrics, "12h");
       const delta24h = metricDelta(v?.metrics, "24h");
-      const score = Number(v?.reco?.reco_score || 0).toFixed(1);
-      const confidence = `${Math.round(Number(v?.reco?.confidence || 0))}%`;
       const variantLabel = v?.traits?.model?.name && v?.traits?.background?.name && v?.traits?.pattern?.name
         ? `${v.traits.model.name} • ${v.traits.background.name} • ${v.traits.pattern.name}`
         : (v.title || v.variant_id);
       const icon = renderGiftIcon(v.preview_url, variantLabel, "gift-icon-sm");
       return `<tr>
         <td><button class="btn ghost open-variant gift-cell" data-variant="${v.variant_id}">${icon}<span>${variantLabel}</span></button></td>
-        <td><span class="chip ${action.toLowerCase()}">${actionLabel(action)}</span></td>
-        <td>${score}</td>
-        <td>${confidence}</td>
-        <td style="${percentClass(delta24h)}">${formatPct(delta24h)}</td>
         <td>${formatTon(floor)}</td>
+        <td>${formatStars(stars)}</td>
+        <td style="${percentClass(delta1h)}">${formatPct(delta1h)}</td>
+        <td style="${percentClass(delta12h)}">${formatPct(delta12h)}</td>
+        <td style="${percentClass(delta24h)}">${formatPct(delta24h)}</td>
+        <td><span class="chip ${(action || "hold").toLowerCase()}">${actionLabel(action)}</span></td>
       </tr>`;
     })
     .join("");
