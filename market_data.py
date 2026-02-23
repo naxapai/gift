@@ -606,8 +606,15 @@ def fetch_verified_dataset_from_fragment(
     total_sold = 0
     total_auction = 0
 
+    requested_collections = len(collections)
+    processed_collections = 0
+    collections_with_events = 0
+    failed_collections: list[str] = []
+    budget_exhausted = False
+
     for collection in collections:
         if time.monotonic() - started_at > fetch_budget_sec:
+            budget_exhausted = True
             break
         slug = collection["slug"]
         try:
@@ -677,6 +684,7 @@ def fetch_verified_dataset_from_fragment(
 
             if not events:
                 continue
+            collections_with_events += 1
 
             events.sort(key=lambda x: x["datetime"])
             last_event = events[-1]
@@ -794,7 +802,10 @@ def fetch_verified_dataset_from_fragment(
                 )
         except Exception:
             # Skip broken collection and keep progressing through the catalog.
+            failed_collections.append(slug)
             continue
+        finally:
+            processed_collections += 1
 
     if not filter_index["models"] or not filter_index["backdrops"] or not filter_index["symbols"]:
         for gift in gifts:
@@ -812,7 +823,10 @@ def fetch_verified_dataset_from_fragment(
     meta = {
         "generated_at": generated_at,
         "collections_total": total_collections,
-        "collections_used": len(collections),
+        "collections_used": processed_collections,
+        "collections_requested": requested_collections,
+        "collections_with_events": collections_with_events,
+        "collections_failed": len(failed_collections),
         "collection_start": collection_start,
         "max_collections": max_collections,
         "max_pages_per_collection": max_pages_per_collection,
@@ -821,7 +835,18 @@ def fetch_verified_dataset_from_fragment(
         "total_for_sale": total_for_sale,
         "total_sold": total_sold,
         "total_auction": total_auction,
+        "incomplete": bool(budget_exhausted or processed_collections < requested_collections or failed_collections),
     }
+    if meta["incomplete"]:
+        sample_failed = ",".join(failed_collections[:6]) if failed_collections else "-"
+        raise RuntimeError(
+            "fragment fetch incomplete: "
+            f"processed={processed_collections}/{requested_collections} "
+            f"with_events={collections_with_events} "
+            f"failed={len(failed_collections)} "
+            f"budget_exhausted={budget_exhausted} "
+            f"failed_sample={sample_failed}"
+        )
     dataset = {"generated_at": generated_at, "gifts": gifts, "filters": filter_index, "meta": meta}
     _merge_fragment_analytics_store(dataset)
     _save_fragment_snapshot_meta(meta)

@@ -115,7 +115,8 @@ def main() -> None:
         except Exception:
             previous_gifts_count = 0
 
-    batch_order = list(range(start_batch, total_batches)) + list(range(0, start_batch))
+    # Resume mode: process only remaining tail to guarantee completion under watchdog limits.
+    batch_order = list(range(start_batch, total_batches))
     print(json.dumps({
         "ok": True,
         "status": "sync_start",
