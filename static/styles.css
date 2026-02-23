@@ -1340,7 +1340,7 @@ body.auth-locked #staleBanner {
 }
 
 .variant-grid .variant-chart-card .chart {
-  height: 320px;
+  height: 520px;
 }
 
 .variant-grid .variant-metrics-card .kpi-list {
@@ -1543,7 +1543,7 @@ select:focus-visible {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .variant-grid .variant-chart-card .chart {
-    height: 240px;
+    height: 360px;
   }
   .kpi-item {
     padding: 9px 8px;

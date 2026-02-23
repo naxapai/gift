@@ -1564,7 +1564,15 @@ function renderVariantListings() {
 }
 
 function getVisibleChartPoints() {
-  const points = state.chart.points || [];
+  const rawPoints = state.chart.points || [];
+  if (!rawPoints.length) return [];
+  const points = rawPoints
+    .map((p) => {
+      const value = Number(p?.value_ton);
+      if (!Number.isFinite(value)) return null;
+      return { ...p, value_ton: value };
+    })
+    .filter(Boolean);
   if (!points.length) return [];
   const len = points.length;
   const from = Math.max(0, Math.floor(state.chart.start * (len - 1)));
@@ -1629,11 +1637,15 @@ function renderChart() {
   const svg = el.variantChart;
   const points = getVisibleChartPoints();
   if (!points.length) {
-    svg.innerHTML = "";
+    const { width, height } = chartDims(svg, 1400, 560);
+    svg.innerHTML = `
+      <rect x="0" y="0" width="${width}" height="${height}" fill="transparent"></rect>
+      <text x="${width / 2}" y="${height / 2}" text-anchor="middle" fill="#5f6874" font-size="18">Нет данных для построения графика</text>
+    `;
     return;
   }
-  const { width, height } = chartDims(svg);
-  const pad = { l: 64, r: 20, t: 16, b: 40 };
+  const { width, height } = chartDims(svg, 1400, 560);
+  const pad = { l: 88, r: 28, t: 26, b: 62 };
   const values = points.map((p) => Number(p.value_ton || 0));
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -1677,6 +1689,7 @@ function renderChart() {
     <line x1="${pad.l}" y1="${height - pad.b}" x2="${width - pad.r}" y2="${height - pad.b}" stroke="#9fb3a8" stroke-width="1.2" />
     <path d="${areaPath}" fill="rgba(15,118,110,0.14)"></path>
     <path d="${path}" fill="none" stroke="#0f766e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
+    ${points.length === 1 ? `<circle cx="${mapX(0).toFixed(2)}" cy="${mapY(values[0]).toFixed(2)}" r="6" fill="#0f766e" />` : ""}
     <text x="${pad.l}" y="${pad.t - 4}" fill="#5f6874" font-size="11">TON</text>
   `;
 }
