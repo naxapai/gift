@@ -700,7 +700,9 @@ def fetch_verified_dataset_from_fragment(
     total_for_sale = 0
     total_sold = 0
     total_auction = 0
-    lot_traits_cache = _load_fragment_lot_traits_cache() if enrich_lot_traits else {}
+    # Reuse cached per-lot traits even in fast mode to avoid collapsing all lots
+    # into one collection-level profile when detail enrichment is disabled.
+    lot_traits_cache = _load_fragment_lot_traits_cache()
     lot_traits_cache_dirty = False
 
     requested_collections = len(collections)
@@ -818,12 +820,13 @@ def fetch_verified_dataset_from_fragment(
                         per_lot[st] = per_lot.get(st, 0) + 1
 
                 lot_details: dict[str, dict] = {}
-                if enrich_lot_traits and lot_latest:
+                if lot_latest:
                     for lot_id in lot_latest.keys():
                         cached = lot_traits_cache.get(lot_id)
                         if isinstance(cached, dict):
                             lot_details[lot_id] = cached
 
+                if enrich_lot_traits and lot_latest:
                     missing_lot_ids = [lot_id for lot_id in lot_latest.keys() if lot_id not in lot_details]
 
                     def _fetch_lot_detail(lot_id: str) -> dict:
@@ -863,7 +866,7 @@ def fetch_verified_dataset_from_fragment(
 
                 for lot_id, ev in lot_latest.items():
                     latest_status = str(ev.get("status") or "").strip().lower()
-                    detail_payload = lot_details.get(lot_id) if enrich_lot_traits else None
+                    detail_payload = lot_details.get(lot_id)
                     if isinstance(detail_payload, dict):
                         detail_status = str(detail_payload.get("detail_status") or "").strip().lower()
                         if detail_status in {"sold", "sale", "auction"}:
