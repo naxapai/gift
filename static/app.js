@@ -985,37 +985,68 @@ function renderOverviewSignalChart(points) {
     svg.innerHTML = "";
     return;
   }
-  const width = 600;
-  const height = 220;
-  const pad = { l: 10, r: 10, t: 8, b: 18 };
+  const { width, height } = chartDims(svg, 900, 300);
+  const pad = { l: 62, r: 18, t: 16, b: 42 };
   const innerW = width - pad.l - pad.r;
   const innerH = height - pad.t - pad.b;
-  const maxY = Math.max(1, ...points.map((p) => Math.max(Number(p.buy || 0), Number(p.sell || 0))));
-  const stepX = innerW / Math.max(points.length - 1, 1);
+  const safe = points
+    .map((p) => ({
+      ...p,
+      buy: Math.max(0, Number(p?.buy || 0)),
+      sell: Math.max(0, Number(p?.sell || 0)),
+    }))
+    .filter((p) => Number.isFinite(p.buy) && Number.isFinite(p.sell));
+  if (!safe.length) {
+    svg.innerHTML = "";
+    return;
+  }
+  const maxY = Math.max(1, ...safe.map((p) => Math.max(p.buy, p.sell)));
+  const stepX = innerW / Math.max(safe.length - 1, 1);
   const mapX = (i) => pad.l + i * stepX;
   const mapY = (v) => pad.t + innerH - (Number(v || 0) / maxY) * innerH;
 
-  const linePath = (key) =>
-    points
-      .map((p, i) => `${i === 0 ? "M" : "L"} ${mapX(i).toFixed(2)} ${mapY(p[key]).toFixed(2)}`)
-      .join(" ");
+  const pathFromKey = (key) => smoothLinePath(
+    safe.map((p) => ({ value_ton: p[key] })),
+    mapX,
+    mapY,
+  );
 
-  const buyPath = linePath("buy");
-  const sellPath = linePath("sell");
+  const buyPath = pathFromKey("buy");
+  const sellPath = pathFromKey("sell");
+  const buyArea = `${buyPath} L ${mapX(safe.length - 1).toFixed(2)} ${(height - pad.b).toFixed(2)} L ${mapX(0).toFixed(2)} ${(height - pad.b).toFixed(2)} Z`;
+  const sellArea = `${sellPath} L ${mapX(safe.length - 1).toFixed(2)} ${(height - pad.b).toFixed(2)} L ${mapX(0).toFixed(2)} ${(height - pad.b).toFixed(2)} Z`;
   const grid = [0, 0.25, 0.5, 0.75, 1]
     .map((t) => {
       const y = pad.t + innerH * t;
-      return `<line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" stroke="#dbe4d8" stroke-width="1" />`;
+      const v = maxY - maxY * t;
+      return `
+        <line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" stroke="#dbe4d8" stroke-width="1" />
+        <text x="${pad.l - 8}" y="${y + 4}" text-anchor="end" fill="#5f6874" font-size="11">${v.toFixed(0)}</text>
+      `;
     })
     .join("");
+  const xTickCount = Math.min(5, Math.max(2, safe.length));
+  const xTicks = Array.from({ length: xTickCount }, (_, i) => {
+    const idx = Math.round((i / (xTickCount - 1)) * (safe.length - 1));
+    const x = mapX(idx);
+    const label = String(safe[idx]?.label || "");
+    return `
+      <line x1="${x}" y1="${pad.t}" x2="${x}" y2="${height - pad.b}" stroke="#edf2ee" stroke-width="1" />
+      <text x="${x}" y="${height - 10}" text-anchor="middle" fill="#5f6874" font-size="11">${label}</text>
+    `;
+  }).join("");
 
   svg.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" fill="transparent"></rect>
+    ${xTicks}
     ${grid}
+    <line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${height - pad.b}" stroke="#9fb3a8" stroke-width="1.2" />
+    <line x1="${pad.l}" y1="${height - pad.b}" x2="${width - pad.r}" y2="${height - pad.b}" stroke="#9fb3a8" stroke-width="1.2" />
+    <path d="${buyArea}" fill="rgba(21,128,61,0.12)"></path>
+    <path d="${sellArea}" fill="rgba(185,28,28,0.10)"></path>
     <path d="${buyPath}" fill="none" stroke="#15803d" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
     <path d="${sellPath}" fill="none" stroke="#b91c1c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
-    <text x="${pad.l}" y="${height - 4}" fill="#6b7280" font-size="11">-60м</text>
-    <text x="${width - pad.r - 38}" y="${height - 4}" fill="#6b7280" font-size="11">Сейчас</text>
+    <text x="${pad.l}" y="${pad.t - 4}" fill="#5f6874" font-size="11">Индекс</text>
   `;
 }
 
@@ -1798,7 +1829,7 @@ function renderChart() {
     return;
   }
   const { width, height } = chartDims(svg, 1400, 560);
-  const pad = { l: 88, r: 28, t: 26, b: 62 };
+  const pad = { l: 64, r: 18, t: 16, b: 46 };
   const values = points.map((p) => Number(p.value_ton || 0));
   const min = Math.min(...values);
   const max = Math.max(...values);
