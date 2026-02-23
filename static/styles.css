@@ -493,22 +493,27 @@ body.auth-locked #staleBanner {
   gap: 10px;
 }
 
-.overview-status-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 14px;
+.overview-status-table {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.overview-status-item {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  line-height: 1.2;
+.overview-status-col {
+  display: grid;
+  gap: 4px;
+  text-align: center;
+  align-items: start;
+}
+
+.overview-status-head {
+  font-size: 0.82rem;
+  line-height: 1.15;
 }
 
 .overview-status-value {
-  font-size: 1.1rem;
+  font-size: 1.06rem;
+  line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1547,14 +1552,14 @@ select:focus-visible {
   .hero-main-overview {
     grid-template-columns: 1fr;
   }
-  .overview-status-row {
-    gap: 6px 10px;
+  .overview-status-table {
+    gap: 6px;
   }
-  .overview-status-item {
-    font-size: 0.86rem;
+  .overview-status-head {
+    font-size: 0.72rem;
   }
   .overview-status-value {
-    font-size: 0.94rem;
+    font-size: 0.86rem;
   }
   .variant-headline {
     grid-template-columns: 84px minmax(0, 1fr);
