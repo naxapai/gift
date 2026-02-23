@@ -26,7 +26,10 @@ MIN_CONFIDENCE = int(os.getenv("BOT_MIN_CONFIDENCE", "60"))
 DYNAMICS_PCT = float(os.getenv("BOT_DYNAMICS_PCT", "5"))
 CACHE_FILE = os.getenv("BOT_CACHE_FILE", "data/bot_cache.json")
 LOCK_FILE = os.getenv("BOT_LOCK_FILE", "data/bot_sender.lock")
-MIN_REPEAT_SEC = int(os.getenv("BOT_MIN_REPEAT_SEC", "21600"))
+MIN_REPEAT_SEC = int(os.getenv("BOT_MIN_REPEAT_SEC", "3600"))
+SCORE_DELTA_MIN = float(os.getenv("BOT_SCORE_DELTA_MIN", "5"))
+CONF_DELTA_MIN = float(os.getenv("BOT_CONF_DELTA_MIN", "8"))
+CHANGE24H_DELTA_MIN = float(os.getenv("BOT_CHANGE24H_DELTA_MIN", "8"))
 MAX_MESSAGES_PER_CYCLE = int(os.getenv("BOT_MAX_MESSAGES_PER_CYCLE", "8"))
 DEBUG = os.getenv("BOT_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
 FORCE_SEND_TOP1 = os.getenv("BOT_FORCE_SEND_TOP1", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -276,16 +279,16 @@ def _is_dynamic(prev: Dict, curr: Dict) -> bool:
         return True
     if prev.get("action") != curr.get("action"):
         return True
-    if abs(float(curr.get("reco_score", 0) or 0) - float(prev.get("reco_score", 0) or 0)) >= 3.0:
+    if abs(float(curr.get("reco_score", 0) or 0) - float(prev.get("reco_score", 0) or 0)) >= SCORE_DELTA_MIN:
         return True
-    if abs(float(curr.get("confidence", 0) or 0) - float(prev.get("confidence", 0) or 0)) >= 5.0:
+    if abs(float(curr.get("confidence", 0) or 0) - float(prev.get("confidence", 0) or 0)) >= CONF_DELTA_MIN:
         return True
     try:
         prev_pct = float(prev.get("floor_change_pct_24h", 0))
         curr_pct = float(curr.get("floor_change_pct_24h", 0))
     except Exception:
         return True
-    if abs(curr_pct - prev_pct) >= DYNAMICS_PCT:
+    if abs(curr_pct - prev_pct) >= max(DYNAMICS_PCT, CHANGE24H_DELTA_MIN):
         return True
     prev_fc = prev.get("forecast") or {}
     curr_fc = curr.get("forecast") or {}
@@ -343,6 +346,7 @@ def cycle(cache: Dict) -> None:
     stat_total = len(items)
     stat_conf = 0
     stat_action = 0
+    stat_cooldown = 0
     stat_fp = 0
     stat_dyn = 0
 
@@ -370,8 +374,12 @@ def cycle(cache: Dict) -> None:
         fp = _signal_fingerprint(item)
         last_fp = str(prev.get("last_fp") or "")
         last_sent_ts = int(prev.get("last_sent_ts", 0) or 0)
-        # Антидубль: если сигнал по сути не изменился, повтор не отправляем.
-        if fp == last_fp and (now_ts - last_sent_ts) < MIN_REPEAT_SEC:
+        # Ограничение частоты: не чаще 1 раза в час по одному варианту.
+        if last_sent_ts and (now_ts - last_sent_ts) < MIN_REPEAT_SEC:
+            stat_cooldown += 1
+            continue
+        # Даже после cooldown повторяем только при существенном изменении.
+        if fp == last_fp:
             stat_fp += 1
             continue
         if not _is_dynamic(prev, item):
@@ -383,7 +391,7 @@ def cycle(cache: Dict) -> None:
     if DEBUG:
         print(
             f"[bot] total={stat_total} pass_conf={stat_conf} pass_action={stat_action} "
-            f"skip_fp={stat_fp} skip_not_dynamic={stat_dyn} sent={sent_count}"
+            f"skip_cooldown={stat_cooldown} skip_fp={stat_fp} skip_not_dynamic={stat_dyn} sent={sent_count}"
         )
 
 
