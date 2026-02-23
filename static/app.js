@@ -707,13 +707,13 @@ async function connectTonWallet() {
     renderTonWalletUi();
     const proof = connected?.connectItems?.tonProof?.proof;
     const account = connected?.account;
-    if (!proof || !account) throw new Error("ton_proof_missing");
+    if (!account) throw new Error("ton_account_missing");
     await fetchJson("/api/auth/ton/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         account,
-        ton_proof: proof,
+        ton_proof: proof || null,
       }),
       cache: "no-store",
     });

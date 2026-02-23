@@ -49,6 +49,7 @@ TON_AUTH_REQUIRED = os.getenv("TON_AUTH_REQUIRED", "false").strip().lower() in {
 TON_AUTH_SESSION_TTL_SEC = max(300, int(os.getenv("TON_AUTH_SESSION_TTL_SEC", "86400")))
 TON_PROOF_MAX_AGE_SEC = max(60, int(os.getenv("TON_PROOF_MAX_AGE_SEC", "300")))
 TON_CHALLENGE_TTL_SEC = max(30, int(os.getenv("TON_CHALLENGE_TTL_SEC", "180")))
+TON_ALLOW_WEAK_VERIFY = os.getenv("TON_ALLOW_WEAK_VERIFY", "true").strip().lower() in {"1", "true", "yes", "on"}
 BOT_AUTORUN = os.getenv("BOT_AUTORUN", "true").strip().lower() in {"1", "true", "yes", "on"}
 BOT_INTERVAL_SEC = max(30, int(os.getenv("BOT_POLL_INTERVAL", "300")))
 BOT_API_BASE_URL = os.getenv("BOT_API_BASE_URL", "").strip()
@@ -436,11 +437,30 @@ def _host_only(handler: BaseHTTPRequestHandler) -> str:
 def _validate_ton_verify_payload(handler: BaseHTTPRequestHandler, payload: dict) -> tuple[bool, str, dict | None]:
     account = payload.get("account")
     proof = payload.get("ton_proof")
-    if not isinstance(account, dict) or not isinstance(proof, dict):
+    if not isinstance(account, dict):
         return False, "invalid_payload_shape", None
     address = str(account.get("address", "")).strip()
     chain = str(account.get("chain", "")).strip()
     public_key = str(account.get("publicKey", "")).strip()
+    if not address:
+        return False, "missing_account_address", None
+    # Fallback mode for wallets/sessions that return account without tonProof.
+    if not isinstance(proof, dict):
+        if TON_ALLOW_WEAK_VERIFY:
+            now_ts = int(time.time())
+            host = _host_only(handler)
+            wallet = {
+                "address": address,
+                "chain": chain,
+                "public_key": public_key,
+                "domain": host,
+                "verified_at": now_ts,
+                "proof_timestamp": None,
+                "verification_level": "wallet_address_only",
+                "verification_status": "weak_verified_no_proof",
+            }
+            return True, "ok_weak_no_proof", wallet
+        return False, "ton_proof_missing", None
     proof_payload = str(proof.get("payload", "")).strip()
     proof_timestamp = proof.get("timestamp")
     domain = proof.get("domain") if isinstance(proof.get("domain"), dict) else {}
