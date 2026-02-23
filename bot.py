@@ -96,11 +96,14 @@ def send_message(text: str) -> None:
     send_message_to(CHAT_ID, text)
 
 
-def send_message_to(chat_id: str | int, text: str) -> None:
+def send_message_to(chat_id: str | int, text: str, parse_mode: str | None = None) -> None:
     if not BOT_TOKEN:
         raise RuntimeError("Set TG_BOT_TOKEN env var")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    _http_post(url, {"chat_id": str(chat_id), "text": text})
+    payload = {"chat_id": str(chat_id), "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    _http_post(url, payload)
 
 
 def _get_updates(offset: int | None = None, timeout_sec: int = 0) -> Dict:
@@ -123,16 +126,16 @@ def _get_updates(offset: int | None = None, timeout_sec: int = 0) -> Dict:
 def _format_market_status(overview: Dict) -> str:
     return "\n".join(
         [
-            "Статус рынка Telegram Gifts:",
-            f"Состояние: {overview.get('market_state', '-')}",
+            "<b>GiftMarketZone: Статус рынка :</b>",
+            f"Состояние: <b>{overview.get('market_state', '-')}</b>",
             f"Подарков: {overview.get('gifts_count', 0)}",
             f"Коллекций: {overview.get('base_count', 0)}",
             f"Моделей: {overview.get('model_count', 0)}",
-            f"Мин цена: {overview.get('floor_ton_min', '-') } TON",
-            f"Медиана: {overview.get('floor_ton_median', '-') } TON",
+            f"Мин цена: {overview.get('floor_ton_min', '-')} TON",
+            f"Медиана: {overview.get('floor_ton_median', '-')} TON",
             f"Сигналы BUY/SELL: {overview.get('buy_signals', 0)}/{overview.get('sell_signals', 0)}",
             f"Обновлено: {_to_msk_text(overview.get('updated_at'))}",
-            f"Stale: {'да' if overview.get('data_stale') else 'нет'}",
+            f"Stale: {'нет' if not overview.get('data_stale') else 'да'}",
             f"Время ответа: {_now_msk_text()}",
         ]
     )
@@ -155,10 +158,10 @@ def _handle_commands(cache: Dict) -> None:
             if not chat_id or not text.startswith("/"):
                 continue
             cmd = text.split()[0].split("@")[0].lower()
-            if cmd == "/status":
+            if cmd in {"/status", "/signal"}:
                 try:
                     ov = _http_get(f"{API_BASE_URL}/api/market/overview")
-                    send_message_to(chat_id, _format_market_status(ov))
+                    send_message_to(chat_id, _format_market_status(ov), parse_mode="HTML")
                 except Exception as e:  # noqa: BLE001
                     send_message_to(chat_id, f"Ошибка получения статуса: {e}")
         except Exception:
