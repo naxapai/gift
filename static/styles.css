@@ -635,6 +635,12 @@ body.auth-locked #staleBanner {
   overflow-y: auto;
 }
 
+.signals-grid .table-wrap {
+  overflow-x: hidden;
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
