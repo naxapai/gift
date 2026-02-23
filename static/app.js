@@ -49,8 +49,12 @@ const state = {
     overview: false,
     catalog: false,
     screeners: false,
+    signals: false,
     watchlist: false,
     alerts: false,
+  },
+  signals: {
+    filter: "all",
   },
   catalogFilters: {
     baseId: "",
@@ -129,6 +133,11 @@ const el = {
 
   screenerType: document.getElementById("screenerType"),
   screenersBody: document.getElementById("screenersBody"),
+  signalsBody: document.getElementById("signalsBody"),
+  signalsStats: document.getElementById("signalsStats"),
+  signalFilterAll: document.getElementById("signalFilterAll"),
+  signalFilterBuy: document.getElementById("signalFilterBuy"),
+  signalFilterSell: document.getElementById("signalFilterSell"),
 
   watchlistBody: document.getElementById("watchlistBody"),
 
@@ -1234,6 +1243,78 @@ function renderScreeners(items) {
     .join("");
 }
 
+function collectSignalItems() {
+  const items = [];
+  for (const v of state.variants || []) {
+    const action = String(v?.reco?.action || "").toUpperCase();
+    if (action !== "BUY" && action !== "SELL") continue;
+    items.push(v);
+  }
+  return items.sort((a, b) => Number(b?.reco?.reco_score || 0) - Number(a?.reco?.reco_score || 0));
+}
+
+function renderSignals() {
+  if (!el.signalsBody || !el.signalsStats) return;
+  const allSignals = collectSignalItems();
+  const buyCount = allSignals.filter((v) => String(v?.reco?.action || "").toUpperCase() === "BUY").length;
+  const sellCount = allSignals.filter((v) => String(v?.reco?.action || "").toUpperCase() === "SELL").length;
+  const expectedBuy = Number(state.overview?.buy_signals ?? buyCount);
+  const expectedSell = Number(state.overview?.sell_signals ?? sellCount);
+  const expectedTotal = Math.max(0, expectedBuy) + Math.max(0, expectedSell);
+  const activeFilter = state.signals.filter || "all";
+  const filtered = allSignals.filter((v) => {
+    const action = String(v?.reco?.action || "").toUpperCase();
+    if (activeFilter === "buy") return action === "BUY";
+    if (activeFilter === "sell") return action === "SELL";
+    return true;
+  });
+
+  el.signalsStats.innerHTML = [
+    ["Сигналов", expectedTotal],
+    ["BUY", expectedBuy],
+    ["SELL", expectedSell],
+    ["Показано", filtered.length],
+  ].map(([k, v]) => `<div class="kpi-item"><div class="kpi-key">${k}</div><div class="kpi-value">${v}</div></div>`).join("");
+
+  if (!filtered.length) {
+    const label = activeFilter === "buy" ? "BUY" : activeFilter === "sell" ? "SELL" : "BUY/SELL";
+    el.signalsBody.innerHTML = `<tr><td colspan="6"><div class="empty-state">Сигналы ${label} не найдены</div></td></tr>`;
+    return;
+  }
+
+  el.signalsBody.innerHTML = filtered
+    .map((v) => {
+      const action = String(v?.reco?.action || "HOLD").toUpperCase();
+      const floor = Number(v?.metrics?.floor_ton || 0);
+      const delta24h = metricDelta(v?.metrics, "24h");
+      const score = Number(v?.reco?.reco_score || 0).toFixed(1);
+      const confidence = `${Math.round(Number(v?.reco?.confidence || 0))}%`;
+      const variantLabel = v?.traits?.model?.name && v?.traits?.background?.name && v?.traits?.pattern?.name
+        ? `${v.traits.model.name} • ${v.traits.background.name} • ${v.traits.pattern.name}`
+        : (v.title || v.variant_id);
+      const icon = renderGiftIcon(v.preview_url, variantLabel, "gift-icon-sm");
+      return `<tr>
+        <td><button class="btn ghost open-variant gift-cell" data-variant="${v.variant_id}">${icon}<span>${variantLabel}</span></button></td>
+        <td><span class="chip ${action.toLowerCase()}">${action}</span></td>
+        <td>${score}</td>
+        <td>${confidence}</td>
+        <td style="${percentClass(delta24h)}">${formatPct(delta24h)}</td>
+        <td>${formatTon(floor)}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+function setSignalFilter(filter) {
+  state.signals.filter = filter || "all";
+  const buttons = [el.signalFilterAll, el.signalFilterBuy, el.signalFilterSell];
+  for (const btn of buttons) {
+    if (!btn) continue;
+    btn.classList.toggle("active", btn.dataset.filter === state.signals.filter);
+  }
+  renderSignals();
+}
+
 function renderWatchlist() {
   const items = state.variants.filter((v) => state.watchlist.has(v.variant_id));
   if (!items.length) {
@@ -1613,6 +1694,7 @@ async function loadOverviewAndScreeners() {
   state.recoDay.pool = buildRecoPool(topItems, shock.items || [], overheat.items || []);
   state.recoDay.offset = 0;
   renderRecoDaySet();
+  renderSignals();
   await refreshMarketAiSignal(false);
   startRecoRotation();
 }
@@ -1639,8 +1721,21 @@ async function loadVariantsForFilters(force = false) {
     state.variantsCache.loadedAtMs = nowMs;
     return;
   }
+  const pageSize = 400;
   const chunks = await Promise.all(
-    state.bases.map((b) => fetchJson(`/api/bases/${b.base_id}/variants?page=1&page_size=300`))
+    state.bases.map(async (b) => {
+      const all = [];
+      let page = 1;
+      let total = 0;
+      do {
+        const resp = await fetchJson(`/api/bases/${b.base_id}/variants?page=${page}&page_size=${pageSize}`);
+        const items = resp.items || [];
+        total = Number(resp.total || items.length || 0);
+        all.push(...items);
+        page += 1;
+      } while (all.length < total && page <= 100);
+      return { items: all };
+    })
   );
   const merged = [];
   const seen = new Set();
@@ -1655,7 +1750,9 @@ async function loadVariantsForFilters(force = false) {
   state.variants = merged;
   state.variantsCache.loadedAtMs = Date.now();
   renderWatchlist();
+  renderSignals();
   state.pageLoaded.watchlist = true;
+  state.pageLoaded.signals = true;
 }
 
 async function loadScreenersPage() {
@@ -1663,6 +1760,12 @@ async function loadScreenersPage() {
   const resp = await fetchJson(`/api/screeners/${type}?entity=variant&period=24h&type=price`);
   renderScreeners(resp.items || []);
   state.pageLoaded.screeners = true;
+}
+
+async function loadSignalsPage() {
+  await loadVariantsForFilters(false);
+  renderSignals();
+  state.pageLoaded.signals = true;
 }
 
 async function loadAlerts() {
@@ -1755,6 +1858,10 @@ function bindEvents() {
     await loadCatalogFiltersAndVariants();
   });
   el.screenerType.addEventListener("change", loadScreenersPage);
+  if (el.signalFilterAll) el.signalFilterAll.addEventListener("click", () => setSignalFilter("all"));
+  if (el.signalFilterBuy) el.signalFilterBuy.addEventListener("click", () => setSignalFilter("buy"));
+  if (el.signalFilterSell) el.signalFilterSell.addEventListener("click", () => setSignalFilter("sell"));
+  setSignalFilter(state.signals.filter);
 
   el.globalSearch.addEventListener("keydown", (e) => {
     if (e.key === "Enter") applySearch();
@@ -1933,7 +2040,7 @@ async function loadAll() {
   }
 
   const activePage = window.location.hash.replace("#", "") || localStorage.getItem(STORAGE_PAGE_KEY) || "overview";
-  const allowed = new Set(["overview", "catalog", "screeners", "watchlist", "alerts", "settings", "base-details", "variant-details"]);
+  const allowed = new Set(["overview", "catalog", "screeners", "signals", "watchlist", "alerts", "settings", "base-details", "variant-details"]);
   const pageToOpen = allowed.has(activePage) ? activePage : "overview";
 
   if (pageToOpen === "variant-details") {
@@ -1976,6 +2083,14 @@ async function ensurePageData(pageId) {
     }
     return;
   }
+  if (pageId === "signals") {
+    if (!state.pageLoaded.signals) {
+      await loadSignalsPage();
+    } else {
+      renderSignals();
+    }
+    return;
+  }
   if (pageId === "alerts") {
     if (!state.pageLoaded.alerts) {
       await loadAlerts();
@@ -1999,6 +2114,8 @@ async function autoSyncTick() {
       }
     } else if (activePage === "screeners") {
       await loadScreenersPage();
+    } else if (activePage === "signals") {
+      await loadSignalsPage();
     } else if (activePage === "variant-details" && state.selectedVariantId) {
       await openVariant(state.selectedVariantId);
     }

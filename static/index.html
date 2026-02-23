@@ -38,6 +38,7 @@
         <button class="nav-btn active" data-page="overview">Обзор</button>
         <button class="nav-btn" data-page="catalog">Каталог</button>
         <button class="nav-btn" data-page="screeners">Скринеры</button>
+        <button class="nav-btn" data-page="signals">Сигналы</button>
         <button class="nav-btn" data-page="watchlist">Избранное</button>
         <button class="nav-btn" data-page="alerts">Алерты</button>
         <button class="nav-btn" data-page="settings">Настройки</button>
@@ -221,6 +222,40 @@
                     </tr>
                   </thead>
                   <tbody id="screenersBody"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="signals" class="page" aria-labelledby="signalsTitle">
+          <h1 id="signalsTitle" class="page-title">Сигналы</h1>
+          <div class="bento-grid signals-grid">
+            <article class="bento-card signals-summary-card">
+              <header class="card-head"><h2>Фильтрация</h2></header>
+              <div id="signalsStats" class="kpi-list"></div>
+              <div class="row-actions">
+                <button id="signalFilterAll" class="btn ghost active" data-filter="all">Все</button>
+                <button id="signalFilterBuy" class="btn ghost" data-filter="buy">BUY</button>
+                <button id="signalFilterSell" class="btn ghost" data-filter="sell">SELL</button>
+              </div>
+            </article>
+
+            <article class="bento-card list-card">
+              <header class="card-head"><h2>Лента сигналов</h2></header>
+              <div class="table-wrap">
+                <table class="table signals-table">
+                  <thead>
+                    <tr>
+                      <th>Вариант</th>
+                      <th>Действие</th>
+                      <th>Оценка</th>
+                      <th>Увер.</th>
+                      <th>Δ24h</th>
+                      <th>Мин&nbsp;💎</th>
+                    </tr>
+                  </thead>
+                  <tbody id="signalsBody"></tbody>
                 </table>
               </div>
             </article>
@@ -430,6 +465,7 @@
       <button class="mobile-nav-btn active" data-page="overview">Обзор</button>
       <button class="mobile-nav-btn" data-page="catalog">Каталог</button>
       <button class="mobile-nav-btn" data-page="screeners">Скринеры</button>
+      <button class="mobile-nav-btn" data-page="signals">Сигналы</button>
       <button class="mobile-nav-btn" data-page="watchlist">Избранное</button>
       <button class="mobile-nav-btn" data-page="alerts">Алерты</button>
     </nav>

@@ -200,6 +200,11 @@ body.auth-locked #staleBanner {
   border-color: var(--line);
 }
 
+.btn.ghost.active {
+  border-color: var(--accent);
+  background: #e6f7f5;
+}
+
 .stale-banner {
   margin: 10px 20px 0;
   border: 1px solid #f4c95d;
@@ -388,6 +393,10 @@ body.auth-locked #staleBanner {
 
 #screeners .bento-card::before {
   background: linear-gradient(90deg, #93b7f8, #e6f0ff 65%, #ffffff);
+}
+
+#signals .bento-card::before {
+  background: linear-gradient(90deg, #85a6ee, #e4ecff 65%, #ffffff);
 }
 
 #watchlist .bento-card::before {
@@ -864,6 +873,45 @@ body.auth-locked #staleBanner {
   font-size: 0.76rem;
 }
 
+.signals-table {
+  table-layout: fixed;
+}
+
+.signals-table th {
+  white-space: normal;
+  line-height: 1.15;
+}
+
+.signals-table th:nth-child(1),
+.signals-table td:nth-child(1) {
+  width: 44%;
+}
+
+.signals-table th:nth-child(2),
+.signals-table td:nth-child(2) {
+  width: 12%;
+  text-align: center;
+}
+
+.signals-table th:nth-child(3),
+.signals-table td:nth-child(3),
+.signals-table th:nth-child(4),
+.signals-table td:nth-child(4),
+.signals-table th:nth-child(5),
+.signals-table td:nth-child(5),
+.signals-table th:nth-child(6),
+.signals-table td:nth-child(6) {
+  width: 11%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.signals-table td:nth-child(1) .gift-cell {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
 .gift-cell span {
   display: block;
   min-width: 0;
@@ -1206,6 +1254,8 @@ body.auth-locked #staleBanner {
 
 .screeners-grid > .filters-card { grid-column: span 3; }
 .screeners-grid > .list-card { grid-column: span 9; }
+.signals-grid > .signals-summary-card { grid-column: span 3; }
+.signals-grid > .list-card { grid-column: span 9; }
 
 .watchlist-grid > .list-card,
 .alerts-grid > .list-card { grid-column: span 8; }
@@ -1297,6 +1347,8 @@ select:focus-visible {
   .catalog-grid > .variants-card,
   .screeners-grid > .filters-card,
   .screeners-grid > .list-card,
+  .signals-grid > .signals-summary-card,
+  .signals-grid > .list-card,
   .watchlist-grid > .list-card,
   .alerts-grid > .list-card,
   .alerts-grid > .bento-card:first-child,
@@ -1461,6 +1513,24 @@ select:focus-visible {
   .screeners-table td:nth-child(7) {
     width: 18%;
   }
+  .signals-table th:nth-child(1),
+  .signals-table td:nth-child(1) {
+    width: 34%;
+  }
+  .signals-table th:nth-child(2),
+  .signals-table td:nth-child(2) {
+    width: 15%;
+  }
+  .signals-table th:nth-child(3),
+  .signals-table td:nth-child(3),
+  .signals-table th:nth-child(4),
+  .signals-table td:nth-child(4),
+  .signals-table th:nth-child(5),
+  .signals-table td:nth-child(5),
+  .signals-table th:nth-child(6),
+  .signals-table td:nth-child(6) {
+    width: 12%;
+  }
   .screeners-table .gift-cell {
     padding: 2px 4px;
     gap: 4px;
@@ -1486,7 +1556,8 @@ select:focus-visible {
   }
   .collections-table td:first-child .gift-cell,
   .catalog-table td:first-child .gift-cell,
-  .screeners-table td:first-child .gift-cell {
+  .screeners-table td:first-child .gift-cell,
+  .signals-table td:first-child .gift-cell {
     display: flex;
     width: 100%;
     min-width: 0;
@@ -1494,7 +1565,8 @@ select:focus-visible {
   }
   .collections-table td:first-child .gift-cell span,
   .catalog-table td:first-child .gift-cell span,
-  .screeners-table td:first-child .gift-cell span {
+  .screeners-table td:first-child .gift-cell span,
+  .signals-table td:first-child .gift-cell span {
     min-width: 0;
     width: 100%;
     overflow: hidden;
@@ -1568,7 +1640,7 @@ select:focus-visible {
     right: 0;
     bottom: 0;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 6px;
     padding: 8px 8px max(8px, env(safe-area-inset-bottom));
     border-top: 1px solid var(--line);
