@@ -1505,6 +1505,59 @@ function getVisibleChartPoints() {
   return points.slice(from, to + 1);
 }
 
+function chartDims(svg, fallbackW = 900, fallbackH = 320) {
+  const vb = String(svg?.getAttribute("viewBox") || "").trim().split(/\s+/);
+  if (vb.length === 4) {
+    const w = Number(vb[2] || 0);
+    const h = Number(vb[3] || 0);
+    if (w > 0 && h > 0) return { width: w, height: h };
+  }
+  return { width: fallbackW, height: fallbackH };
+}
+
+function formatChartTsLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const d = new Date(raw);
+  if (!Number.isNaN(d.getTime())) {
+    const fmt = new Intl.DateTimeFormat("ru-RU", {
+      timeZone: "Europe/Moscow",
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    return fmt.format(d).replace(",", "");
+  }
+  const m = raw.match(/(\d{2}:\d{2})/);
+  return m ? m[1] : raw.slice(0, 10);
+}
+
+function smoothLinePath(points, mapX, mapY) {
+  if (!points.length) return "";
+  if (points.length === 1) {
+    return `M ${mapX(0).toFixed(2)} ${mapY(Number(points[0].value_ton || 0)).toFixed(2)}`;
+  }
+  let d = `M ${mapX(0).toFixed(2)} ${mapY(Number(points[0].value_ton || 0)).toFixed(2)}`;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+    const x1 = mapX(i);
+    const y1 = mapY(Number(p1.value_ton || 0));
+    const x2 = mapX(i + 1);
+    const y2 = mapY(Number(p2.value_ton || 0));
+    const c1x = x1 + (x2 - mapX(Math.max(i - 1, 0))) / 6;
+    const c1y = y1 + (y2 - mapY(Number(p0.value_ton || 0))) / 6;
+    const c2x = x2 - (mapX(Math.min(i + 2, points.length - 1)) - x1) / 6;
+    const c2y = y2 - (mapY(Number(p3.value_ton || 0)) - y1) / 6;
+    d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+  }
+  return d;
+}
+
 function renderChart() {
   const svg = el.variantChart;
   const points = getVisibleChartPoints();
@@ -1512,9 +1565,8 @@ function renderChart() {
     svg.innerHTML = "";
     return;
   }
-  const width = 600;
-  const height = 220;
-  const pad = { l: 42, r: 16, t: 16, b: 28 };
+  const { width, height } = chartDims(svg);
+  const pad = { l: 64, r: 20, t: 16, b: 40 };
   const values = points.map((p) => Number(p.value_ton || 0));
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -1526,25 +1578,39 @@ function renderChart() {
     if (max === min) return pad.t + innerH / 2;
     return pad.t + (max - v) * (innerH / (max - min));
   };
-  const path = points
-    .map((p, i) => `${i === 0 ? "M" : "L"} ${mapX(i).toFixed(2)} ${mapY(Number(p.value_ton || 0)).toFixed(2)}`)
-    .join(" ");
+  const path = smoothLinePath(points, mapX, mapY);
+  const areaPath = `${path} L ${mapX(points.length - 1).toFixed(2)} ${(height - pad.b).toFixed(2)} L ${mapX(0).toFixed(2)} ${(height - pad.b).toFixed(2)} Z`;
 
-  const grid = [0, 0.25, 0.5, 0.75, 1]
+  const yTicks = [0, 0.25, 0.5, 0.75, 1]
     .map((t) => {
       const y = pad.t + innerH * t;
-      return `<line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" stroke="#dbe4d8" stroke-width="1" />`;
+      const v = max - (max - min) * t;
+      return `
+        <line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" stroke="#dbe4d8" stroke-width="1" />
+        <text x="${pad.l - 8}" y="${y + 4}" text-anchor="end" fill="#5f6874" font-size="11">${formatTon(v)}</text>
+      `;
     })
     .join("");
+  const xTickCount = Math.min(6, Math.max(2, points.length));
+  const xTicks = Array.from({ length: xTickCount }, (_, i) => {
+    const idx = Math.round((i / (xTickCount - 1)) * (points.length - 1));
+    const x = mapX(idx);
+    const label = formatChartTsLabel(points[idx]?.ts);
+    return `
+      <line x1="${x}" y1="${pad.t}" x2="${x}" y2="${height - pad.b}" stroke="#edf2ee" stroke-width="1" />
+      <text x="${x}" y="${height - 10}" text-anchor="middle" fill="#5f6874" font-size="11">${label}</text>
+    `;
+  }).join("");
 
   svg.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" fill="transparent"></rect>
-    ${grid}
+    ${xTicks}
+    ${yTicks}
+    <line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${height - pad.b}" stroke="#9fb3a8" stroke-width="1.2" />
+    <line x1="${pad.l}" y1="${height - pad.b}" x2="${width - pad.r}" y2="${height - pad.b}" stroke="#9fb3a8" stroke-width="1.2" />
+    <path d="${areaPath}" fill="rgba(15,118,110,0.14)"></path>
     <path d="${path}" fill="none" stroke="#0f766e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
-    <text x="${pad.l}" y="${height - 8}" fill="#6b7280" font-size="11">${points[0].ts || ""}</text>
-    <text x="${width - pad.r - 120}" y="${height - 8}" fill="#6b7280" font-size="11">${points[points.length - 1].ts || ""}</text>
-    <text x="8" y="18" fill="#6b7280" font-size="12">мин ${formatTon(min)} TON</text>
-    <text x="8" y="34" fill="#6b7280" font-size="12">макс ${formatTon(max)} TON</text>
+    <text x="${pad.l}" y="${pad.t - 4}" fill="#5f6874" font-size="11">TON</text>
   `;
 }
 
