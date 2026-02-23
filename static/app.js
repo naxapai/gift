@@ -122,9 +122,6 @@ const el = {
   baseFilterChips: document.getElementById("baseFilterChips"),
   basesBody: document.getElementById("basesBody"),
   catalogBaseSelect: document.getElementById("catalogBaseSelect"),
-  catalogBaseCustom: document.getElementById("catalogBaseCustom"),
-  catalogBaseTrigger: document.getElementById("catalogBaseTrigger"),
-  catalogBaseMenu: document.getElementById("catalogBaseMenu"),
   catalogModelSelect: document.getElementById("catalogModelSelect"),
   catalogBackgroundSelect: document.getElementById("catalogBackgroundSelect"),
   catalogPatternSelect: document.getElementById("catalogPatternSelect"),
@@ -1141,18 +1138,6 @@ function fillMultiSelect(selectEl, items, valueKey = "id", labelKey = "name") {
   selectEl.innerHTML = options.join("");
 }
 
-function renderCatalogBaseCustom() {
-  const options = [...(el.catalogBaseSelect?.options || [])].filter((o) => o.value);
-  const selected = options.find((o) => o.value === (state.catalogFilters.baseId || el.catalogBaseSelect.value));
-  el.catalogBaseTrigger.textContent = selected?.textContent || "Выберите коллекцию";
-  el.catalogBaseMenu.innerHTML = options
-    .map((o) => {
-      const active = o.value === (state.catalogFilters.baseId || el.catalogBaseSelect.value) ? "active" : "";
-      return `<button type="button" class="custom-select-option ${active}" data-value="${o.value}">${o.textContent}</button>`;
-    })
-    .join("");
-}
-
 function selectedValues(selectEl) {
   return [...(selectEl?.selectedOptions || [])].map((o) => o.value).filter(Boolean);
 }
@@ -1635,11 +1620,9 @@ async function loadCatalog() {
   const basesResp = await fetchJson("/api/bases", {}, true);
   state.bases = basesResp.items || [];
   fillSelect(el.catalogBaseSelect, state.bases, "base_id", "name", "Выберите коллекцию");
-  renderCatalogBaseCustom();
   if (!state.catalogFilters.baseId && state.bases.length) {
     state.catalogFilters.baseId = state.bases[0].base_id;
   }
-  renderCatalogBaseCustom();
   renderBases();
   await loadCatalogFiltersAndVariants();
   state.pageLoaded.catalog = true;
@@ -1753,7 +1736,6 @@ function bindEvents() {
   el.baseSearch.addEventListener("input", renderBases);
   el.catalogBaseSelect.addEventListener("change", async () => {
     state.catalogFilters.baseId = el.catalogBaseSelect.value || "";
-    renderCatalogBaseCustom();
     state.catalogFilters.modelId = "";
     state.catalogFilters.backgroundIds = [];
     state.catalogFilters.patternIds = [];
@@ -1772,22 +1754,6 @@ function bindEvents() {
     await loadCatalogFiltersAndVariants();
   });
   el.screenerType.addEventListener("change", loadScreenersPage);
-
-  el.catalogBaseTrigger.addEventListener("click", () => {
-    el.catalogBaseMenu.classList.toggle("hidden");
-  });
-  el.catalogBaseMenu.addEventListener("click", (e) => {
-    const btn = e.target.closest(".custom-select-option");
-    if (!btn) return;
-    el.catalogBaseSelect.value = btn.dataset.value;
-    el.catalogBaseSelect.dispatchEvent(new Event("change"));
-    el.catalogBaseMenu.classList.add("hidden");
-  });
-  document.addEventListener("click", (e) => {
-    if (!e.target.closest("#catalogBaseCustom")) {
-      el.catalogBaseMenu.classList.add("hidden");
-    }
-  });
 
   el.globalSearch.addEventListener("keydown", (e) => {
     if (e.key === "Enter") applySearch();
