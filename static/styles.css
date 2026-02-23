@@ -1267,6 +1267,9 @@ select:focus-visible {
   .variant-grid > .variant-reco-card {
     grid-row: auto;
   }
+  .catalog-grid > .filters-card { order: 1; }
+  .catalog-grid > .variants-card { order: 2; }
+  .catalog-grid > .list-card { order: 3; }
   .variant-grid .variant-metrics-card .kpi-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
