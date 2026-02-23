@@ -28,6 +28,33 @@ def _merge_filters(dst: dict, src: dict) -> None:
     dst["collections"] = sorted(dst_cols.values(), key=lambda x: x.get("name", ""))
 
 
+def _count_suspicious_trait_collections(dataset: dict, min_gifts: int = 20) -> int:
+    gifts = dataset.get("gifts") if isinstance(dataset, dict) else []
+    if not isinstance(gifts, list):
+        return 0
+    by_collection: dict[str, list[dict]] = {}
+    for gift in gifts:
+        if not isinstance(gift, dict):
+            continue
+        slug = str(gift.get("collection_slug") or "").strip().lower()
+        if not slug:
+            continue
+        by_collection.setdefault(slug, []).append(gift)
+    suspicious = 0
+    for items in by_collection.values():
+        if len(items) < min_gifts:
+            continue
+        models = {str((x.get("profile") or {}).get("model") or "").strip() for x in items}
+        backdrops = {str((x.get("profile") or {}).get("background") or "").strip() for x in items}
+        symbols = {str((x.get("profile") or {}).get("pattern") or "").strip() for x in items}
+        models.discard("")
+        backdrops.discard("")
+        symbols.discard("")
+        if len(models) <= 1 and len(backdrops) <= 1 and len(symbols) <= 1:
+            suspicious += 1
+    return suspicious
+
+
 def main() -> None:
     root_url = os.getenv("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts").strip()
     timeout_sec = int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "10"))
@@ -41,6 +68,7 @@ def main() -> None:
     state_file = os.getenv("FRAGMENT_SYNC_STATE_FILE", "").strip() or "data/fragment_sync_state.json"
     min_promote_gifts = int(os.getenv("FRAGMENT_MIN_PROMOTE_GIFTS", "500"))
     min_promote_ratio = float(os.getenv("FRAGMENT_MIN_PROMOTE_RATIO", "0.5"))
+    max_suspicious_collections = int(os.getenv("FRAGMENT_MAX_SUSPICIOUS_COLLECTIONS", "3"))
     ssl_no_verify = os.getenv("FRAGMENT_SSL_NO_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"}
     if ssl_no_verify:
         os.environ["FRAGMENT_SSL_NO_VERIFY"] = "true"
@@ -235,7 +263,9 @@ def main() -> None:
     }
     final_count = len(final["gifts"])
     promote_threshold = 0 if previous_gifts_count <= 0 else max(min_promote_gifts, int(previous_gifts_count * min_promote_ratio))
-    can_promote = previous_gifts_count <= 0 or final_count >= promote_threshold
+    suspicious_collections = _count_suspicious_trait_collections(final)
+    suspicious_ok = suspicious_collections <= max(0, max_suspicious_collections)
+    can_promote = (previous_gifts_count <= 0 or final_count >= promote_threshold) and suspicious_ok
     if can_promote:
         save_verified_dataset(final, output_file)
         save_verified_dataset(final, full_backup_file)
@@ -250,6 +280,8 @@ def main() -> None:
         "output": output_file if can_promote else wip_output_file,
         "promoted": can_promote,
         "promote_threshold": promote_threshold,
+        "suspicious_collections": suspicious_collections,
+        "max_suspicious_collections": max_suspicious_collections,
         "previous_gifts": previous_gifts_count,
         "failed_batches": failed_batches,
     }, ensure_ascii=False))

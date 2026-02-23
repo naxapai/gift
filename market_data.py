@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http import cookiejar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -21,6 +22,7 @@ DATA_FILE = Path(__file__).parent / "data" / "gifts_history.json"
 VERIFIED_DATA_FILE = Path(__file__).parent / "data" / "verified_gifts.json"
 FRAGMENT_ANALYTICS_STORE_FILE = Path(__file__).parent / "data" / "fragment_analytics_store.json"
 FRAGMENT_SNAPSHOT_META_FILE = Path(__file__).parent / "data" / "fragment_snapshot_meta.json"
+FRAGMENT_LOT_TRAITS_CACHE_FILE = Path(__file__).parent / "data" / "fragment_lot_traits_cache.json"
 MIN_GIFTS_COUNT = 200
 REQUIRED_GIFT_IDS = {"input_key_magic_8_ball_60441"}
 
@@ -497,6 +499,50 @@ def _fragment_parse_og_image(html: str) -> str:
     return ""
 
 
+def _fragment_parse_detail_status(html: str) -> str:
+    status_map = {
+        "sold": "sold",
+        "for sale": "sale",
+        "sale": "sale",
+        "on auction": "auction",
+        "auction": "auction",
+        "available": "sale",
+    }
+    patterns = [
+        re.compile(r'tm-gift-status[^>]*>\s*([^<]+)\s*<', re.I),
+        re.compile(r'tm-grid-item-status[^>]*>\s*([^<]+)\s*<', re.I),
+        re.compile(r'<meta[^>]+property="og:description"[^>]+content="([^"]+)"', re.I),
+    ]
+    for pat in patterns:
+        m = pat.search(html)
+        if not m:
+            continue
+        raw = _clean_fragment_text(m.group(1)).lower()
+        for key, value in status_map.items():
+            if key in raw:
+                return value
+    return ""
+
+
+def _load_fragment_lot_traits_cache() -> Dict[str, dict]:
+    if not FRAGMENT_LOT_TRAITS_CACHE_FILE.exists():
+        return {}
+    try:
+        payload = _load_json_with_retry(FRAGMENT_LOT_TRAITS_CACHE_FILE)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        return {}
+    return {}
+
+
+def _save_fragment_lot_traits_cache(cache: Dict[str, dict]) -> None:
+    try:
+        _atomic_write_json(FRAGMENT_LOT_TRAITS_CACHE_FILE, cache)
+    except Exception:
+        return
+
+
 def _fragment_parse_attribute_options(html: str, label: str) -> List[dict]:
     # Extract filter options from Fragment sidebar blocks for Model/Backdrop/Symbol.
     box_re = re.compile(
@@ -602,9 +648,13 @@ def fetch_verified_dataset_from_fragment(
     generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     gift_mode = os.getenv("FRAGMENT_GIFT_MODE", "lot").strip().lower()
     include_sold = os.getenv("FRAGMENT_INCLUDE_SOLD", "true").strip().lower() in {"1", "true", "yes", "on"}
+    enrich_lot_traits = os.getenv("FRAGMENT_ENRICH_LOT_TRAITS", "true").strip().lower() in {"1", "true", "yes", "on"}
+    detail_workers = max(1, int(os.getenv("FRAGMENT_LOT_DETAIL_WORKERS", "10")))
     total_for_sale = 0
     total_sold = 0
     total_auction = 0
+    lot_traits_cache = _load_fragment_lot_traits_cache() if enrich_lot_traits else {}
+    lot_traits_cache_dirty = False
 
     requested_collections = len(collections)
     processed_collections = 0
@@ -720,6 +770,40 @@ def fetch_verified_dataset_from_fragment(
                         per_lot = lot_status_counts.setdefault(lot_id, {})
                         per_lot[st] = per_lot.get(st, 0) + 1
 
+                lot_details: dict[str, dict] = {}
+                if enrich_lot_traits and lot_latest:
+                    for lot_id in lot_latest.keys():
+                        cached = lot_traits_cache.get(lot_id)
+                        if isinstance(cached, dict):
+                            lot_details[lot_id] = cached
+
+                    missing_lot_ids = [lot_id for lot_id in lot_latest.keys() if lot_id not in lot_details]
+
+                    def _fetch_lot_detail(lot_id: str) -> dict:
+                        detail = _get_text(f"https://fragment.com/gift/{lot_id}?sort=price")
+                        detail_profile = _fragment_parse_detail_profile(detail)
+                        detail_preview = _fragment_parse_og_image(detail)
+                        detail_status = _fragment_parse_detail_status(detail)
+                        return {
+                            "profile": detail_profile,
+                            "preview_image_url": detail_preview,
+                            "detail_status": detail_status,
+                        }
+
+                    if missing_lot_ids:
+                        with ThreadPoolExecutor(max_workers=detail_workers) as pool:
+                            fut_to_lot = {pool.submit(_fetch_lot_detail, lot_id): lot_id for lot_id in missing_lot_ids}
+                            for fut in as_completed(fut_to_lot):
+                                lot_id = fut_to_lot[fut]
+                                try:
+                                    payload = fut.result()
+                                except Exception:
+                                    payload = {}
+                                lot_details[lot_id] = payload
+                                if payload:
+                                    lot_traits_cache[lot_id] = payload
+                                    lot_traits_cache_dirty = True
+
                 for ev in lot_latest.values():
                     st = str(ev.get("status") or "").strip().lower()
                     if st == "sold":
@@ -732,12 +816,23 @@ def fetch_verified_dataset_from_fragment(
 
                 for lot_id, ev in lot_latest.items():
                     latest_status = str(ev.get("status") or "").strip().lower()
+                    detail_payload = lot_details.get(lot_id) if enrich_lot_traits else None
+                    if isinstance(detail_payload, dict):
+                        detail_status = str(detail_payload.get("detail_status") or "").strip().lower()
+                        if detail_status in {"sold", "sale", "auction"}:
+                            latest_status = detail_status
                     if latest_status == "sold":
                         continue
                     lot_price = float(ev.get("price_ton") or 0.0)
                     if lot_price <= 0:
                         continue
                     lot_profile = dict(profile)
+                    if isinstance(detail_payload, dict):
+                        profile_override = detail_payload.get("profile")
+                        if isinstance(profile_override, dict):
+                            for key in ("model", "model_share", "pattern", "pattern_share", "background", "background_share", "issued", "total_supply"):
+                                if profile_override.get(key):
+                                    lot_profile[key] = profile_override.get(key)
                     lot_profile["value_ton_estimate"] = lot_price
                     lot_profile["source_note"] = "fragment.com verified (lot snapshot)"
                     lot_day = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -760,7 +855,10 @@ def fetch_verified_dataset_from_fragment(
                             "collection_slug": slug,
                             "fragment_market_url": f"https://fragment.com/gift/{lot_id}?sort=price",
                             "last_lot_id": lot_id,
-                            "preview_image_url": preview_image_url,
+                            "preview_image_url": (
+                                str((detail_payload or {}).get("preview_image_url") or "").strip() if isinstance(detail_payload, dict) else ""
+                            )
+                            or preview_image_url,
                             "available_models": [x["value"] for x in model_options],
                             "available_backdrops": [x["value"] for x in backdrop_options],
                             "available_symbols": [x["value"] for x in symbol_options],
@@ -848,6 +946,8 @@ def fetch_verified_dataset_from_fragment(
             f"failed_sample={sample_failed}"
         )
     dataset = {"generated_at": generated_at, "gifts": gifts, "filters": filter_index, "meta": meta}
+    if enrich_lot_traits and lot_traits_cache_dirty:
+        _save_fragment_lot_traits_cache(lot_traits_cache)
     _merge_fragment_analytics_store(dataset)
     _save_fragment_snapshot_meta(meta)
     _reconcile_dataset_spot_prices(dataset)
