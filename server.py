@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from core import GiftAnalyticsService
+import bot as signal_bot
 
 ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
@@ -48,6 +49,18 @@ TON_AUTH_REQUIRED = os.getenv("TON_AUTH_REQUIRED", "false").strip().lower() in {
 TON_AUTH_SESSION_TTL_SEC = max(300, int(os.getenv("TON_AUTH_SESSION_TTL_SEC", "86400")))
 TON_PROOF_MAX_AGE_SEC = max(60, int(os.getenv("TON_PROOF_MAX_AGE_SEC", "300")))
 TON_CHALLENGE_TTL_SEC = max(30, int(os.getenv("TON_CHALLENGE_TTL_SEC", "180")))
+BOT_AUTORUN = os.getenv("BOT_AUTORUN", "true").strip().lower() in {"1", "true", "yes", "on"}
+BOT_INTERVAL_SEC = max(30, int(os.getenv("BOT_POLL_INTERVAL", "300")))
+BOT_API_BASE_URL = os.getenv("BOT_API_BASE_URL", "").strip()
+BOT_API_AUTH_TOKEN = os.getenv("BOT_API_AUTH_TOKEN", "").strip() or API_AUTH_TOKEN
+
+_BOT_STATUS = {
+    "enabled": False,
+    "running": False,
+    "last_run_at": None,
+    "last_ok_at": None,
+    "last_error": "",
+}
 
 
 class AuthStore:
@@ -717,6 +730,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, _state().ai_status(probe=probe))
             return
 
+        if path == "/api/bot/status":
+            _json_response(self, {"ok": True, "data": _BOT_STATUS}, cache_control="no-store")
+            return
+
         if path == "/api/market/overview":
             _json_response(self, _state().market_overview())
             return
@@ -987,8 +1004,39 @@ def run() -> None:
     server = ThreadingHTTPServer((host, port), RequestHandler)
     # Warm-up analytics state in background: healthcheck becomes fast while data stack initializes.
     threading.Thread(target=_state, daemon=True, name="state-warmup").start()
+    _start_signal_bot_loop(port)
     print(f"Server started on http://{host}:{port}")
     server.serve_forever()
+
+
+def _start_signal_bot_loop(port: int) -> None:
+    if not BOT_AUTORUN:
+        _BOT_STATUS["enabled"] = False
+        return
+    if not signal_bot.BOT_TOKEN or not signal_bot.CHAT_ID:
+        _BOT_STATUS["enabled"] = False
+        _BOT_STATUS["last_error"] = "TG_BOT_TOKEN/TG_CHAT_ID not configured"
+        return
+
+    signal_bot.API_BASE_URL = BOT_API_BASE_URL or f"http://127.0.0.1:{port}"
+    signal_bot.API_AUTH_TOKEN = BOT_API_AUTH_TOKEN
+    _BOT_STATUS["enabled"] = True
+
+    def _loop() -> None:
+        cache = signal_bot._load_cache()
+        _BOT_STATUS["running"] = True
+        while True:
+            _BOT_STATUS["last_run_at"] = int(time.time())
+            try:
+                signal_bot.cycle(cache)
+                signal_bot._save_cache(cache)
+                _BOT_STATUS["last_ok_at"] = int(time.time())
+                _BOT_STATUS["last_error"] = ""
+            except Exception as e:  # noqa: BLE001
+                _BOT_STATUS["last_error"] = str(e)
+            time.sleep(BOT_INTERVAL_SEC)
+
+    threading.Thread(target=_loop, daemon=True, name="signal-bot-loop").start()
 
 
 if __name__ == "__main__":
