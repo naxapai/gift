@@ -566,9 +566,17 @@ body.auth-locked #staleBanner {
 .overview-signal-head {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: space-between;
   gap: 10px;
   margin-bottom: 6px;
+}
+
+.overview-signal-head select {
+  min-height: 32px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 0 10px;
 }
 
 .signal-buy {

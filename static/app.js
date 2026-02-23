@@ -35,6 +35,10 @@ const state = {
   mskClockTimer: null,
   overviewSignal: {
     points: [],
+    period: "1h",
+    topItems: [],
+    shockItems: [],
+    overheatItems: [],
   },
   variantsCache: {
     loadedAtMs: 0,
@@ -122,6 +126,7 @@ const el = {
   overheatList: document.getElementById("overheatList"),
   overviewSignalChart: document.getElementById("overviewSignalChart"),
   overviewSignalTooltip: document.getElementById("overviewSignalTooltip"),
+  overviewSignalPeriod: document.getElementById("overviewSignalPeriod"),
 
   baseSearch: document.getElementById("baseSearch"),
   baseFilterChips: document.getElementById("baseFilterChips"),
@@ -948,24 +953,33 @@ function interpolateAnchors(anchors, segments = 8) {
 }
 
 function buildOverviewSignalSeries(topItems, shockItems, overheatItems) {
-  const buy1 = sumPressure(topItems, "1h", "buy");
-  const buy12 = sumPressure(topItems, "12h", "buy");
-  const buy24 = sumPressure(topItems, "24h", "buy");
-  const sell1 = sumPressure([...shockItems, ...overheatItems], "1h", "sell");
-  const sell12 = sumPressure([...shockItems, ...overheatItems], "12h", "sell");
-  const sell24 = sumPressure([...shockItems, ...overheatItems], "24h", "sell");
+  const period = String(state.overviewSignal?.period || "1h");
+  const periodSec = periodSeconds(period);
+  const largerByPeriod = { "1h": "12h", "12h": "24h", "24h": "7d", "7d": "30d", "30d": "30d" };
+  const larger = largerByPeriod[period] || "24h";
 
-  const buyTrend = (buy12 - buy24) * 0.06;
-  const sellTrend = (sell12 - sell24) * 0.06;
-  const buyNow = Math.max(0, buy1);
-  const sellNow = Math.max(0, sell1);
-  const anchors = [
-    { label: "-60м", buy: Math.max(0, buyNow - buyTrend * 4), sell: Math.max(0, sellNow - sellTrend * 4) },
-    { label: "-45м", buy: Math.max(0, buyNow - buyTrend * 3), sell: Math.max(0, sellNow - sellTrend * 3) },
-    { label: "-30м", buy: Math.max(0, buyNow - buyTrend * 2), sell: Math.max(0, sellNow - sellTrend * 2) },
-    { label: "-15м", buy: Math.max(0, buyNow - buyTrend), sell: Math.max(0, sellNow - sellTrend) },
-    { label: "Сейчас", buy: buyNow, sell: sellNow },
-  ];
+  const buyNow = Math.max(0, sumPressure(topItems, period, "buy"));
+  const sellNow = Math.max(0, sumPressure([...shockItems, ...overheatItems], period, "sell"));
+  const buyRef = Math.max(0, sumPressure(topItems, larger, "buy"));
+  const sellRef = Math.max(0, sumPressure([...shockItems, ...overheatItems], larger, "sell"));
+  const buyTrend = (buyNow - buyRef) * 0.10;
+  const sellTrend = (sellNow - sellRef) * 0.10;
+
+  const formatAgo = (sec) => {
+    if (sec >= 86400) return `-${Math.round(sec / 86400)}д`;
+    if (sec >= 3600) return `-${Math.round(sec / 3600)}ч`;
+    return `-${Math.max(1, Math.round(sec / 60))}м`;
+  };
+  const fractions = [1, 0.75, 0.5, 0.25, 0];
+  const anchors = fractions.map((f, idx) => {
+    const backSec = Math.round(periodSec * f);
+    const label = idx === fractions.length - 1 ? "Сейчас" : formatAgo(backSec);
+    return {
+      label,
+      buy: Math.max(0, buyNow - buyTrend * (fractions.length - 1 - idx)),
+      sell: Math.max(0, sellNow - sellTrend * (fractions.length - 1 - idx)),
+    };
+  });
   const maxAbs = Math.max(
     1,
     ...anchors.map((p) => Math.max(Math.abs(Number(p.buy || 0)), Math.abs(Number(p.sell || 0))))
@@ -2112,7 +2126,14 @@ async function loadOverviewAndScreeners() {
   renderShortList(el.topMoversList, topItems, "Нет данных по росту", "price");
   renderShortList(el.supplyShockList, shock.items || [], "Нет шока предложения", "supply");
   renderShortList(el.overheatList, overheat.items || [], "Нет перегрева", "risk");
-  state.overviewSignal.points = buildOverviewSignalSeries(topItems, shock.items || [], overheat.items || []);
+  state.overviewSignal.topItems = topItems;
+  state.overviewSignal.shockItems = shock.items || [];
+  state.overviewSignal.overheatItems = overheat.items || [];
+  state.overviewSignal.points = buildOverviewSignalSeries(
+    state.overviewSignal.topItems,
+    state.overviewSignal.shockItems,
+    state.overviewSignal.overheatItems,
+  );
   renderOverviewSignalChart(state.overviewSignal.points);
   state.recoDay.pool = buildRecoPool(topItems, shock.items || [], overheat.items || []);
   state.recoDay.offset = 0;
@@ -2292,6 +2313,19 @@ function bindEvents() {
   if (el.signalFilterAll) el.signalFilterAll.addEventListener("click", () => setSignalFilter("all"));
   if (el.signalFilterBuy) el.signalFilterBuy.addEventListener("click", () => setSignalFilter("buy"));
   if (el.signalFilterSell) el.signalFilterSell.addEventListener("click", () => setSignalFilter("sell"));
+  if (el.overviewSignalPeriod) {
+    el.overviewSignalPeriod.value = state.overviewSignal.period;
+    syncCustomSelect(el.overviewSignalPeriod);
+    el.overviewSignalPeriod.addEventListener("change", () => {
+      state.overviewSignal.period = el.overviewSignalPeriod.value || "1h";
+      state.overviewSignal.points = buildOverviewSignalSeries(
+        state.overviewSignal.topItems || [],
+        state.overviewSignal.shockItems || [],
+        state.overviewSignal.overheatItems || [],
+      );
+      renderOverviewSignalChart(state.overviewSignal.points);
+    });
+  }
   setSignalFilter(state.signals.filter);
   syncCustomSelect(el.screenerType);
   syncCustomSelect(el.chartPeriod);

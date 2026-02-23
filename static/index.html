@@ -81,7 +81,14 @@
                 </div>
                 <div class="overview-signal-wrap">
                   <div class="overview-signal-head">
-                    <span class="small"><span class="signal-buy">Покупка</span> / <span class="signal-sell">Продажа</span> • 1ч</span>
+                    <span class="small"><span class="signal-buy">Покупка</span> / <span class="signal-sell">Продажа</span></span>
+                    <select id="overviewSignalPeriod" aria-label="Период главного графика">
+                      <option value="1h">1h</option>
+                      <option value="12h">12h</option>
+                      <option value="24h">24h</option>
+                      <option value="7d">7d</option>
+                      <option value="30d">30d</option>
+                    </select>
                   </div>
                   <svg id="overviewSignalChart" class="overview-signal-chart" viewBox="0 0 900 300" preserveAspectRatio="none"></svg>
                   <div id="overviewSignalTooltip" class="chart-tooltip hidden" role="status" aria-live="polite"></div>
