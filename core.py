@@ -976,6 +976,12 @@ class GiftAnalyticsService:
             "last_error": self.state.get("last_error"),
             "ingest_in_progress": self.state.get("ingest_in_progress"),
             "last_ingest_started_at": self.state.get("last_ingest_started_at"),
+            # Runtime diagnostics for Render env drift / stale deploy checks.
+            "runtime_source": os.getenv("VERIFIED_SOURCE", "file"),
+            "runtime_gift_mode": os.getenv("FRAGMENT_GIFT_MODE", "lot"),
+            "runtime_max_collections": int(os.getenv("FRAGMENT_MAX_COLLECTIONS", "0")),
+            "runtime_max_pages_per_collection": int(os.getenv("FRAGMENT_MAX_PAGES_PER_COLLECTION", "500")),
+            "runtime_verified_data_file": os.getenv("VERIFIED_DATA_FILE", "data/verified_gifts.json"),
         }
         self._cache_set(cache_key, payload)
         return payload
