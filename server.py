@@ -5,8 +5,10 @@ import os
 import secrets
 import threading
 import time
+import subprocess
 import hmac
 import hashlib
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -54,6 +56,10 @@ BOT_AUTORUN = os.getenv("BOT_AUTORUN", "true").strip().lower() in {"1", "true", 
 BOT_INTERVAL_SEC = max(15, int(os.getenv("BOT_POLL_INTERVAL", "30")))
 BOT_API_BASE_URL = os.getenv("BOT_API_BASE_URL", "").strip()
 BOT_API_AUTH_TOKEN = os.getenv("BOT_API_AUTH_TOKEN", "").strip() or API_AUTH_TOKEN
+MANUAL_FULL_SYNC_COOLDOWN_SEC = max(300, int(os.getenv("MANUAL_FULL_SYNC_COOLDOWN_SEC", "3600")))
+MANUAL_FULL_SYNC_TIMEOUT_SEC = max(120, int(os.getenv("MANUAL_FULL_SYNC_TIMEOUT_SEC", "1800")))
+LAST_FULL_SYNC_TS_FILE = Path(os.getenv("FRAGMENT_LAST_FULL_TS_FILE", "/tmp/fragment_sync_last_full.ts"))
+SNAPSHOT_META_FILE = ROOT / "data" / "fragment_snapshot_meta.json"
 
 _BOT_STATUS = {
     "enabled": False,
@@ -62,6 +68,135 @@ _BOT_STATUS = {
     "last_ok_at": None,
     "last_error": "",
 }
+
+_REFRESH_LOCK = threading.Lock()
+_REFRESH_STATUS = {
+    "running": False,
+    "mode": "",
+    "started_at": None,
+    "last_mode": "",
+    "last_started_at": None,
+    "last_finished_at": None,
+    "last_error": "",
+}
+
+
+def _read_last_full_sync_ts() -> int | None:
+    try:
+        raw = LAST_FULL_SYNC_TS_FILE.read_text(encoding="utf-8").strip()
+        value = int(raw)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    try:
+        if not SNAPSHOT_META_FILE.exists():
+            return None
+        meta = json.loads(SNAPSHOT_META_FILE.read_text(encoding="utf-8"))
+        generated_at = str((meta or {}).get("generated_at") or "").strip()
+        if not generated_at:
+            return None
+        dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+
+def _run_full_sync_once() -> tuple[bool, str]:
+    env = os.environ.copy()
+    env.setdefault("FRAGMENT_SSL_NO_VERIFY", "true")
+    env.setdefault("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts")
+    env.setdefault("FRAGMENT_MAX_PAGES_PER_COLLECTION", os.getenv("FULL_MAX_PAGES_PER_COLLECTION", "120"))
+    env.setdefault("FRAGMENT_INCLUDE_SOLD", os.getenv("FULL_INCLUDE_SOLD", "true"))
+    env.setdefault("FRAGMENT_ENRICH_LOT_TRAITS", os.getenv("FULL_ENRICH_LOT_TRAITS", "true"))
+    env.setdefault("FRAGMENT_LOT_DETAIL_WORKERS", os.getenv("FULL_LOT_DETAIL_WORKERS", "10"))
+    env.setdefault("FRAGMENT_FETCH_BUDGET_SEC", os.getenv("FULL_FETCH_BUDGET_SEC", "1400"))
+    env.setdefault("FRAGMENT_MIN_REQUEST_INTERVAL_SEC", os.getenv("FULL_MIN_REQUEST_INTERVAL_SEC", "0.18"))
+    env.setdefault("FRAGMENT_REQUEST_JITTER_SEC", os.getenv("FULL_REQUEST_JITTER_SEC", "0.06"))
+    env.setdefault("FRAGMENT_REQUEST_RETRIES", os.getenv("FRAGMENT_REQUEST_RETRIES", "3"))
+    env.setdefault("FRAGMENT_REQUEST_BACKOFF_SEC", os.getenv("FRAGMENT_REQUEST_BACKOFF_SEC", "0.8"))
+    env.setdefault("FRAGMENT_BATCH_SIZE", os.getenv("FRAGMENT_BATCH_SIZE", "8"))
+    env.setdefault("FRAGMENT_BATCH_RETRIES", os.getenv("FRAGMENT_BATCH_RETRIES", "6"))
+    env.setdefault("FRAGMENT_RESUME", "true")
+    env.setdefault("FRAGMENT_SYNC_STATE_FILE", "data/fragment_sync_state.json")
+    env.setdefault("VERIFIED_API_TIMEOUT_SEC", "20")
+    env.setdefault("VERIFIED_DATA_FILE", "data/verified_gifts.json")
+    try:
+        proc = subprocess.run(
+            ["python3", "-u", "sync_fragment_batches.py"],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=MANUAL_FULL_SYNC_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"full sync timeout>{MANUAL_FULL_SYNC_TIMEOUT_SEC}s"
+    except Exception as e:  # noqa: BLE001
+        return False, f"full sync start failed: {e}"
+
+    if proc.returncode != 0:
+        tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-3:])
+        return False, f"full sync failed rc={proc.returncode}: {tail[:280]}"
+    try:
+        LAST_FULL_SYNC_TS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LAST_FULL_SYNC_TS_FILE.write_text(str(int(time.time())), encoding="utf-8")
+    except Exception:
+        pass
+    return True, ""
+
+
+def _manual_refresh_worker(mode: str) -> None:
+    err = ""
+    try:
+        if mode == "full":
+            ok, err = _run_full_sync_once()
+            if not ok:
+                raise RuntimeError(err)
+        _state().ingest_safe()
+    except Exception as e:  # noqa: BLE001
+        err = str(e)
+    finally:
+        with _REFRESH_LOCK:
+            _REFRESH_STATUS["running"] = False
+            _REFRESH_STATUS["last_finished_at"] = int(time.time())
+            _REFRESH_STATUS["last_error"] = err
+
+
+def _start_manual_refresh() -> dict:
+    now_ts = int(time.time())
+    last_full_ts = _read_last_full_sync_ts()
+    age_sec = None if not last_full_ts else max(0, now_ts - last_full_ts)
+    mode = "analytics" if (age_sec is not None and age_sec < MANUAL_FULL_SYNC_COOLDOWN_SEC) else "full"
+
+    with _REFRESH_LOCK:
+        if _REFRESH_STATUS["running"]:
+            return {
+                "ok": True,
+                "started": False,
+                "running": True,
+                "mode": _REFRESH_STATUS.get("mode") or "analytics",
+                "message": "refresh already running",
+            }
+        _REFRESH_STATUS["running"] = True
+        _REFRESH_STATUS["mode"] = mode
+        _REFRESH_STATUS["started_at"] = now_ts
+        _REFRESH_STATUS["last_mode"] = mode
+        _REFRESH_STATUS["last_started_at"] = now_ts
+        _REFRESH_STATUS["last_error"] = ""
+
+    threading.Thread(target=_manual_refresh_worker, args=(mode,), daemon=True, name=f"manual-refresh-{mode}").start()
+    return {
+        "ok": True,
+        "started": True,
+        "running": True,
+        "mode": mode,
+        "last_full_sync_age_sec": age_sec,
+        "cooldown_sec": MANUAL_FULL_SYNC_COOLDOWN_SEC,
+        "message": "full sync started" if mode == "full" else "analytics refresh started",
+    }
 
 
 class AuthStore:
@@ -974,8 +1109,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
         if parsed.path == "/api/admin/refresh":
-            threading.Thread(target=lambda: _state().ingest_safe(), daemon=True).start()
-            _json_response(self, {"ok": True, "message": "refresh started"})
+            _json_response(self, _start_manual_refresh(), cache_control="no-store")
             return
         if parsed.path == "/api/alerts":
             rule = _read_json_body(self)

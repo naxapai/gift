@@ -616,7 +616,7 @@ class GiftAnalyticsService:
                 self.state["updated_at"] = _iso(now)
                 self.state["ingestion_lag_seconds"] = 0
                 self.state["data_stale"] = True
-                self.state["last_error"] = "BOOTSTRAP_FROM_VERIFIED_FILE"
+                self.state["last_error"] = "RESTORED_FROM_LOCAL_SNAPSHOT"
                 self.state["ingest_in_progress"] = False
                 self._save_state()
             _log_ingest(f"bootstrap from file: events={len(events)} bases={len(bases)}")

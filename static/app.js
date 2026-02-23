@@ -754,6 +754,7 @@ function normalizeOverviewError(raw) {
   const text = String(raw || "");
   if (!text) return "";
   if (text === "RESTORED_FROM_LOCAL_SNAPSHOT") return "";
+  if (text === "BOOTSTRAP_FROM_VERIFIED_FILE") return "";
   if (text.includes("CERTIFICATE_VERIFY_FAILED")) {
     return "SSL Fragment: ошибка цепочки сертификатов (локальное окружение).";
   }
@@ -1831,10 +1832,16 @@ function bindEvents() {
   el.refreshBtn.addEventListener("click", async () => {
     el.refreshBtn.disabled = true;
     try {
-      await fetchJson("/api/admin/refresh", { method: "POST" });
+      const refresh = await fetchJson("/api/admin/refresh", { method: "POST" });
       state.requestCache.clear();
       await loadAll();
-      showToast("Данные обновлены");
+      if (refresh?.started === false) {
+        showToast("Обновление уже выполняется");
+      } else if (refresh?.mode === "full") {
+        showToast("Запущен полный синк с Fragment");
+      } else {
+        showToast("Обновлена аналитика");
+      }
     } catch (e) {
       showToast(`Ошибка обновления: ${e.message}`);
     } finally {
