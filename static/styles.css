@@ -696,12 +696,28 @@ body.auth-locked #staleBanner {
 .collections-table td:nth-child(6),
 .collections-table td:nth-child(7) {
   text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.collections-table th:nth-child(2),
+.collections-table th:nth-child(3),
+.collections-table th:nth-child(4),
+.collections-table th:nth-child(5),
+.collections-table th:nth-child(6),
+.collections-table th:nth-child(7) {
+  text-align: right;
 }
 
 .catalog-variants-table th,
 .catalog-variants-table td {
   font-size: 0.8rem;
   padding: 7px 6px;
+  vertical-align: middle;
+}
+
+.collections-table th,
+.collections-table td {
+  vertical-align: middle;
 }
 
 .catalog-variants-table th {
@@ -738,10 +754,20 @@ body.auth-locked #staleBanner {
 .catalog-variants-table td:nth-child(5),
 .catalog-variants-table td:nth-child(6) {
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
-.catalog-variants-table td:nth-child(7) {
+.catalog-variants-table th:nth-child(2),
+.catalog-variants-table th:nth-child(3),
+.catalog-variants-table th:nth-child(4),
+.catalog-variants-table th:nth-child(5),
+.catalog-variants-table th:nth-child(6) {
   text-align: right;
+}
+
+.catalog-variants-table th:nth-child(7),
+.catalog-variants-table td:nth-child(7) {
+  text-align: center;
 }
 
 .catalog-variants-table td:nth-child(1) .gift-cell {
