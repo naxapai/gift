@@ -1331,6 +1331,17 @@ body.auth-locked #staleBanner {
 .catalog-grid > .list-card { grid-column: 4 / -1; }
 .catalog-grid > .variants-card { grid-column: 4 / -1; }
 
+/* Keep catalog filters dropdowns visible above neighboring cards. */
+.catalog-grid > .filters-card {
+  overflow: visible;
+  z-index: 30;
+}
+
+.catalog-grid > .list-card,
+.catalog-grid > .variants-card {
+  z-index: 1;
+}
+
 /* Show more collections rows and reduce empty space at the bottom of the collections card */
 .catalog-grid > .list-card .table-wrap {
   max-height: clamp(640px, 76vh, 980px);
