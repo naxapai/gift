@@ -171,11 +171,7 @@ const el = {
   backToCatalog: document.getElementById("backToCatalog"),
 };
 
-const customBaseSelect = {
-  root: null,
-  trigger: null,
-  menu: null,
-};
+const customSelectRegistry = new Map();
 
 function formatTon(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
@@ -1141,9 +1137,7 @@ function fillSelect(selectEl, items, valueKey = "id", labelKey = "name", emptyLa
     options.push(`<option value="${value}">${label}</option>`);
   }
   selectEl.innerHTML = options.join("");
-  if (selectEl === el.catalogBaseSelect) {
-    syncCatalogBaseCustomSelect();
-  }
+  syncCustomSelect(selectEl);
 }
 
 function fillMultiSelect(selectEl, items, valueKey = "id", labelKey = "name") {
@@ -1161,79 +1155,92 @@ function selectedValues(selectEl) {
   return [...(selectEl?.selectedOptions || [])].map((o) => o.value).filter(Boolean);
 }
 
-function closeCatalogBaseCustomSelect() {
-  if (!customBaseSelect.root || !customBaseSelect.menu) return;
-  customBaseSelect.root.classList.remove("open");
-  customBaseSelect.menu.classList.add("hidden");
+function closeCustomSelect(state) {
+  if (!state?.root || !state?.menu || !state?.trigger) return;
+  state.root.classList.remove("open");
+  state.menu.classList.add("hidden");
+  state.trigger.setAttribute("aria-expanded", "false");
 }
 
-function renderCatalogBaseCustomOptions() {
-  if (!customBaseSelect.menu || !el.catalogBaseSelect) return;
-  const opts = [...el.catalogBaseSelect.options];
-  customBaseSelect.menu.innerHTML = opts
+function closeAllCustomSelects(exceptSelect = null) {
+  for (const [selectEl, state] of customSelectRegistry.entries()) {
+    if (exceptSelect && selectEl === exceptSelect) continue;
+    closeCustomSelect(state);
+  }
+}
+
+function renderCustomSelectOptions(selectEl) {
+  const state = customSelectRegistry.get(selectEl);
+  if (!state || !state.menu || !selectEl) return;
+  const options = [...selectEl.options];
+  state.menu.innerHTML = options
     .map((opt) => {
       const value = String(opt.value || "");
-      const selected = value === String(el.catalogBaseSelect.value || "");
+      const selected = value === String(selectEl.value || "");
       return `<button type="button" class="custom-select-option ${selected ? "active" : ""}" data-value="${escapeHtml(value)}">${escapeHtml(opt.textContent || "")}</button>`;
     })
     .join("");
 }
 
-function syncCatalogBaseCustomSelect() {
-  if (!customBaseSelect.root || !customBaseSelect.trigger || !el.catalogBaseSelect) return;
-  const selected = el.catalogBaseSelect.selectedOptions?.[0];
-  customBaseSelect.trigger.textContent = selected?.textContent || "Выберите коллекцию";
-  renderCatalogBaseCustomOptions();
+function syncCustomSelect(selectEl) {
+  const state = customSelectRegistry.get(selectEl);
+  if (!state || !state.trigger || !selectEl) return;
+  const selected = selectEl.selectedOptions?.[0];
+  state.trigger.textContent = selected?.textContent || "Выберите значение";
+  renderCustomSelectOptions(selectEl);
 }
 
-function initCatalogBaseCustomSelect() {
-  if (!el.catalogBaseSelect || customBaseSelect.root) return;
-  const parent = el.catalogBaseSelect.parentElement;
+function initCustomSelect(selectEl) {
+  if (!selectEl || selectEl.multiple || customSelectRegistry.has(selectEl)) return;
+  const parent = selectEl.parentElement;
   if (!parent) return;
 
   const root = document.createElement("div");
-  root.className = "custom-select catalog-base-select";
+  root.className = "custom-select";
   root.innerHTML = `
-    <button type="button" class="custom-select-trigger" aria-haspopup="listbox" aria-expanded="false">Выберите коллекцию</button>
+    <button type="button" class="custom-select-trigger" aria-haspopup="listbox" aria-expanded="false">Выберите значение</button>
     <div class="custom-select-menu hidden" role="listbox"></div>
   `;
   parent.appendChild(root);
 
-  customBaseSelect.root = root;
-  customBaseSelect.trigger = root.querySelector(".custom-select-trigger");
-  customBaseSelect.menu = root.querySelector(".custom-select-menu");
+  const state = {
+    root,
+    trigger: root.querySelector(".custom-select-trigger"),
+    menu: root.querySelector(".custom-select-menu"),
+  };
+  customSelectRegistry.set(selectEl, state);
 
-  el.catalogBaseSelect.classList.add("native-select-hidden");
-  el.catalogBaseSelect.tabIndex = -1;
+  selectEl.classList.add("native-select-hidden");
+  selectEl.tabIndex = -1;
 
-  customBaseSelect.trigger.addEventListener("click", () => {
-    const isOpen = customBaseSelect.root.classList.toggle("open");
-    customBaseSelect.menu.classList.toggle("hidden", !isOpen);
-    customBaseSelect.trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  state.trigger.addEventListener("click", () => {
+    const willOpen = !state.root.classList.contains("open");
+    closeAllCustomSelects(selectEl);
+    state.root.classList.toggle("open", willOpen);
+    state.menu.classList.toggle("hidden", !willOpen);
+    state.trigger.setAttribute("aria-expanded", willOpen ? "true" : "false");
   });
 
-  customBaseSelect.menu.addEventListener("click", (e) => {
+  state.menu.addEventListener("click", (e) => {
     const optionBtn = e.target.closest(".custom-select-option");
     if (!optionBtn) return;
     const value = optionBtn.dataset.value ?? "";
-    if (el.catalogBaseSelect.value !== value) {
-      el.catalogBaseSelect.value = value;
-      el.catalogBaseSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    if (selectEl.value !== value) {
+      selectEl.value = value;
+      selectEl.dispatchEvent(new Event("change", { bubbles: true }));
     }
-    syncCatalogBaseCustomSelect();
-    closeCatalogBaseCustomSelect();
-    customBaseSelect.trigger.setAttribute("aria-expanded", "false");
+    syncCustomSelect(selectEl);
+    closeCustomSelect(state);
   });
 
-  document.addEventListener("click", (e) => {
-    if (!customBaseSelect.root || customBaseSelect.root.contains(e.target)) return;
-    closeCatalogBaseCustomSelect();
-    if (customBaseSelect.trigger) {
-      customBaseSelect.trigger.setAttribute("aria-expanded", "false");
-    }
-  });
+  syncCustomSelect(selectEl);
+}
 
-  syncCatalogBaseCustomSelect();
+function initAllCustomSelects() {
+  const singles = [...document.querySelectorAll("select:not([multiple])")];
+  for (const selectEl of singles) {
+    initCustomSelect(selectEl);
+  }
 }
 
 function renderCatalogVariants(items) {
@@ -1273,6 +1280,7 @@ async function loadCatalogFiltersAndVariants() {
   }
   state.catalogFilters.baseId = baseId;
   if (el.catalogBaseSelect.value !== baseId) el.catalogBaseSelect.value = baseId;
+  syncCustomSelect(el.catalogBaseSelect);
 
   const [modelsResp, backgroundsResp, patternsResp] = await Promise.all([
     fetchJson(`/api/bases/${baseId}/dimensions?type=model&period=24h`),
@@ -1286,6 +1294,7 @@ async function loadCatalogFiltersAndVariants() {
   fillMultiSelect(el.catalogBackgroundSelect, backgrounds, "id", "name");
   fillMultiSelect(el.catalogPatternSelect, patterns, "id", "name");
   el.catalogModelSelect.value = state.catalogFilters.modelId || "";
+  syncCustomSelect(el.catalogModelSelect);
   for (const opt of el.catalogBackgroundSelect.options) {
     opt.selected = state.catalogFilters.backgroundIds.includes(opt.value);
   }
@@ -1918,7 +1927,7 @@ function applySearch() {
 
 function bindEvents() {
   bindOverviewSignalTooltip();
-  initCatalogBaseCustomSelect();
+  initAllCustomSelects();
 
   [...el.navBtns, ...el.mobileNavBtns].forEach((btn) => {
     btn.addEventListener("click", () => setPage(btn.dataset.page));
@@ -1929,7 +1938,7 @@ function bindEvents() {
   el.baseSearch.addEventListener("input", renderBases);
   el.catalogBaseSelect.addEventListener("change", async () => {
     state.catalogFilters.baseId = el.catalogBaseSelect.value || "";
-    syncCatalogBaseCustomSelect();
+    syncCustomSelect(el.catalogBaseSelect);
     state.catalogFilters.modelId = "";
     state.catalogFilters.backgroundIds = [];
     state.catalogFilters.patternIds = [];
@@ -1952,12 +1961,16 @@ function bindEvents() {
   if (el.signalFilterBuy) el.signalFilterBuy.addEventListener("click", () => setSignalFilter("buy"));
   if (el.signalFilterSell) el.signalFilterSell.addEventListener("click", () => setSignalFilter("sell"));
   setSignalFilter(state.signals.filter);
+  syncCustomSelect(el.screenerType);
+  syncCustomSelect(el.chartPeriod);
+  syncCustomSelect(el.listingsSortField);
 
   el.globalSearch.addEventListener("keydown", (e) => {
     if (e.key === "Enter") applySearch();
   });
 
   el.showStars.value = state.showStars;
+  syncCustomSelect(el.showStars);
   el.showStars.addEventListener("change", () => {
     state.showStars = el.showStars.value;
     localStorage.setItem("show_stars", state.showStars);
@@ -2071,6 +2084,10 @@ function bindEvents() {
   });
 
   document.addEventListener("click", (e) => {
+    if (!e.target.closest(".custom-select")) {
+      closeAllCustomSelects();
+    }
+
     const variantBtn = e.target.closest(".open-variant");
     if (variantBtn) {
       openVariant(variantBtn.dataset.variant);
