@@ -1801,9 +1801,13 @@ async function loadVariantsForFilters(force = false) {
     return;
   }
   if (!state.bases.length) {
-    state.variants = [];
-    state.variantsCache.loadedAtMs = nowMs;
-    return;
+    const basesResp = await fetchJson("/api/bases", {}, true);
+    state.bases = basesResp.items || [];
+    if (!state.bases.length) {
+      state.variants = [];
+      state.variantsCache.loadedAtMs = nowMs;
+      return;
+    }
   }
   const pageSize = 400;
   const chunks = await Promise.all(
