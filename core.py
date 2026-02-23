@@ -543,6 +543,15 @@ class GiftAnalyticsService:
         def _slug_text(text: str) -> str:
             return re.sub(r"[^a-z0-9]+", "_", str(text).strip().lower()).strip("_") or "unknown"
 
+        def _base_name_from_gift(gift: dict, base_id: str) -> str:
+            raw = str(gift.get("name") or "").strip()
+            if raw:
+                # Lot titles are like "Artisan Bricks #2975" – keep only collection name.
+                cleaned = re.sub(r"\s*#\d+\s*$", "", raw).strip()
+                if cleaned:
+                    return cleaned
+            return str(gift.get("collection_slug") or base_id).replace("_", " ").title()
+
         for g in gifts:
             if not isinstance(g, dict):
                 continue
@@ -594,7 +603,7 @@ class GiftAnalyticsService:
             )
 
             if base_id not in base_map:
-                base_name = str(g.get("collection_slug") or base_id).replace("_", " ").title()
+                base_name = _base_name_from_gift(g, base_id)
                 base_map[base_id] = BaseInfo(base_id=base_id, name=base_name, slug=base_id)
 
         return events, list(base_map.values())
