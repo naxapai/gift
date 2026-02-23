@@ -321,7 +321,10 @@ class GiftAnalyticsService:
         self._data_version = 0
         self._reco_version = -1
         self._view_cache: Dict[tuple, tuple[int, dict | list]] = {}
+        self.fragment_bootstrap_cache = os.getenv("FRAGMENT_BOOTSTRAP_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
         self._restore_from_listing_state()
+        if self.fragment_bootstrap_cache and not self.variants:
+            self._bootstrap_from_verified_file()
         self._start_ingest_loop()
 
     def _invalidate_view_cache(self) -> None:
@@ -494,6 +497,9 @@ class GiftAnalyticsService:
         from market_data import load_verified_dataset_source
 
         dataset = load_verified_dataset_source()
+        return self._events_bases_from_verified_dataset(dataset)
+
+    def _events_bases_from_verified_dataset(self, dataset: Dict) -> Tuple[List[ListingEvent], List[BaseInfo]]:
         gifts = dataset.get("gifts") or []
         events: List[ListingEvent] = []
         base_map: Dict[str, BaseInfo] = {}
@@ -556,6 +562,30 @@ class GiftAnalyticsService:
                 base_map[base_id] = BaseInfo(base_id=base_id, name=base_name, slug=base_id)
 
         return events, list(base_map.values())
+
+    def _bootstrap_from_verified_file(self) -> None:
+        from market_data import load_verified_dataset
+
+        file_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
+        try:
+            dataset = load_verified_dataset(file_path)
+            events, bases = self._events_bases_from_verified_dataset(dataset)
+            if not events or not bases:
+                return
+            now = _now()
+            with self.lock:
+                self.bases = {b.base_id: b for b in bases}
+                self._process_listings(events, now)
+                self._build_variants(events, now)
+                self.state["updated_at"] = _iso(now)
+                self.state["ingestion_lag_seconds"] = 0
+                self.state["data_stale"] = True
+                self.state["last_error"] = "BOOTSTRAP_FROM_VERIFIED_FILE"
+                self.state["ingest_in_progress"] = False
+                self._save_state()
+            _log_ingest(f"bootstrap from file: events={len(events)} bases={len(bases)}")
+        except Exception as exc:
+            _log_ingest(f"bootstrap from file failed: {exc}")
 
     def ingest_safe(self) -> None:
         try:
