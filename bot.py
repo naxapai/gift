@@ -28,6 +28,8 @@ MIN_REPEAT_SEC = int(os.getenv("BOT_MIN_REPEAT_SEC", "21600"))
 MAX_MESSAGES_PER_CYCLE = int(os.getenv("BOT_MAX_MESSAGES_PER_CYCLE", "8"))
 DEBUG = os.getenv("BOT_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
 FORCE_SEND_TOP1 = os.getenv("BOT_FORCE_SEND_TOP1", "false").strip().lower() in {"1", "true", "yes", "on"}
+COMMANDS_ENABLED = os.getenv("BOT_COMMANDS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+UPDATES_TIMEOUT_SEC = int(os.getenv("BOT_UPDATES_TIMEOUT_SEC", "1"))
 
 
 def _http_get(url: str) -> Dict:
@@ -70,8 +72,69 @@ def _http_post(url: str, data: Dict[str, str]) -> Dict:
 def send_message(text: str) -> None:
     if not BOT_TOKEN or not CHAT_ID:
         raise RuntimeError("Set TG_BOT_TOKEN and TG_CHAT_ID env vars")
+    send_message_to(CHAT_ID, text)
+
+
+def send_message_to(chat_id: str | int, text: str) -> None:
+    if not BOT_TOKEN:
+        raise RuntimeError("Set TG_BOT_TOKEN env var")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    _http_post(url, {"chat_id": CHAT_ID, "text": text})
+    _http_post(url, {"chat_id": str(chat_id), "text": text})
+
+
+def _get_updates(offset: int | None = None, timeout_sec: int = 0) -> Dict:
+    if not BOT_TOKEN:
+        return {"ok": False, "result": []}
+    params = {"timeout": str(max(0, timeout_sec))}
+    if offset is not None:
+        params["offset"] = str(offset)
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?{urllib.parse.urlencode(params)}"
+    return _http_get(url)
+
+
+def _format_market_status(overview: Dict) -> str:
+    return "\n".join(
+        [
+            "Статус рынка Telegram Gifts:",
+            f"Состояние: {overview.get('market_state', '-')}",
+            f"Подарков: {overview.get('gifts_count', 0)}",
+            f"Коллекций: {overview.get('base_count', 0)}",
+            f"Моделей: {overview.get('model_count', 0)}",
+            f"Мин цена: {overview.get('floor_ton_min', '-') } TON",
+            f"Медиана: {overview.get('floor_ton_median', '-') } TON",
+            f"Сигналы BUY/SELL: {overview.get('buy_signals', 0)}/{overview.get('sell_signals', 0)}",
+            f"Обновлено: {overview.get('updated_at') or '-'}",
+            f"Stale: {'да' if overview.get('data_stale') else 'нет'}",
+        ]
+    )
+
+
+def _handle_commands(cache: Dict) -> None:
+    if not COMMANDS_ENABLED or not BOT_TOKEN:
+        return
+    offset = int(cache.get("tg_update_offset", 0) or 0)
+    updates = _get_updates(offset=offset, timeout_sec=UPDATES_TIMEOUT_SEC)
+    for upd in updates.get("result") or []:
+        try:
+            update_id = int(upd.get("update_id", 0))
+            if update_id >= offset:
+                offset = update_id + 1
+            msg = upd.get("message") or upd.get("edited_message") or {}
+            text = str(msg.get("text") or "").strip()
+            chat = msg.get("chat") or {}
+            chat_id = chat.get("id")
+            if not chat_id or not text.startswith("/"):
+                continue
+            cmd = text.split()[0].split("@")[0].lower()
+            if cmd == "/status":
+                try:
+                    ov = _http_get(f"{API_BASE_URL}/api/market/overview")
+                    send_message_to(chat_id, _format_market_status(ov))
+                except Exception as e:  # noqa: BLE001
+                    send_message_to(chat_id, f"Ошибка получения статуса: {e}")
+        except Exception:
+            continue
+    cache["tg_update_offset"] = offset
 
 
 def _load_cache() -> Dict:
@@ -169,6 +232,7 @@ def _wait_api_ready() -> None:
 
 def cycle(cache: Dict) -> None:
     _wait_api_ready()
+    _handle_commands(cache)
     try:
         resp = _http_get(f"{API_BASE_URL}/api/recommendations?scope=all&entity=variant&ai=1")
     except Exception as e:
