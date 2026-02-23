@@ -51,7 +51,7 @@ TON_PROOF_MAX_AGE_SEC = max(60, int(os.getenv("TON_PROOF_MAX_AGE_SEC", "300")))
 TON_CHALLENGE_TTL_SEC = max(30, int(os.getenv("TON_CHALLENGE_TTL_SEC", "180")))
 TON_ALLOW_WEAK_VERIFY = os.getenv("TON_ALLOW_WEAK_VERIFY", "true").strip().lower() in {"1", "true", "yes", "on"}
 BOT_AUTORUN = os.getenv("BOT_AUTORUN", "true").strip().lower() in {"1", "true", "yes", "on"}
-BOT_INTERVAL_SEC = max(30, int(os.getenv("BOT_POLL_INTERVAL", "60")))
+BOT_INTERVAL_SEC = max(15, int(os.getenv("BOT_POLL_INTERVAL", "30")))
 BOT_API_BASE_URL = os.getenv("BOT_API_BASE_URL", "").strip()
 BOT_API_AUTH_TOKEN = os.getenv("BOT_API_AUTH_TOKEN", "").strip() or API_AUTH_TOKEN
 
@@ -1045,16 +1045,34 @@ def _start_signal_bot_loop(port: int) -> None:
     def _loop() -> None:
         cache = signal_bot._load_cache()
         _BOT_STATUS["running"] = True
+        last_run_ts = 0
+        last_seen_data_ts = None
         while True:
-            _BOT_STATUS["last_run_at"] = int(time.time())
+            now_ts = int(time.time())
+            svc = _state()
+            data_ts = svc.state.get("updated_at")
+            should_run = False
+            # Run immediately when new market snapshot is ingested.
+            if data_ts and data_ts != last_seen_data_ts:
+                should_run = True
+                last_seen_data_ts = data_ts
+            # Fallback periodic run (commands, retries, stale windows).
+            if (now_ts - last_run_ts) >= BOT_INTERVAL_SEC:
+                should_run = True
+            if not should_run:
+                time.sleep(5)
+                continue
+            _BOT_STATUS["last_run_at"] = now_ts
             try:
                 signal_bot.cycle(cache)
                 signal_bot._save_cache(cache)
                 _BOT_STATUS["last_ok_at"] = int(time.time())
                 _BOT_STATUS["last_error"] = ""
+                last_run_ts = int(time.time())
             except Exception as e:  # noqa: BLE001
                 _BOT_STATUS["last_error"] = str(e)
-            time.sleep(BOT_INTERVAL_SEC)
+                last_run_ts = int(time.time())
+            time.sleep(2)
 
     threading.Thread(target=_loop, daemon=True, name="signal-bot-loop").start()
 
