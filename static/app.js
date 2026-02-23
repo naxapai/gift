@@ -78,6 +78,7 @@ const state = {
     connected: false,
     wallet: null,
     localWallet: null,
+    connecting: false,
     challengeTtlSec: 180,
     proofMaxAgeSec: 300,
     ui: null,
@@ -621,7 +622,19 @@ function tonLocalWalletFromUi() {
 function renderTonWalletUi() {
   if (!el.tonWalletStatus || !el.tonConnectBtn || !el.tonDisconnectBtn) return;
   if (el.headerTonConnectBtn) {
-    el.headerTonConnectBtn.textContent = state.ton.connected ? "TON подключен" : "Подключить TON";
+    if (state.ton.connecting) {
+      el.headerTonConnectBtn.textContent = "Подключение TON...";
+    } else {
+      el.headerTonConnectBtn.textContent = state.ton.connected ? "TON подключен" : "Подключить TON";
+    }
+    el.headerTonConnectBtn.disabled = Boolean(state.ton.connecting);
+  }
+  el.tonConnectBtn.disabled = Boolean(state.ton.connecting);
+  el.tonDisconnectBtn.disabled = Boolean(state.ton.connecting);
+  if (state.ton.connecting) {
+    el.tonWalletStatus.textContent = "Статус: выполняется подключение TON...";
+    el.tonConnectBtn.textContent = "Подключение...";
+    return;
   }
   if (state.ton.connected && state.ton.wallet) {
     const w = state.ton.wallet;
@@ -678,7 +691,7 @@ async function initTonAuth() {
   }
   if (!state.ton.ui) {
     state.ton.ui = new window.TON_CONNECT_UI.TonConnectUI({
-      manifestUrl: `${window.location.origin}/assets/tonconnect-manifest.json`,
+      manifestUrl: `${window.location.origin}/tonconnect-manifest.json`,
       buttonRootId: null,
     });
   }
@@ -693,15 +706,44 @@ async function initTonAuth() {
   renderTonWalletUi();
 }
 
+async function verifyTonWalletSession(account, proof) {
+  return fetchJson("/api/auth/ton/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      account,
+      ton_proof: proof || null,
+    }),
+    cache: "no-store",
+  });
+}
+
 async function connectTonWallet() {
   if (!state.ton.ui) {
     showToast("TonConnect недоступен");
     return;
   }
+  if (state.ton.connecting) return;
+  state.ton.connecting = true;
+  renderTonWalletUi();
   try {
-    // If wallet is connected locally but server proof/session is missing,
-    // force reconnect to request a fresh tonProof.
+    if (state.ton.connected) {
+      showToast("TON кошелек уже подключен");
+      return;
+    }
+
+    // If wallet is already connected in TonConnect, first try to complete server session
+    // without reconnecting/scanning QR again.
     if (state.ton.ui.wallet && !state.ton.connected) {
+      const currentAccount = state.ton.ui.wallet?.account || null;
+      if (currentAccount?.address) {
+        await verifyTonWalletSession(currentAccount, null);
+        await refreshTonMe();
+        if (state.ton.connected) {
+          showToast("TON кошелек подключен");
+          return;
+        }
+      }
       try {
         await state.ton.ui.disconnect();
       } catch (e) {
@@ -725,21 +767,16 @@ async function connectTonWallet() {
     const proof = connected?.connectItems?.tonProof?.proof;
     const account = connected?.account;
     if (!account) throw new Error("ton_account_missing");
-    await fetchJson("/api/auth/ton/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        account,
-        ton_proof: proof || null,
-      }),
-      cache: "no-store",
-    });
+    await verifyTonWalletSession(account, proof);
     await refreshTonMe();
     showToast("TON кошелек подключен");
   } catch (e) {
     const message = String(e?.message || e || "");
     showToast(`Ошибка TON: ${message}`);
     await refreshTonMe();
+  } finally {
+    state.ton.connecting = false;
+    renderTonWalletUi();
   }
 }
 
