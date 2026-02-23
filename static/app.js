@@ -1496,7 +1496,7 @@ function renderSignals() {
       const icon = renderGiftIcon(v.preview_url, variantLabel, "gift-icon-sm");
       return `<tr>
         <td><button class="btn ghost open-variant gift-cell" data-variant="${v.variant_id}">${icon}<span>${variantLabel}</span></button></td>
-        <td><span class="chip ${action.toLowerCase()}">${action}</span></td>
+        <td><span class="chip ${action.toLowerCase()}">${actionLabel(action)}</span></td>
         <td>${score}</td>
         <td>${confidence}</td>
         <td style="${percentClass(delta24h)}">${formatPct(delta24h)}</td>

@@ -917,12 +917,12 @@ body.auth-locked #staleBanner {
 
 .signals-table th:nth-child(1),
 .signals-table td:nth-child(1) {
-  width: 44%;
+  width: 38%;
 }
 
 .signals-table th:nth-child(2),
 .signals-table td:nth-child(2) {
-  width: 12%;
+  width: 16%;
   text-align: center;
 }
 
@@ -934,7 +934,7 @@ body.auth-locked #staleBanner {
 .signals-table td:nth-child(5),
 .signals-table th:nth-child(6),
 .signals-table td:nth-child(6) {
-  width: 11%;
+  width: 11.5%;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -943,6 +943,12 @@ body.auth-locked #staleBanner {
   display: flex;
   width: 100%;
   min-width: 0;
+  text-align: left;
+}
+
+.signals-table td:nth-child(2) .chip {
+  padding: 4px 8px;
+  font-size: 0.76rem;
 }
 
 .gift-cell span {
@@ -1632,11 +1638,11 @@ select:focus-visible {
   }
   .signals-table th:nth-child(1),
   .signals-table td:nth-child(1) {
-    width: 34%;
+    width: 22%;
   }
   .signals-table th:nth-child(2),
   .signals-table td:nth-child(2) {
-    width: 15%;
+    width: 18%;
   }
   .signals-table th:nth-child(3),
   .signals-table td:nth-child(3),
@@ -1646,7 +1652,7 @@ select:focus-visible {
   .signals-table td:nth-child(5),
   .signals-table th:nth-child(6),
   .signals-table td:nth-child(6) {
-    width: 12%;
+    width: 10%;
   }
   .screeners-table .gift-cell {
     padding: 2px 4px;
