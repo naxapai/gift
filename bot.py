@@ -35,6 +35,9 @@ DEBUG = os.getenv("BOT_DEBUG", "false").strip().lower() in {"1", "true", "yes", 
 FORCE_SEND_TOP1 = os.getenv("BOT_FORCE_SEND_TOP1", "false").strip().lower() in {"1", "true", "yes", "on"}
 COMMANDS_ENABLED = os.getenv("BOT_COMMANDS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 UPDATES_TIMEOUT_SEC = int(os.getenv("BOT_UPDATES_TIMEOUT_SEC", "1"))
+SIGNAL_COMMAND_WINDOW_SEC = int(os.getenv("BOT_SIGNAL_COMMAND_WINDOW_SEC", "3600"))
+SIGNAL_COMMAND_COOLDOWN_SEC = int(os.getenv("BOT_SIGNAL_COMMAND_COOLDOWN_SEC", "3600"))
+SIGNAL_COMMAND_MAX_ITEMS = int(os.getenv("BOT_SIGNAL_COMMAND_MAX_ITEMS", "8"))
 MSK_TZ = timezone(timedelta(hours=3))
 
 
@@ -146,6 +149,24 @@ def _format_market_status(overview: Dict) -> str:
     )
 
 
+def _collect_recent_channel_signals(cache: Dict, window_sec: int) -> list[Dict]:
+    now_ts = int(time.time())
+    out: list[Dict] = []
+    for value in (cache or {}).values():
+        if not isinstance(value, dict):
+            continue
+        last_sent_ts = int(value.get("last_sent_ts", 0) or 0)
+        if not last_sent_ts or (now_ts - last_sent_ts) > max(1, window_sec):
+            continue
+        if not str(value.get("variant_id") or "").strip():
+            continue
+        if not str(value.get("action") or "").strip():
+            continue
+        out.append(value)
+    out.sort(key=lambda x: int(x.get("last_sent_ts", 0) or 0), reverse=True)
+    return out
+
+
 def _handle_commands(cache: Dict) -> None:
     if not COMMANDS_ENABLED or not BOT_TOKEN:
         return
@@ -163,12 +184,33 @@ def _handle_commands(cache: Dict) -> None:
             if not chat_id or not text.startswith("/"):
                 continue
             cmd = text.split()[0].split("@")[0].lower()
-            if cmd in {"/status", "/signal"}:
+            if cmd == "/status":
                 try:
                     ov = _http_get(f"{API_BASE_URL}/api/market/overview")
                     send_message_to(chat_id, _format_market_status(ov), parse_mode="HTML")
                 except Exception as e:  # noqa: BLE001
                     send_message_to(chat_id, f"Ошибка получения статуса: {e}")
+            elif cmd == "/signal":
+                now_ts = int(time.time())
+                key = str(chat_id)
+                cmd_state = cache.setdefault("signal_cmd_state", {})
+                last_cmd_ts = int(cmd_state.get(key, 0) or 0)
+                if last_cmd_ts and (now_ts - last_cmd_ts) < SIGNAL_COMMAND_COOLDOWN_SEC:
+                    send_message_to(chat_id, "Доступные сигналы были отправлены, вернитесь через 1 час")
+                    continue
+
+                recent = _collect_recent_channel_signals(cache, SIGNAL_COMMAND_WINDOW_SEC)
+                if not recent:
+                    send_message_to(chat_id, "За последний час сигналы в канал не отправлялись")
+                    continue
+
+                send_message_to(
+                    chat_id,
+                    f"Сигналы за последний час: {len(recent)} (показаны первые {min(len(recent), SIGNAL_COMMAND_MAX_ITEMS)})",
+                )
+                for item in recent[: max(1, SIGNAL_COMMAND_MAX_ITEMS)]:
+                    _send_signal_to(chat_id, item)
+                cmd_state[key] = now_ts
         except Exception:
             continue
     cache["tg_update_offset"] = offset
@@ -188,7 +230,7 @@ def _save_cache(cache: Dict) -> None:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
-def _format_signal(item: Dict) -> str:
+def _format_signal(item: Dict, signal_ts: int | None = None) -> str:
     def _pick_trait_name(value) -> str:
         if isinstance(value, dict):
             for key in ("name", "title", "label", "value", "id"):
@@ -258,20 +300,28 @@ def _format_signal(item: Dict) -> str:
             lines.append(f"- {html.escape(txt)}")
     else:
         lines.append("- -")
-    lines.extend(["", f"Время сигнала: {_now_msk_text()}"])
+    if signal_ts and signal_ts > 0:
+        signal_dt = datetime.fromtimestamp(signal_ts, tz=timezone.utc).astimezone(MSK_TZ).strftime("%Y-%m-%d %H:%M:%S МСК")
+    else:
+        signal_dt = _now_msk_text()
+    lines.extend(["", f"Время сигнала: {signal_dt}"])
     return "\n".join(lines)
 
 
-def _send_signal(item: Dict) -> None:
-    text = _format_signal(item)
+def _send_signal_to(chat_id: str | int, item: Dict) -> None:
+    text = _format_signal(item, signal_ts=int(item.get("last_sent_ts", 0) or 0))
     preview = str(item.get("preview_url") or "").strip()
     if preview.startswith("http://") or preview.startswith("https://"):
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
         # Telegram caption max 1024 chars.
         caption = text[:1000]
-        _http_post(url, {"chat_id": CHAT_ID, "photo": preview, "caption": caption, "parse_mode": "HTML"})
+        _http_post(url, {"chat_id": str(chat_id), "photo": preview, "caption": caption, "parse_mode": "HTML"})
         return
-    send_message_to(CHAT_ID, text, parse_mode="HTML")
+    send_message_to(chat_id, text, parse_mode="HTML")
+
+
+def _send_signal(item: Dict) -> None:
+    _send_signal_to(CHAT_ID, item)
 
 
 def _is_dynamic(prev: Dict, curr: Dict) -> bool:
