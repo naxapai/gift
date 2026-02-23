@@ -1843,7 +1843,8 @@ function renderChart() {
     return;
   }
   const { width, height } = chartDims(svg, 1400, 560);
-  const pad = { l: 46, r: 12, t: 10, b: 20 };
+  // Keep axis labels visible while minimizing top/bottom empty space in plot area.
+  const pad = { l: 42, r: 10, t: 4, b: 14 };
   const values = points.map((p) => Number(p.value_ton || 0));
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -1864,7 +1865,7 @@ function renderChart() {
       const v = max - (max - min) * t;
       return `
         <line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" stroke="#dbe4d8" stroke-width="1" />
-        <text x="8" y="${y + 4}" text-anchor="start" fill="#5f6874" font-size="11">${formatTon(v)}</text>
+      <text x="6" y="${y + 4}" text-anchor="start" fill="#5f6874" font-size="11">${formatTon(v)}</text>
       `;
     })
     .join("");
@@ -1875,7 +1876,7 @@ function renderChart() {
     const label = formatChartTsLabel(points[idx]?.ts);
     return `
       <line x1="${x}" y1="${pad.t}" x2="${x}" y2="${height - pad.b}" stroke="#edf2ee" stroke-width="1" />
-      <text x="${x}" y="${height - 6}" text-anchor="middle" fill="#5f6874" font-size="11">${label}</text>
+      <text x="${x}" y="${height - 3}" text-anchor="middle" fill="#5f6874" font-size="11">${label}</text>
     `;
   }).join("");
 
@@ -1888,7 +1889,7 @@ function renderChart() {
     <path d="${areaPath}" fill="rgba(15,118,110,0.14)"></path>
     <path d="${path}" fill="none" stroke="#0f766e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
     ${points.length === 1 ? `<circle cx="${mapX(0).toFixed(2)}" cy="${mapY(values[0]).toFixed(2)}" r="6" fill="#0f766e" />` : ""}
-    <text x="8" y="14" fill="#5f6874" font-size="11">TON</text>
+    <text x="6" y="11" fill="#5f6874" font-size="11">TON</text>
   `;
 }
 
