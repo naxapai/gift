@@ -2214,7 +2214,10 @@ async function loadScreenersPage() {
 }
 
 async function loadSignalsPage() {
-  await loadVariantsForFilters(false);
+  // Signals page must reflect fresh recomputation quickly; do not keep 10m variants cache here.
+  const nowMs = Date.now();
+  const forceRefresh = (nowMs - Number(state.variantsCache.loadedAtMs || 0)) >= 60 * 1000;
+  await loadVariantsForFilters(forceRefresh);
   renderSignals();
   state.pageLoaded.signals = true;
 }
