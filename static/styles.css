@@ -1305,6 +1305,17 @@ body.auth-locked #staleBanner {
 
 .screeners-grid > .filters-card { grid-column: span 3; }
 .screeners-grid > .list-card { grid-column: span 9; }
+
+/* Keep screener dropdown above the results card and prevent clipping by card bounds. */
+.screeners-grid > .filters-card {
+  overflow: visible;
+  z-index: 30;
+}
+
+.screeners-grid > .list-card {
+  z-index: 1;
+}
+
 .signals-grid > .signals-summary-card { grid-column: span 3; }
 .signals-grid > .list-card { grid-column: span 9; }
 
