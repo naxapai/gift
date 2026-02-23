@@ -772,6 +772,8 @@ function renderOverview(overview) {
     ["Мин. цена", `${formatTon(overview.floor_ton_min)} TON`],
     ["Медиана цены", `${formatTon(overview.floor_ton_median)} TON`],
     ["Активные лоты", overview.active_listings],
+    ["Всего в продаже", overview.total_for_sale ?? overview.active_listings ?? 0],
+    ["Всего продано", overview.total_sold ?? 0],
     ["Среднее 7д", formatPct(overview.avg_change_7d || 0)],
     ["Среднее 30д", formatPct(overview.avg_change_30d || 0)],
     ["Сигналы покупки", overview.buy_signals],

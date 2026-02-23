@@ -599,6 +599,9 @@ def fetch_verified_dataset_from_fragment(
     }
     generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     gift_mode = os.getenv("FRAGMENT_GIFT_MODE", "lot").strip().lower()
+    total_for_sale = 0
+    total_sold = 0
+    total_auction = 0
 
     for collection in collections:
         if time.monotonic() - started_at > fetch_budget_sec:
@@ -703,6 +706,16 @@ def fetch_verified_dataset_from_fragment(
                         per_lot = lot_status_counts.setdefault(lot_id, {})
                         per_lot[st] = per_lot.get(st, 0) + 1
 
+                for ev in lot_latest.values():
+                    st = str(ev.get("status") or "").strip().lower()
+                    if st == "sold":
+                        total_sold += 1
+                    elif st == "auction":
+                        total_auction += 1
+                        total_for_sale += 1
+                    else:
+                        total_for_sale += 1
+
                 for lot_id, ev in lot_latest.items():
                     latest_status = str(ev.get("status") or "").strip().lower()
                     if latest_status == "sold":
@@ -747,6 +760,14 @@ def fetch_verified_dataset_from_fragment(
                 gift_id = f"fragment_{slug}"
                 series = _fragment_build_series(events)
                 series = _apply_spot_price_to_series(series, profile.get("value_ton_estimate"), datetime.utcnow().date().isoformat())
+                latest_status = str(last_event.get("status") or "").strip().lower()
+                if latest_status == "sold":
+                    total_sold += 1
+                elif latest_status == "auction":
+                    total_auction += 1
+                    total_for_sale += 1
+                else:
+                    total_for_sale += 1
                 gifts.append(
                     {
                         "gift_id": gift_id,
@@ -755,7 +776,7 @@ def fetch_verified_dataset_from_fragment(
                         "collection_slug": slug,
                         "fragment_market_url": f"https://fragment.com/gifts/{slug}",
                         "last_lot_id": last_event["gift_id"],
-                        "latest_status": str(last_event.get("status") or "").strip().lower(),
+                        "latest_status": latest_status,
                         "preview_image_url": preview_image_url,
                         "available_models": [x["value"] for x in model_options],
                         "available_backdrops": [x["value"] for x in backdrop_options],
@@ -791,6 +812,9 @@ def fetch_verified_dataset_from_fragment(
         "max_pages_per_collection": max_pages_per_collection,
         "gifts": len(gifts),
         "gift_mode": gift_mode,
+        "total_for_sale": total_for_sale,
+        "total_sold": total_sold,
+        "total_auction": total_auction,
     }
     dataset = {"generated_at": generated_at, "gifts": gifts, "filters": filter_index, "meta": meta}
     _merge_fragment_analytics_store(dataset)

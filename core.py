@@ -321,6 +321,11 @@ class GiftAnalyticsService:
         self._data_version = 0
         self._reco_version = -1
         self._view_cache: Dict[tuple, tuple[int, dict | list]] = {}
+        self.source_totals: Dict[str, int] = {
+            "for_sale": 0,
+            "sold": 0,
+            "auction": 0,
+        }
         self.fragment_bootstrap_cache = os.getenv("FRAGMENT_BOOTSTRAP_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
         self._restore_from_listing_state()
         if self.fragment_bootstrap_cache and not self.variants:
@@ -497,7 +502,38 @@ class GiftAnalyticsService:
         from market_data import load_verified_dataset_source
 
         dataset = load_verified_dataset_source()
+        self._update_source_totals(dataset)
         return self._events_bases_from_verified_dataset(dataset)
+
+    def _update_source_totals(self, dataset: Dict) -> None:
+        meta = dataset.get("meta") if isinstance(dataset, dict) else {}
+        if isinstance(meta, dict):
+            fs = meta.get("total_for_sale")
+            sd = meta.get("total_sold")
+            aq = meta.get("total_auction")
+            if fs is not None or sd is not None or aq is not None:
+                self.source_totals = {
+                    "for_sale": int(fs or 0),
+                    "sold": int(sd or 0),
+                    "auction": int(aq or 0),
+                }
+                return
+        gifts = dataset.get("gifts") if isinstance(dataset, dict) else []
+        for_sale = 0
+        sold = 0
+        auction = 0
+        for g in gifts if isinstance(gifts, list) else []:
+            if not isinstance(g, dict):
+                continue
+            st = str(g.get("latest_status") or "").strip().lower()
+            if st == "sold":
+                sold += 1
+            elif st == "auction":
+                auction += 1
+                for_sale += 1
+            else:
+                for_sale += 1
+        self.source_totals = {"for_sale": for_sale, "sold": sold, "auction": auction}
 
     def _events_bases_from_verified_dataset(self, dataset: Dict) -> Tuple[List[ListingEvent], List[BaseInfo]]:
         gifts = dataset.get("gifts") or []
@@ -1001,6 +1037,8 @@ class GiftAnalyticsService:
             "buy_signals": buy_signals,
             "sell_signals": sell_signals,
             "anomalies": anomalies,
+            "total_for_sale": int(self.source_totals.get("for_sale", sum(active) if active else 0)),
+            "total_sold": int(self.source_totals.get("sold", len(self.trade_events))),
             "data_stale": self.is_stale(),
             "ingestion_lag_seconds": self.state.get("ingestion_lag_seconds"),
             "last_error": self.state.get("last_error"),

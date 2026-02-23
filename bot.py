@@ -133,6 +133,8 @@ def _format_market_status(overview: Dict) -> str:
             f"Моделей: {overview.get('model_count', 0)}",
             f"Мин цена: {overview.get('floor_ton_min', '-')} TON",
             f"Медиана: {overview.get('floor_ton_median', '-')} TON",
+            f"Всего в продаже: {overview.get('total_for_sale', overview.get('active_listings', 0))}",
+            f"Всего продано: {overview.get('total_sold', 0)}",
             f"Сигналы BUY/SELL: {overview.get('buy_signals', 0)}/{overview.get('sell_signals', 0)}",
             f"Обновлено: {_to_msk_text(overview.get('updated_at'))}",
             f"Stale: {'нет' if not overview.get('data_stale') else 'да'}",
