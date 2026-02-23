@@ -813,7 +813,15 @@ function renderOverview(overview) {
   state.overview = overview;
   startMskClock();
   el.updatedAt.title = `Последнее обновление данных: ${formatDateTime(overview.updated_at)} МСК`;
-  el.marketState.textContent = overview.market_state || "-";
+  const marketStateText = String(overview.market_state || "-");
+  el.marketState.textContent = marketStateText;
+  el.marketState.classList.remove("market-state-up", "market-state-down");
+  const marketStateNorm = marketStateText.toLowerCase();
+  if (marketStateNorm.includes("рост") || marketStateNorm.includes("bull")) {
+    el.marketState.classList.add("market-state-up");
+  } else if (marketStateNorm.includes("пад") || marketStateNorm.includes("сниж") || marketStateNorm.includes("bear")) {
+    el.marketState.classList.add("market-state-down");
+  }
   el.giftCount.textContent = overview.gifts_count ?? overview.active_listings ?? 0;
   el.collectionCountHero.textContent = overview.base_count ?? 0;
   el.modelCountHero.textContent = overview.model_count ?? 0;

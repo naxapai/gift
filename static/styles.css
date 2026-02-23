@@ -493,6 +493,33 @@ body.auth-locked #staleBanner {
   gap: 10px;
 }
 
+.overview-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.overview-status-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.2;
+}
+
+.overview-status-value {
+  font-size: 1.1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+#marketState.overview-status-value.market-state-up {
+  color: var(--success);
+}
+
+#marketState.overview-status-value.market-state-down {
+  color: var(--danger);
+}
+
 .hero-overview-layout {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(0, 1.5fr);
@@ -1503,6 +1530,15 @@ select:focus-visible {
   .hero-main-overview {
     grid-template-columns: 1fr;
   }
+  .overview-status-row {
+    gap: 6px 10px;
+  }
+  .overview-status-item {
+    font-size: 0.86rem;
+  }
+  .overview-status-value {
+    font-size: 0.94rem;
+  }
   .variant-headline {
     grid-template-columns: 84px minmax(0, 1fr);
     gap: 10px;
@@ -1529,12 +1565,14 @@ select:focus-visible {
   }
   .hero-overview-layout {
     grid-template-columns: 1fr;
+    gap: 8px;
   }
   .overview-signal-wrap {
-    min-height: 190px;
+    min-height: 184px;
+    padding-top: 8px;
   }
   .overview-signal-chart {
-    height: 148px;
+    height: 154px;
   }
   .bento-grid > * {
     grid-column: span 4 !important;
