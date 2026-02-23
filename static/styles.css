@@ -1119,6 +1119,21 @@ body.auth-locked #staleBanner {
   cursor: pointer;
 }
 
+.custom-select.multiple .custom-select-option {
+  position: relative;
+  padding-right: 28px;
+}
+
+.custom-select.multiple .custom-select-option[data-selected="1"]::after {
+  content: "✓";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #0f766e;
+  font-weight: 700;
+}
+
 .custom-select-option:hover {
   background: #f3f6f4;
 }

@@ -1186,6 +1186,7 @@ function fillMultiSelect(selectEl, items, valueKey = "id", labelKey = "name") {
     options.push(`<option value="${value}">${label}</option>`);
   }
   selectEl.innerHTML = options.join("");
+  syncCustomSelect(selectEl);
 }
 
 function selectedValues(selectEl) {
@@ -1210,11 +1211,12 @@ function renderCustomSelectOptions(selectEl) {
   const state = customSelectRegistry.get(selectEl);
   if (!state || !state.menu || !selectEl) return;
   const options = [...selectEl.options];
+  const isMultiple = Boolean(selectEl.multiple);
   state.menu.innerHTML = options
     .map((opt) => {
       const value = String(opt.value || "");
-      const selected = value === String(selectEl.value || "");
-      return `<button type="button" class="custom-select-option ${selected ? "active" : ""}" data-value="${escapeHtml(value)}">${escapeHtml(opt.textContent || "")}</button>`;
+      const selected = isMultiple ? Boolean(opt.selected) : value === String(selectEl.value || "");
+      return `<button type="button" class="custom-select-option ${selected ? "active" : ""}" data-value="${escapeHtml(value)}" data-selected="${selected ? "1" : "0"}">${escapeHtml(opt.textContent || "")}</button>`;
     })
     .join("");
 }
@@ -1222,20 +1224,32 @@ function renderCustomSelectOptions(selectEl) {
 function syncCustomSelect(selectEl) {
   const state = customSelectRegistry.get(selectEl);
   if (!state || !state.trigger || !selectEl) return;
-  const selected = selectEl.selectedOptions?.[0];
-  state.trigger.textContent = selected?.textContent || "Выберите значение";
+  if (selectEl.multiple) {
+    const values = [...(selectEl.selectedOptions || [])].map((x) => String(x.textContent || "").trim()).filter(Boolean);
+    if (!values.length) {
+      state.trigger.textContent = "Выберите значения";
+    } else if (values.length <= 2) {
+      state.trigger.textContent = values.join(", ");
+    } else {
+      state.trigger.textContent = `Выбрано: ${values.length}`;
+    }
+  } else {
+    const selected = selectEl.selectedOptions?.[0];
+    state.trigger.textContent = selected?.textContent || "Выберите значение";
+  }
   renderCustomSelectOptions(selectEl);
 }
 
 function initCustomSelect(selectEl) {
-  if (!selectEl || selectEl.multiple || customSelectRegistry.has(selectEl)) return;
+  if (!selectEl || customSelectRegistry.has(selectEl)) return;
   const parent = selectEl.parentElement;
   if (!parent) return;
 
   const root = document.createElement("div");
-  root.className = "custom-select";
+  const isMultiple = Boolean(selectEl.multiple);
+  root.className = `custom-select${isMultiple ? " multiple" : ""}`;
   root.innerHTML = `
-    <button type="button" class="custom-select-trigger" aria-haspopup="listbox" aria-expanded="false">Выберите значение</button>
+    <button type="button" class="custom-select-trigger" aria-haspopup="listbox" aria-expanded="false">${isMultiple ? "Выберите значения" : "Выберите значение"}</button>
     <div class="custom-select-menu hidden" role="listbox"></div>
   `;
   parent.appendChild(root);
@@ -1262,6 +1276,20 @@ function initCustomSelect(selectEl) {
     const optionBtn = e.target.closest(".custom-select-option");
     if (!optionBtn) return;
     const value = optionBtn.dataset.value ?? "";
+    if (selectEl.multiple) {
+      let changed = false;
+      for (const opt of selectEl.options) {
+        if (String(opt.value) !== String(value)) continue;
+        opt.selected = !opt.selected;
+        changed = true;
+        break;
+      }
+      if (changed) {
+        selectEl.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      syncCustomSelect(selectEl);
+      return;
+    }
     if (selectEl.value !== value) {
       selectEl.value = value;
       selectEl.dispatchEvent(new Event("change", { bubbles: true }));
@@ -1274,8 +1302,8 @@ function initCustomSelect(selectEl) {
 }
 
 function initAllCustomSelects() {
-  const singles = [...document.querySelectorAll("select:not([multiple])")];
-  for (const selectEl of singles) {
+  const all = [...document.querySelectorAll("select")];
+  for (const selectEl of all) {
     initCustomSelect(selectEl);
   }
 }
@@ -1335,9 +1363,11 @@ async function loadCatalogFiltersAndVariants() {
   for (const opt of el.catalogBackgroundSelect.options) {
     opt.selected = state.catalogFilters.backgroundIds.includes(opt.value);
   }
+  syncCustomSelect(el.catalogBackgroundSelect);
   for (const opt of el.catalogPatternSelect.options) {
     opt.selected = state.catalogFilters.patternIds.includes(opt.value);
   }
+  syncCustomSelect(el.catalogPatternSelect);
 
   const params = new URLSearchParams({ page: "1", page_size: "300" });
   if (state.catalogFilters.modelId) params.append("model_id", state.catalogFilters.modelId);
