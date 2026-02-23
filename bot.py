@@ -9,6 +9,7 @@ import urllib.request
 import fcntl
 from datetime import datetime
 from datetime import timezone
+from datetime import timedelta
 from typing import Dict
 
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "").strip()
@@ -19,7 +20,7 @@ HTTP_TIMEOUT_SEC = int(os.getenv("BOT_HTTP_TIMEOUT_SEC", "90"))
 HTTP_RETRIES = int(os.getenv("BOT_HTTP_RETRIES", "3"))
 HTTP_BACKOFF_SEC = float(os.getenv("BOT_HTTP_BACKOFF_SEC", "1.5"))
 API_WARMUP_MAX_SEC = int(os.getenv("BOT_API_WARMUP_MAX_SEC", "120"))
-POLL_INTERVAL_SEC = int(os.getenv("BOT_POLL_INTERVAL", "300"))
+POLL_INTERVAL_SEC = int(os.getenv("BOT_POLL_INTERVAL", "60"))
 MIN_CONFIDENCE = int(os.getenv("BOT_MIN_CONFIDENCE", "60"))
 DYNAMICS_PCT = float(os.getenv("BOT_DYNAMICS_PCT", "5"))
 CACHE_FILE = os.getenv("BOT_CACHE_FILE", "data/bot_cache.json")
@@ -30,6 +31,26 @@ DEBUG = os.getenv("BOT_DEBUG", "false").strip().lower() in {"1", "true", "yes", 
 FORCE_SEND_TOP1 = os.getenv("BOT_FORCE_SEND_TOP1", "false").strip().lower() in {"1", "true", "yes", "on"}
 COMMANDS_ENABLED = os.getenv("BOT_COMMANDS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 UPDATES_TIMEOUT_SEC = int(os.getenv("BOT_UPDATES_TIMEOUT_SEC", "1"))
+MSK_TZ = timezone(timedelta(hours=3))
+
+
+def _to_msk_text(ts_iso: str | None) -> str:
+    if not ts_iso:
+        return "-"
+    raw = str(ts_iso).strip()
+    if not raw:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(MSK_TZ).strftime("%Y-%m-%d %H:%M:%S МСК")
+    except Exception:
+        return raw
+
+
+def _now_msk_text() -> str:
+    return datetime.now(MSK_TZ).strftime("%Y-%m-%d %H:%M:%S МСК")
 
 
 def _http_get(url: str) -> Dict:
@@ -110,8 +131,9 @@ def _format_market_status(overview: Dict) -> str:
             f"Мин цена: {overview.get('floor_ton_min', '-') } TON",
             f"Медиана: {overview.get('floor_ton_median', '-') } TON",
             f"Сигналы BUY/SELL: {overview.get('buy_signals', 0)}/{overview.get('sell_signals', 0)}",
-            f"Обновлено: {overview.get('updated_at') or '-'}",
+            f"Обновлено: {_to_msk_text(overview.get('updated_at'))}",
             f"Stale: {'да' if overview.get('data_stale') else 'нет'}",
+            f"Время ответа: {_now_msk_text()}",
         ]
     )
 
@@ -182,6 +204,7 @@ def _format_signal(item: Dict) -> str:
         lines.append("Риск:")
         for r in risks[:2]:
             lines.append(f"- {r.get('text')}")
+    lines.extend(["", f"Время сигнала: {_now_msk_text()}"])
     return "\n".join(lines)
 
 
