@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import html
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -137,7 +138,6 @@ def _format_market_status(overview: Dict) -> str:
             f"Всего продано: {overview.get('total_sold', 0)}",
             f"Сигналы BUY/SELL: {overview.get('buy_signals', 0)}/{overview.get('sell_signals', 0)}",
             f"Обновлено: {_to_msk_text(overview.get('updated_at'))}",
-            f"Stale: {'нет' if not overview.get('data_stale') else 'да'}",
             f"Время ответа: {_now_msk_text()}",
         ]
     )
@@ -186,31 +186,63 @@ def _save_cache(cache: Dict) -> None:
 
 
 def _format_signal(item: Dict) -> str:
-    title = item.get("title") or item.get("variant_id")
-    reco = item.get("action") or "HOLD"
-    score = item.get("reco_score") or 0
-    conf = item.get("confidence") or 0
-    summary = item.get("summary") or ""
+    action = str(item.get("action") or "HOLD").upper()
+    score = float(item.get("reco_score") or 0)
+    conf = int(round(float(item.get("confidence") or 0)))
     forecast = item.get("forecast") or {}
     rng = forecast.get("range_pct") if isinstance(forecast, dict) else []
     fc_range = f"{float(rng[0]):.1f}%…{float(rng[1]):.1f}%" if isinstance(rng, list) and len(rng) >= 2 else "-"
     fc_bias = {"up": "рост", "down": "снижение", "flat": "боковик"}.get(str(forecast.get("bias") or "flat"), "боковик")
+    action_ru = {"BUY": "Покупка", "SELL": "Продажа", "HOLD": "Держать", "WATCH": "Наблюдение", "AVOID": "Избегать"}.get(action, action)
+    traits = item.get("traits") or {}
+    model = (traits.get("model") or {}).get("name") or "-"
+    background = (traits.get("background") or {}).get("name") or "-"
+    pattern = (traits.get("pattern") or {}).get("name") or "-"
+    collection = item.get("base_name") or item.get("base_id") or "-"
     reasons = item.get("reasons") or []
     risks = item.get("risks") or []
-    lines = [f"Сигнал: {reco} | score {score} | conf {conf}%", title]
-    if summary:
-        lines.extend(["", summary])
-    lines.extend(["", f"Прогноз 24ч: {fc_bias}, диапазон {fc_range}"])
+    summary = f"ожидается {fc_bias} (24ч: {fc_range}, оценка {score:.1f}, уверенность {conf}%)"
+
+    lines = [
+        "<b>GiftMarketZone: Сигналы :</b>",
+        f"<b>{html.escape(action)}</b> | score {score:.1f} | conf {conf}%",
+        f"Коллекция: <b>{html.escape(str(collection))}</b>",
+        f"Модель: <b>{html.escape(str(model))}</b>",
+        f"Фон: <b>{html.escape(str(background))}</b>",
+        f"Узор: <b>{html.escape(str(pattern))}</b>",
+        "",
+        f"<b>{html.escape(action_ru)}:</b> {html.escape(summary)}",
+        "",
+        f"<b>Прогноз 24ч:</b> {html.escape(fc_bias)}, диапазон {html.escape(fc_range)}",
+    ]
+    lines.append("<b>Причины:</b>")
     if reasons:
-        lines.append("Причины:")
         for r in reasons[:3]:
-            lines.append(f"- {r.get('text')}")
+            txt = str((r or {}).get("text") or "-")
+            lines.append(f"- {html.escape(txt)}")
+    else:
+        lines.append("- -")
+    lines.append("<b>Риск:</b>")
     if risks:
-        lines.append("Риск:")
         for r in risks[:2]:
-            lines.append(f"- {r.get('text')}")
+            txt = str((r or {}).get("text") or "-")
+            lines.append(f"- {html.escape(txt)}")
+    else:
+        lines.append("- -")
     lines.extend(["", f"Время сигнала: {_now_msk_text()}"])
     return "\n".join(lines)
+
+
+def _send_signal(item: Dict) -> None:
+    text = _format_signal(item)
+    preview = str(item.get("preview_url") or "").strip()
+    if preview.startswith("http://") or preview.startswith("https://"):
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        # Telegram caption max 1024 chars.
+        caption = text[:1000]
+        _http_post(url, {"chat_id": CHAT_ID, "photo": preview, "caption": caption, "parse_mode": "HTML"})
+        return
+    send_message_to(CHAT_ID, text, parse_mode="HTML")
 
 
 def _is_dynamic(prev: Dict, curr: Dict) -> bool:
@@ -289,7 +321,7 @@ def cycle(cache: Dict) -> None:
     stat_dyn = 0
 
     if FORCE_SEND_TOP1 and items:
-        send_message(_format_signal(items[0]))
+        _send_signal(items[0])
         sent_count += 1
         key = f"{items[0].get('variant_id')}"
         fp = _signal_fingerprint(items[0])
@@ -319,7 +351,7 @@ def cycle(cache: Dict) -> None:
         if not _is_dynamic(prev, item):
             stat_dyn += 1
             continue
-        send_message(_format_signal(item))
+        _send_signal(item)
         sent_count += 1
         cache[key] = {**item, "last_sent": now_tag, "last_sent_ts": now_ts, "last_fp": fp}
     if DEBUG:
