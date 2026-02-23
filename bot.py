@@ -60,6 +60,120 @@ def _now_msk_text() -> str:
     return datetime.now(MSK_TZ).strftime("%Y-%m-%d %H:%M:%S МСК")
 
 
+def _norm_text(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    out = []
+    prev_space = False
+    for ch in raw:
+        if ch.isalnum():
+            out.append(ch)
+            prev_space = False
+        else:
+            if not prev_space:
+                out.append(" ")
+                prev_space = True
+    return " ".join("".join(out).split())
+
+
+def _pick_best_match(query: str, items: list[dict], name_key: str, id_key: str) -> dict | None:
+    q = _norm_text(query)
+    if not q:
+        return None
+    exact = None
+    contains = None
+    for item in items:
+        name = str(item.get(name_key) or "")
+        item_id = str(item.get(id_key) or "")
+        name_n = _norm_text(name)
+        id_n = _norm_text(item_id)
+        if q == name_n or q == id_n:
+            exact = item
+            break
+        if q in name_n or q in id_n:
+            contains = contains or item
+    return exact or contains
+
+
+def _signal_item_from_variant(variant: Dict) -> Dict:
+    reco = variant.get("reco") or {}
+    metrics = variant.get("metrics") or {}
+    return {
+        "variant_id": variant.get("variant_id"),
+        "base_id": variant.get("base_id"),
+        "base_name": variant.get("base_name") or variant.get("group") or variant.get("base_id"),
+        "title": variant.get("title"),
+        "preview_url": variant.get("preview_url"),
+        "traits": variant.get("traits") or {},
+        "action": reco.get("action"),
+        "reco_score": reco.get("reco_score"),
+        "confidence": reco.get("confidence"),
+        "forecast": reco.get("forecast"),
+        "reasons": reco.get("reasons"),
+        "risks": reco.get("risks"),
+        "summary": reco.get("summary"),
+        "floor_change_pct_24h": metrics.get("floor_change_pct_24h"),
+        "last_sent_ts": int(time.time()),
+    }
+
+
+def _find_variant_by_gift_input(raw_text: str) -> Dict | None:
+    parts = [p.strip() for p in str(raw_text or "").split("/")]
+    while parts and not parts[-1]:
+        parts.pop()
+    if len(parts) < 2:
+        return None
+    collection_q = parts[0]
+    model_q = parts[1]
+    background_q = parts[2] if len(parts) >= 3 else ""
+    pattern_q = parts[3] if len(parts) >= 4 else ""
+    if not collection_q or not model_q:
+        return None
+
+    bases = _http_get(f"{API_BASE_URL}/api/bases").get("items") or []
+    base = _pick_best_match(collection_q, bases, "name", "base_id")
+    if not base:
+        return None
+    base_id = str(base.get("base_id") or "").strip()
+    if not base_id:
+        return None
+
+    models_resp = _http_get(f"{API_BASE_URL}/api/bases/{urllib.parse.quote(base_id, safe='')}/dimensions?type=model&period=24h")
+    models = [{"dim_id": x.get("dim_id"), "name": x.get("name")} for x in (models_resp.get("items") or [])]
+    model = _pick_best_match(model_q, models, "name", "dim_id")
+    if not model or not str(model.get("dim_id") or "").strip():
+        return None
+
+    bg_id = ""
+    if background_q:
+        bgs_resp = _http_get(f"{API_BASE_URL}/api/bases/{urllib.parse.quote(base_id, safe='')}/dimensions?type=background&period=24h")
+        bgs = [{"dim_id": x.get("dim_id"), "name": x.get("name")} for x in (bgs_resp.get("items") or [])]
+        bg = _pick_best_match(background_q, bgs, "name", "dim_id")
+        if not bg or not str(bg.get("dim_id") or "").strip():
+            return None
+        bg_id = str(bg.get("dim_id") or "").strip()
+
+    pattern_id = ""
+    if pattern_q:
+        patterns_resp = _http_get(f"{API_BASE_URL}/api/bases/{urllib.parse.quote(base_id, safe='')}/dimensions?type=pattern&period=24h")
+        patterns = [{"dim_id": x.get("dim_id"), "name": x.get("name")} for x in (patterns_resp.get("items") or [])]
+        pattern = _pick_best_match(pattern_q, patterns, "name", "dim_id")
+        if not pattern or not str(pattern.get("dim_id") or "").strip():
+            return None
+        pattern_id = str(pattern.get("dim_id") or "").strip()
+
+    params = [("page_size", "300"), ("page", "1"), ("ai", "1"), ("model_id", str(model.get("dim_id")))]
+    if bg_id:
+        params.append(("background_id", bg_id))
+    if pattern_id:
+        params.append(("pattern_id", pattern_id))
+    query = urllib.parse.urlencode(params, doseq=True)
+    url = f"{API_BASE_URL}/api/bases/{urllib.parse.quote(base_id, safe='')}/variants?{query}"
+    variants = _http_get(url).get("items") or []
+    if not variants:
+        return None
+    return variants[0]
+
+
 def _http_get(url: str) -> Dict:
     last_error = None
     for attempt in range(1, max(1, HTTP_RETRIES) + 1):
@@ -181,7 +295,35 @@ def _handle_commands(cache: Dict) -> None:
             text = str(msg.get("text") or "").strip()
             chat = msg.get("chat") or {}
             chat_id = chat.get("id")
-            if not chat_id or not text.startswith("/"):
+            if not chat_id:
+                continue
+            gift_state = cache.setdefault("signal_gift_state", {})
+            gift_waiting = bool(gift_state.get(str(chat_id), {}).get("awaiting"))
+            if gift_waiting and text and not text.startswith("/"):
+                try:
+                    variant = _find_variant_by_gift_input(text)
+                    if not variant:
+                        send_message_to(
+                            chat_id,
+                            "Мы не смогли собрать аналитику по введенным вами данным. Проверьте корректность ввода. "
+                            "Возможно указанный вами подарок отсутствует в нашей базе. Свяжитесь и нашей командой в "
+                            "телеграм канале и мы обязательно внесем необходимые данные в нашу систему аналитики. "
+                            "Благодарим за понимание",
+                        )
+                    else:
+                        _send_signal_to(chat_id, _signal_item_from_variant(variant))
+                except Exception:
+                    send_message_to(
+                        chat_id,
+                        "Мы не смогли собрать аналитику по введенным вами данным. Проверьте корректность ввода. "
+                        "Возможно указанный вами подарок отсутствует в нашей базе. Свяжитесь и нашей командой в "
+                        "телеграм канале и мы обязательно внесем необходимые данные в нашу систему аналитики. "
+                        "Благодарим за понимание",
+                    )
+                finally:
+                    gift_state.pop(str(chat_id), None)
+                continue
+            if not text.startswith("/"):
                 continue
             cmd = text.split()[0].split("@")[0].lower()
             if cmd == "/status":
@@ -211,6 +353,16 @@ def _handle_commands(cache: Dict) -> None:
                 for item in recent[: max(1, SIGNAL_COMMAND_MAX_ITEMS)]:
                     _send_signal_to(chat_id, item)
                 cmd_state[key] = now_ts
+            elif cmd == "/signal_gift":
+                gift_state[str(chat_id)] = {"awaiting": True, "started_ts": int(time.time())}
+                send_message_to(
+                    chat_id,
+                    "Введите <b>название коллекции, модели, фона и узора в формате: "
+                    "коллекция/модель/фон/узор</b>, например: "
+                    "<b>berry boxes/clarity/black/baphomet</b>. "
+                    "<b>Коллекция и модель необходимо указывать обязательно</b>",
+                    parse_mode="HTML",
+                )
         except Exception:
             continue
     cache["tg_update_offset"] = offset
