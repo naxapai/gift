@@ -247,6 +247,15 @@ function renderGiftIcon(url, title, cls = "gift-icon") {
   return `<img class="${cls}" src="${safeUrl}" alt="${title || "подарок"}" loading="lazy" decoding="async" />`;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function actionLabel(action) {
   const code = String(action || "HOLD").toUpperCase();
   const map = {
@@ -1450,7 +1459,17 @@ function renderVariantDetails(variant, listings, series) {
 
   const m = variant.metrics || {};
   const reco = variant.reco || {};
-  const title = `${variant.traits?.model?.name || "?"} • ${variant.traits?.background?.name || "?"} • ${variant.traits?.pattern?.name || "?"}`;
+  const model = String(variant.traits?.model?.name || "?").trim();
+  const background = String(variant.traits?.background?.name || "?").trim();
+  const pattern = String(variant.traits?.pattern?.name || "?").trim();
+  const base = state.bases.find((b) => b.base_id === variant.base_id);
+  const prettyBaseId = String(variant.base_id || "")
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const collection = String(base?.name || variant.base_name || prettyBaseId || variant.base_id || "?").trim();
+  const title = `${model} • ${background} • ${pattern}`;
   if (el.variantPreview) {
     if (variant.preview_url) {
       el.variantPreview.src = variant.preview_url;
@@ -1462,7 +1481,12 @@ function renderVariantDetails(variant, listings, series) {
       el.variantPreview.style.visibility = "hidden";
     }
   }
-  el.variantTitle.textContent = title;
+  el.variantTitle.innerHTML = `
+    <span class="variant-meta-line">Коллекция: <strong>${escapeHtml(collection)}</strong></span>
+    <span class="variant-meta-line">Модель: <strong>${escapeHtml(model)}</strong></span>
+    <span class="variant-meta-line">Фон: <strong>${escapeHtml(background)}</strong></span>
+    <span class="variant-meta-line">Узор: <strong>${escapeHtml(pattern)}</strong></span>
+  `;
   el.variantFloor.textContent = `${formatTon(m.floor_ton)} TON (${formatStars(m.floor_stars_est || starsFromTon(m.floor_ton))}⭐)`;
   const deltas = [
     ["1ч", m.floor_change_pct_1h],
