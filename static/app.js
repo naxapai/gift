@@ -171,6 +171,12 @@ const el = {
   backToCatalog: document.getElementById("backToCatalog"),
 };
 
+const customBaseSelect = {
+  root: null,
+  trigger: null,
+  menu: null,
+};
+
 function formatTon(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   const n = Number(value);
@@ -1135,6 +1141,9 @@ function fillSelect(selectEl, items, valueKey = "id", labelKey = "name", emptyLa
     options.push(`<option value="${value}">${label}</option>`);
   }
   selectEl.innerHTML = options.join("");
+  if (selectEl === el.catalogBaseSelect) {
+    syncCatalogBaseCustomSelect();
+  }
 }
 
 function fillMultiSelect(selectEl, items, valueKey = "id", labelKey = "name") {
@@ -1150,6 +1159,81 @@ function fillMultiSelect(selectEl, items, valueKey = "id", labelKey = "name") {
 
 function selectedValues(selectEl) {
   return [...(selectEl?.selectedOptions || [])].map((o) => o.value).filter(Boolean);
+}
+
+function closeCatalogBaseCustomSelect() {
+  if (!customBaseSelect.root || !customBaseSelect.menu) return;
+  customBaseSelect.root.classList.remove("open");
+  customBaseSelect.menu.classList.add("hidden");
+}
+
+function renderCatalogBaseCustomOptions() {
+  if (!customBaseSelect.menu || !el.catalogBaseSelect) return;
+  const opts = [...el.catalogBaseSelect.options];
+  customBaseSelect.menu.innerHTML = opts
+    .map((opt) => {
+      const value = String(opt.value || "");
+      const selected = value === String(el.catalogBaseSelect.value || "");
+      return `<button type="button" class="custom-select-option ${selected ? "active" : ""}" data-value="${escapeHtml(value)}">${escapeHtml(opt.textContent || "")}</button>`;
+    })
+    .join("");
+}
+
+function syncCatalogBaseCustomSelect() {
+  if (!customBaseSelect.root || !customBaseSelect.trigger || !el.catalogBaseSelect) return;
+  const selected = el.catalogBaseSelect.selectedOptions?.[0];
+  customBaseSelect.trigger.textContent = selected?.textContent || "Выберите коллекцию";
+  renderCatalogBaseCustomOptions();
+}
+
+function initCatalogBaseCustomSelect() {
+  if (!el.catalogBaseSelect || customBaseSelect.root) return;
+  const parent = el.catalogBaseSelect.parentElement;
+  if (!parent) return;
+
+  const root = document.createElement("div");
+  root.className = "custom-select catalog-base-select";
+  root.innerHTML = `
+    <button type="button" class="custom-select-trigger" aria-haspopup="listbox" aria-expanded="false">Выберите коллекцию</button>
+    <div class="custom-select-menu hidden" role="listbox"></div>
+  `;
+  parent.appendChild(root);
+
+  customBaseSelect.root = root;
+  customBaseSelect.trigger = root.querySelector(".custom-select-trigger");
+  customBaseSelect.menu = root.querySelector(".custom-select-menu");
+
+  el.catalogBaseSelect.classList.add("native-select-hidden");
+  el.catalogBaseSelect.tabIndex = -1;
+
+  customBaseSelect.trigger.addEventListener("click", () => {
+    const isOpen = customBaseSelect.root.classList.toggle("open");
+    customBaseSelect.menu.classList.toggle("hidden", !isOpen);
+    customBaseSelect.trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  });
+
+  customBaseSelect.menu.addEventListener("click", (e) => {
+    const optionBtn = e.target.closest(".custom-select-option");
+    if (!optionBtn) return;
+    const value = optionBtn.dataset.value ?? "";
+    if (el.catalogBaseSelect.value !== value) {
+      el.catalogBaseSelect.value = value;
+      el.catalogBaseSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    syncCatalogBaseCustomSelect();
+    closeCatalogBaseCustomSelect();
+    customBaseSelect.trigger.setAttribute("aria-expanded", "false");
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!customBaseSelect.root || customBaseSelect.root.contains(e.target)) return;
+    closeCatalogBaseCustomSelect();
+    if (customBaseSelect.trigger) {
+      customBaseSelect.trigger.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  syncCatalogBaseCustomSelect();
 }
 
 function renderCatalogVariants(items) {
@@ -1830,6 +1914,7 @@ function applySearch() {
 
 function bindEvents() {
   bindOverviewSignalTooltip();
+  initCatalogBaseCustomSelect();
 
   [...el.navBtns, ...el.mobileNavBtns].forEach((btn) => {
     btn.addEventListener("click", () => setPage(btn.dataset.page));
@@ -1840,6 +1925,7 @@ function bindEvents() {
   el.baseSearch.addEventListener("input", renderBases);
   el.catalogBaseSelect.addEventListener("change", async () => {
     state.catalogFilters.baseId = el.catalogBaseSelect.value || "";
+    syncCatalogBaseCustomSelect();
     state.catalogFilters.modelId = "";
     state.catalogFilters.backgroundIds = [];
     state.catalogFilters.patternIds = [];

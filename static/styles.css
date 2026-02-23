@@ -1062,11 +1062,34 @@ body.auth-locked #staleBanner {
   min-height: 42px;
   border-radius: 12px;
   border: 1px solid var(--line);
-  padding: 0 12px;
-  background: #fff;
+  padding: 0 34px 0 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f7faf7 100%);
   color: var(--ink);
   text-align: left;
-  transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+  position: relative;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease, transform 120ms ease;
+}
+
+.custom-select-trigger::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid #5b6673;
+  border-bottom: 2px solid #5b6673;
+  transform: translateY(-60%) rotate(45deg);
+  transition: transform 120ms ease;
+}
+
+.custom-select.open .custom-select-trigger {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.12);
+}
+
+.custom-select.open .custom-select-trigger::after {
+  transform: translateY(-40%) rotate(-135deg);
 }
 
 .custom-select-menu {
@@ -1075,12 +1098,12 @@ body.auth-locked #staleBanner {
   top: calc(100% + 6px);
   left: 0;
   right: 0;
-  max-height: 260px;
+  max-height: 340px;
   overflow: auto;
-  background: #fff;
+  background: linear-gradient(180deg, #ffffff 0%, #f9fbf9 100%);
   border: 1px solid var(--line);
   border-radius: 12px;
-  box-shadow: 0 16px 28px rgba(20, 21, 26, 0.12);
+  box-shadow: 0 16px 28px rgba(20, 21, 26, 0.14);
   padding: 6px;
 }
 
@@ -1101,8 +1124,21 @@ body.auth-locked #staleBanner {
 }
 
 .custom-select-option.active {
-  background: #e6f7f5;
+  background: linear-gradient(180deg, #ecfaf7 0%, #def4ef 100%);
   color: #0f766e;
+  font-weight: 600;
+}
+
+.native-select-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 .field select[multiple] {
