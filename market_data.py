@@ -5,6 +5,7 @@ import os
 import random
 import re
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -598,26 +599,72 @@ def fetch_verified_dataset_from_fragment(
         urllib.request.HTTPCookieProcessor(cj),
         urllib.request.HTTPSHandler(context=ssl_context),
     )
+    min_request_interval_sec = max(0.0, float(os.getenv("FRAGMENT_MIN_REQUEST_INTERVAL_SEC", "0.18")))
+    request_jitter_sec = max(0.0, float(os.getenv("FRAGMENT_REQUEST_JITTER_SEC", "0.06")))
+    request_retries = max(1, int(os.getenv("FRAGMENT_REQUEST_RETRIES", "3")))
+    request_backoff_sec = max(0.1, float(os.getenv("FRAGMENT_REQUEST_BACKOFF_SEC", "0.8")))
+    req_lock = threading.Lock()
+    last_req_ts = 0.0
+
+    def _throttle_request() -> None:
+        nonlocal last_req_ts
+        with req_lock:
+            now = time.monotonic()
+            wait_sec = max(0.0, (last_req_ts + min_request_interval_sec) - now)
+            if wait_sec > 0:
+                time.sleep(wait_sec)
+            if request_jitter_sec > 0:
+                time.sleep(random.uniform(0.0, request_jitter_sec))
+            last_req_ts = time.monotonic()
+
+    def _is_retryable(exc: Exception) -> bool:
+        if isinstance(exc, urllib.error.HTTPError):
+            return exc.code in {403, 408, 409, 425, 429, 500, 502, 503, 504}
+        if isinstance(exc, urllib.error.URLError):
+            return True
+        return False
 
     def _get_text(url: str) -> str:
-        req = urllib.request.Request(url, method="GET")
-        req.add_header("User-Agent", "Mozilla/5.0 (compatible; GiftMarketZone/1.0)")
-        req.add_header("Accept", "text/html,application/xhtml+xml")
-        with opener.open(req, timeout=timeout_sec) as resp:
-            return resp.read().decode("utf-8", errors="replace")
+        last_err: Exception | None = None
+        for attempt in range(1, request_retries + 1):
+            try:
+                req = urllib.request.Request(url, method="GET")
+                req.add_header("User-Agent", "Mozilla/5.0 (compatible; GiftMarketZone/1.0)")
+                req.add_header("Accept", "text/html,application/xhtml+xml")
+                _throttle_request()
+                with opener.open(req, timeout=timeout_sec) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+            except Exception as e:
+                last_err = e
+                if attempt >= request_retries or not _is_retryable(e):
+                    break
+                sleep_sec = min(30.0, request_backoff_sec * (2 ** (attempt - 1)) + random.uniform(0.0, 0.35))
+                time.sleep(sleep_sec)
+        raise last_err if last_err else RuntimeError(f"GET failed: {url}")
 
     def _post_json(api_hash: str, referer: str, params: dict) -> dict:
-        api_url = f"https://fragment.com/api?hash={api_hash}"
-        body = urlencode(params).encode("utf-8")
-        req = urllib.request.Request(api_url, data=body, method="POST")
-        req.add_header("User-Agent", "Mozilla/5.0 (compatible; GiftMarketZone/1.0)")
-        req.add_header("Accept", "application/json")
-        req.add_header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-        req.add_header("X-Requested-With", "XMLHttpRequest")
-        req.add_header("Origin", "https://fragment.com")
-        req.add_header("Referer", referer)
-        with opener.open(req, timeout=timeout_sec) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        last_err: Exception | None = None
+        for attempt in range(1, request_retries + 1):
+            try:
+                api_url = f"https://fragment.com/api?hash={api_hash}"
+                body = urlencode(params).encode("utf-8")
+                req = urllib.request.Request(api_url, data=body, method="POST")
+                req.add_header("User-Agent", "Mozilla/5.0 (compatible; GiftMarketZone/1.0)")
+                req.add_header("Accept", "application/json")
+                req.add_header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                req.add_header("X-Requested-With", "XMLHttpRequest")
+                req.add_header("Origin", "https://fragment.com")
+                req.add_header("Referer", referer)
+                _throttle_request()
+                with opener.open(req, timeout=timeout_sec) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except Exception as e:
+                last_err = e
+                if attempt >= request_retries or not _is_retryable(e):
+                    break
+                sleep_sec = min(30.0, request_backoff_sec * (2 ** (attempt - 1)) + random.uniform(0.0, 0.35))
+                time.sleep(sleep_sec)
+        raise last_err if last_err else RuntimeError(f"POST failed: hash={api_hash}")
 
     root_html = _get_text(root_url)
     collections = _fragment_parse_collections(root_html)
