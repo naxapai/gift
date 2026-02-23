@@ -89,7 +89,14 @@ def _get_updates(offset: int | None = None, timeout_sec: int = 0) -> Dict:
     if offset is not None:
         params["offset"] = str(offset)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?{urllib.parse.urlencode(params)}"
-    return _http_get(url)
+    try:
+        return _http_get(url)
+    except urllib.error.HTTPError as e:
+        # Telegram returns 409 when getUpdates is used while a webhook is active.
+        if e.code == 409:
+            _http_get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=false")
+            return _http_get(url)
+        raise
 
 
 def _format_market_status(overview: Dict) -> str:
