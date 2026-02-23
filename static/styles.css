@@ -305,6 +305,23 @@ body.auth-locked #staleBanner {
   backdrop-filter: blur(8px);
 }
 
+#overview .page-tools {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+#overview .page-tools .search {
+  width: 100%;
+  min-width: 0;
+}
+
+#overview .page-tools #refreshBtn {
+  justify-self: end;
+}
+
 /* Overview toolbar: stretch search field while keeping update button size */
 @media (min-width: 1280px) {
   #overview .page-head {
@@ -315,11 +332,17 @@ body.auth-locked #staleBanner {
   }
   #overview .page-tools {
     width: 100%;
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
   }
   #overview .page-tools .search {
-    flex: 1 1 auto;
     min-width: 0;
+    width: 100%;
+  }
+  #overview .page-tools #refreshBtn {
+    justify-self: end;
   }
 }
 
@@ -1547,6 +1570,22 @@ select:focus-visible {
   .page-tools .search {
     min-width: 0;
     width: 100%;
+  }
+
+  #overview .page-tools {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+  }
+
+  #overview .page-tools .search {
+    width: 100%;
+    min-width: 0;
+  }
+
+  #overview .page-tools #refreshBtn {
+    justify-self: end;
   }
 
   .hero-main-overview {
