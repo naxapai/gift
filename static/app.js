@@ -96,6 +96,7 @@ const el = {
   authGateText: document.getElementById("authGateText"),
   authUser: document.getElementById("authUser"),
   telegramLoginWrap: document.getElementById("telegramLoginWrap"),
+  headerTonConnectBtn: document.getElementById("headerTonConnectBtn"),
   authGateLoginWrap: document.getElementById("authGateLoginWrap"),
   authLogoutBtn: document.getElementById("authLogoutBtn"),
   tonWalletStatus: document.getElementById("tonWalletStatus"),
@@ -457,20 +458,6 @@ function renderAuthUi() {
     setAuthLocked(true, "Для доступа к аналитике выполните вход через Telegram.");
   } else {
     setAuthLocked(false);
-    if (authEnabled) {
-      el.telegramLoginWrap.classList.remove("hidden");
-      if (!webAppMode || !hasWebAppObject) {
-        renderTelegramWidget(el.telegramLoginWrap);
-        if (bot) {
-          el.telegramLoginWrap.insertAdjacentHTML(
-            "beforeend",
-            `<a class="tg-widget-fallback" style="margin-left:8px" href="https://t.me/${bot}" target="_blank" rel="noopener">Войти через Telegram</a>`
-          );
-        }
-      } else if (openMiniAppUrl) {
-        el.telegramLoginWrap.innerHTML = `<a class="tg-widget-fallback" href="${openMiniAppUrl}" target="_blank" rel="noopener">Войти через Telegram</a>`;
-      }
-    }
   }
 }
 
@@ -616,6 +603,9 @@ function tonLocalWalletFromUi() {
 
 function renderTonWalletUi() {
   if (!el.tonWalletStatus || !el.tonConnectBtn || !el.tonDisconnectBtn) return;
+  if (el.headerTonConnectBtn) {
+    el.headerTonConnectBtn.textContent = state.ton.connected ? "TON подключен" : "Подключить TON";
+  }
   if (state.ton.connected && state.ton.wallet) {
     const w = state.ton.wallet;
     el.tonWalletStatus.innerHTML = `Статус: подключен • <strong>${shortTonAddress(w.address)}</strong> • ${w.chain || "-"} • подтвержден`;
@@ -1909,6 +1899,9 @@ function bindEvents() {
 
   if (el.tonConnectBtn) {
     el.tonConnectBtn.addEventListener("click", connectTonWallet);
+  }
+  if (el.headerTonConnectBtn) {
+    el.headerTonConnectBtn.addEventListener("click", connectTonWallet);
   }
   if (el.tonDisconnectBtn) {
     el.tonDisconnectBtn.addEventListener("click", disconnectTonWallet);
