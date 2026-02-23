@@ -404,7 +404,7 @@ def _fragment_parse_item_cards(html: str, default_status: str | None = None) -> 
     pattern = re.compile(
         r'<a href="/gift/(?P<gift_id>[a-z0-9\-]+)(?:\?[^"]*)?" class="tm-grid-item">.*?'
         r'<time datetime="(?P<dt>[^"]+)"[^>]*>.*?</time>.*?'
-        r'icon-ton">(?P<price>[0-9.]+)</div>.*?'
+        r'icon-ton">(?P<price>[0-9][0-9,]*(?:\.[0-9]+)?)</div>.*?'
         r'tm-grid-item-status[^"]*">(?P<status>[^<]+)</div>',
         re.S | re.I,
     )
@@ -418,7 +418,7 @@ def _fragment_parse_item_cards(html: str, default_status: str | None = None) -> 
                 {
                     "gift_id": _clean_fragment_text(m.group("gift_id")),
                     "datetime": _clean_fragment_text(m.group("dt")),
-                    "price_ton": float(_clean_fragment_text(m.group("price"))),
+                    "price_ton": float(_clean_fragment_text(m.group("price")).replace(",", "")),
                     "status": status,
                 }
             )
