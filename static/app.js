@@ -173,6 +173,8 @@ const el = {
 };
 
 const customSelectRegistry = new Map();
+let eventsBound = false;
+let bootstrapped = false;
 
 function formatTon(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
@@ -1215,6 +1217,18 @@ function closeAllCustomSelects(exceptSelect = null) {
   }
 }
 
+function destroyCustomSelect(selectEl) {
+  const state = customSelectRegistry.get(selectEl);
+  if (state?.root?.parentElement) {
+    state.root.parentElement.removeChild(state.root);
+  }
+  customSelectRegistry.delete(selectEl);
+  if (selectEl) {
+    selectEl.classList.remove("native-select-hidden");
+    selectEl.tabIndex = 0;
+  }
+}
+
 function renderCustomSelectOptions(selectEl) {
   const state = customSelectRegistry.get(selectEl);
   if (!state || !state.menu || !selectEl) return;
@@ -1249,9 +1263,22 @@ function syncCustomSelect(selectEl) {
 }
 
 function initCustomSelect(selectEl) {
-  if (!selectEl || customSelectRegistry.has(selectEl)) return;
+  if (!selectEl) return;
   const parent = selectEl.parentElement;
   if (!parent) return;
+
+  // Defensive dedupe: keep only one custom dropdown per native select.
+  const staleRoots = [...parent.children].filter((node) => node.classList?.contains("custom-select"));
+  if (staleRoots.length) {
+    if (customSelectRegistry.has(selectEl)) {
+      destroyCustomSelect(selectEl);
+    }
+    for (const root of staleRoots) {
+      root.remove();
+    }
+  } else if (customSelectRegistry.has(selectEl)) {
+    return;
+  }
 
   const root = document.createElement("div");
   const isMultiple = Boolean(selectEl.multiple);
@@ -1310,6 +1337,12 @@ function initCustomSelect(selectEl) {
 }
 
 function initAllCustomSelects() {
+  // Clean registry entries for detached selects to avoid duplicated UI instances.
+  for (const [selectEl] of customSelectRegistry.entries()) {
+    if (!document.body.contains(selectEl)) {
+      customSelectRegistry.delete(selectEl);
+    }
+  }
   const all = [...document.querySelectorAll("select")];
   for (const selectEl of all) {
     initCustomSelect(selectEl);
@@ -2080,6 +2113,8 @@ function applySearch() {
 }
 
 function bindEvents() {
+  if (eventsBound) return;
+  eventsBound = true;
   bindOverviewSignalTooltip();
   initAllCustomSelects();
 
@@ -2396,6 +2431,8 @@ function startAutoSync() {
 }
 
 async function bootstrap() {
+  if (bootstrapped) return;
+  bootstrapped = true;
   bindEvents();
   state.auth.webappDetected = detectTelegramMiniAppContext();
   const tonInitPromise = initTonAuth();
