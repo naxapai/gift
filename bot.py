@@ -186,6 +186,15 @@ def _save_cache(cache: Dict) -> None:
 
 
 def _format_signal(item: Dict) -> str:
+    def _pick_trait_name(value) -> str:
+        if isinstance(value, dict):
+            for key in ("name", "title", "label", "value", "id"):
+                text = str(value.get(key) or "").strip()
+                if text:
+                    return text
+            return ""
+        return str(value or "").strip()
+
     action = str(item.get("action") or "HOLD").upper()
     score = float(item.get("reco_score") or 0)
     conf = int(round(float(item.get("confidence") or 0)))
@@ -194,11 +203,28 @@ def _format_signal(item: Dict) -> str:
     fc_range = f"{float(rng[0]):.1f}%…{float(rng[1]):.1f}%" if isinstance(rng, list) and len(rng) >= 2 else "-"
     fc_bias = {"up": "рост", "down": "снижение", "flat": "боковик"}.get(str(forecast.get("bias") or "flat"), "боковик")
     action_ru = {"BUY": "Покупка", "SELL": "Продажа", "HOLD": "Держать", "WATCH": "Наблюдение", "AVOID": "Избегать"}.get(action, action)
+    title = str(item.get("title") or "").strip()
+    title_parts = [x.strip() for x in title.split("•")] if "•" in title else []
     traits = item.get("traits") or {}
-    model = (traits.get("model") or {}).get("name") or "-"
-    background = (traits.get("background") or {}).get("name") or "-"
-    pattern = (traits.get("pattern") or {}).get("name") or "-"
-    collection = item.get("base_name") or item.get("base_id") or "-"
+    model = (
+        _pick_trait_name(traits.get("model"))
+        or str(item.get("model_name") or "").strip()
+        or (title_parts[0] if len(title_parts) >= 1 else "")
+        or "-"
+    )
+    background = (
+        _pick_trait_name(traits.get("background"))
+        or str(item.get("background_name") or "").strip()
+        or (title_parts[1] if len(title_parts) >= 2 else "")
+        or "-"
+    )
+    pattern = (
+        _pick_trait_name(traits.get("pattern"))
+        or str(item.get("pattern_name") or "").strip()
+        or (title_parts[2] if len(title_parts) >= 3 else "")
+        or "-"
+    )
+    collection = item.get("base_name") or item.get("group") or item.get("base_id") or "-"
     reasons = item.get("reasons") or []
     risks = item.get("risks") or []
     summary = f"ожидается {fc_bias} (24ч: {fc_range}, оценка {score:.1f}, уверенность {conf}%)"
