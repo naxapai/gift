@@ -30,9 +30,15 @@ def _state() -> GiftAnalyticsService:
             _STATE = GiftAnalyticsService()
     return _STATE
 
-AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "true").strip().lower() in {"1", "true", "yes", "on"}
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
+AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
+TELEGRAM_BOT_TOKEN = (
+    os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    or os.getenv("TG_BOT_TOKEN", "").strip()
+)
+TELEGRAM_BOT_USERNAME = (
+    os.getenv("TELEGRAM_BOT_USERNAME", "").strip()
+    or os.getenv("TG_BOT_USERNAME", "").strip()
+).lstrip("@")
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
 AUTH_SESSION_TTL_SEC = max(300, int(os.getenv("AUTH_SESSION_TTL_SEC", "86400")))
 TELEGRAM_AUTH_MAX_AGE_SEC = max(30, int(os.getenv("TELEGRAM_AUTH_MAX_AGE_SEC", "300")))

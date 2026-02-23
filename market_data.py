@@ -5,6 +5,7 @@ import os
 import random
 import re
 import ssl
+import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
@@ -35,6 +36,41 @@ class GiftPoint:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(value, high))
+
+
+def _atomic_write_json(path: Path, payload: Dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{random.randint(1000, 9999)}")
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+
+
+def _load_json_with_retry(path: Path, retries: int = 3, delay_sec: float = 0.08) -> Dict:
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if not isinstance(payload, dict):
+                raise ValueError(f"Invalid JSON root in {path}: expected object")
+            return payload
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(delay_sec)
+                continue
+            raise last_err
+    raise RuntimeError(f"Unable to load JSON from {path}")
 
 
 def _gift_templates() -> List[Dict]:
@@ -193,8 +229,7 @@ def load_verified_dataset(path: str | None = None) -> Dict:
             "Create it or set VERIFIED_DATA_FILE=/absolute/path/to/file.json"
         )
 
-    with source.open("r", encoding="utf-8") as f:
-        dataset = json.load(f)
+    dataset = _load_json_with_retry(source)
     _validate_verified_dataset(dataset)
     _reconcile_dataset_spot_prices(dataset)
     return dataset
@@ -202,9 +237,7 @@ def load_verified_dataset(path: str | None = None) -> Dict:
 
 def save_verified_dataset(dataset: Dict, path: str | None = None) -> None:
     target = Path(path) if path else VERIFIED_DATA_FILE
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8") as f:
-        json.dump(dataset, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(target, dataset)
 
 
 def fetch_verified_dataset_from_api(
@@ -510,6 +543,8 @@ def fetch_verified_dataset_from_fragment(
     max_pages_per_collection: int = 500,
     collection_start: int = 0,
 ) -> Dict:
+    started_at = time.monotonic()
+    fetch_budget_sec = max(30, int(os.getenv("FRAGMENT_FETCH_BUDGET_SEC", "180")))
     cj = cookiejar.CookieJar()
     no_verify_ssl = os.getenv("FRAGMENT_SSL_NO_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"}
     ssl_context = ssl._create_unverified_context() if no_verify_ssl else ssl.create_default_context()
@@ -566,6 +601,8 @@ def fetch_verified_dataset_from_fragment(
     gift_mode = os.getenv("FRAGMENT_GIFT_MODE", "lot").strip().lower()
 
     for collection in collections:
+        if time.monotonic() - started_at > fetch_budget_sec:
+            break
         slug = collection["slug"]
         try:
             def _fetch_events(filter_value: str) -> list[dict]:
@@ -592,6 +629,8 @@ def fetch_verified_dataset_from_fragment(
 
                 page_no = 1
                 while next_offset and page_no < max_pages_per_collection:
+                    if time.monotonic() - started_at > fetch_budget_sec:
+                        break
                     page_no += 1
                     params["offset_id"] = next_offset
                     part = _post_json(api_hash, page_url, params)
@@ -687,7 +726,8 @@ def fetch_verified_dataset_from_fragment(
                     lot_suffix = lot_id.split("-")[-1]
                     gifts.append(
                         {
-                            "gift_id": f"fragment_lot_{lot_id.replace('-', '_')}",
+                            # Keep collection slug in ID to preserve correct base split on backend.
+                            "gift_id": f"fragment_{slug}_{lot_id.replace('-', '_')}",
                             "name": f"{gift_name} #{lot_suffix}",
                             "group": "Fragment Gifts",
                             "collection_slug": slug,
@@ -764,10 +804,9 @@ def _load_fragment_analytics_store() -> Dict:
     if not FRAGMENT_ANALYTICS_STORE_FILE.exists():
         return {"gifts": []}
     try:
-        with FRAGMENT_ANALYTICS_STORE_FILE.open("r", encoding="utf-8") as f:
-            payload = json.load(f)
-            if isinstance(payload, dict):
-                return payload
+        payload = _load_json_with_retry(FRAGMENT_ANALYTICS_STORE_FILE)
+        if isinstance(payload, dict):
+            return payload
     except Exception:
         return {"gifts": []}
     return {"gifts": []}
@@ -775,9 +814,7 @@ def _load_fragment_analytics_store() -> Dict:
 
 def _save_fragment_snapshot_meta(meta: Dict) -> None:
     try:
-        FRAGMENT_SNAPSHOT_META_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with FRAGMENT_SNAPSHOT_META_FILE.open("w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(FRAGMENT_SNAPSHOT_META_FILE, meta)
     except Exception:
         return
 
@@ -786,19 +823,16 @@ def load_fragment_snapshot_meta() -> Dict:
     if not FRAGMENT_SNAPSHOT_META_FILE.exists():
         return {}
     try:
-        with FRAGMENT_SNAPSHOT_META_FILE.open("r", encoding="utf-8") as f:
-            payload = json.load(f)
-            if isinstance(payload, dict):
-                return payload
+        payload = _load_json_with_retry(FRAGMENT_SNAPSHOT_META_FILE)
+        if isinstance(payload, dict):
+            return payload
     except Exception:
         return {}
     return {}
 
 
 def _save_fragment_analytics_store(store: Dict) -> None:
-    FRAGMENT_ANALYTICS_STORE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with FRAGMENT_ANALYTICS_STORE_FILE.open("w", encoding="utf-8") as f:
-        json.dump(store, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(FRAGMENT_ANALYTICS_STORE_FILE, store)
 
 
 def _merge_fragment_analytics_store(dataset: Dict) -> None:
@@ -839,6 +873,10 @@ def load_verified_dataset_source() -> Dict:
     source = os.getenv("VERIFIED_SOURCE", "file").strip().lower()
     file_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
 
+    def _has_gifts(dataset: Dict) -> bool:
+        gifts = dataset.get("gifts") if isinstance(dataset, dict) else None
+        return isinstance(gifts, list) and len(gifts) > 0
+
     if source == "file":
         return load_verified_dataset(file_path)
     if source == "api":
@@ -848,16 +886,22 @@ def load_verified_dataset_source() -> Dict:
         token_prefix = os.getenv("VERIFIED_API_TOKEN_PREFIX", "Bearer ").strip()
         timeout_sec = int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "25"))
 
-        dataset = fetch_verified_dataset_from_api(
-            api_url=api_url,
-            api_token=api_token,
-            timeout_sec=timeout_sec,
-            token_header=token_header,
-            token_prefix=token_prefix,
-        )
-        # Cache last successful verified snapshot for audit and fallback debugging.
-        save_verified_dataset(dataset, file_path)
-        return dataset
+        try:
+            dataset = fetch_verified_dataset_from_api(
+                api_url=api_url,
+                api_token=api_token,
+                timeout_sec=timeout_sec,
+                token_header=token_header,
+                token_prefix=token_prefix,
+            )
+            if not _has_gifts(dataset):
+                raise ValueError("verified api returned empty gifts")
+            # Cache last successful verified snapshot for audit and fallback debugging.
+            save_verified_dataset(dataset, file_path)
+            return dataset
+        except Exception:
+            # Never replace runtime dataset with empty/invalid API payload.
+            return load_verified_dataset(file_path)
     if source == "fragment":
         timeout_sec = int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "25"))
         root_url = os.getenv("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts").strip()
@@ -872,6 +916,8 @@ def load_verified_dataset_source() -> Dict:
                 max_pages_per_collection=max_pages_per_collection,
                 collection_start=collection_start,
             )
+            if not _has_gifts(dataset):
+                raise ValueError("fragment returned empty gifts")
             save_verified_dataset(dataset, file_path)
             return dataset
         except Exception as e:
@@ -898,9 +944,7 @@ def load_verified_dataset_source() -> Dict:
 
 
 def save_dataset(dataset: Dict) -> None:
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with DATA_FILE.open("w", encoding="utf-8") as f:
-        json.dump(dataset, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(DATA_FILE, dataset)
 
 
 def refresh_dataset(days: int = 180) -> Dict:

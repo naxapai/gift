@@ -26,6 +26,8 @@ CACHE_FILE = os.getenv("BOT_CACHE_FILE", "data/bot_cache.json")
 LOCK_FILE = os.getenv("BOT_LOCK_FILE", "data/bot_sender.lock")
 MIN_REPEAT_SEC = int(os.getenv("BOT_MIN_REPEAT_SEC", "21600"))
 MAX_MESSAGES_PER_CYCLE = int(os.getenv("BOT_MAX_MESSAGES_PER_CYCLE", "8"))
+DEBUG = os.getenv("BOT_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
+FORCE_SEND_TOP1 = os.getenv("BOT_FORCE_SEND_TOP1", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _http_get(url: str) -> Dict:
@@ -181,13 +183,31 @@ def cycle(cache: Dict) -> None:
     now_tag = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     now_ts = int(time.time())
     sent_count = 0
+    stat_total = len(items)
+    stat_conf = 0
+    stat_action = 0
+    stat_fp = 0
+    stat_dyn = 0
+
+    if FORCE_SEND_TOP1 and items:
+        send_message(_format_signal(items[0]))
+        sent_count += 1
+        key = f"{items[0].get('variant_id')}"
+        fp = _signal_fingerprint(items[0])
+        cache[key] = {**items[0], "last_sent": now_tag, "last_sent_ts": now_ts, "last_fp": fp}
+        if DEBUG:
+            print(f"[bot] force-send top1 variant={key}")
+        return
+
     for item in items:
         if sent_count >= MAX_MESSAGES_PER_CYCLE:
             break
         if item.get("confidence", 0) < MIN_CONFIDENCE:
             continue
+        stat_conf += 1
         if str(item.get("action") or "").upper() not in {"BUY", "SELL", "WATCH", "AVOID"}:
             continue
+        stat_action += 1
         key = f"{item.get('variant_id')}"
         prev = cache.get(key, {})
         fp = _signal_fingerprint(item)
@@ -195,12 +215,19 @@ def cycle(cache: Dict) -> None:
         last_sent_ts = int(prev.get("last_sent_ts", 0) or 0)
         # Антидубль: если сигнал по сути не изменился, повтор не отправляем.
         if fp == last_fp and (now_ts - last_sent_ts) < MIN_REPEAT_SEC:
+            stat_fp += 1
             continue
         if not _is_dynamic(prev, item):
+            stat_dyn += 1
             continue
         send_message(_format_signal(item))
         sent_count += 1
         cache[key] = {**item, "last_sent": now_tag, "last_sent_ts": now_ts, "last_fp": fp}
+    if DEBUG:
+        print(
+            f"[bot] total={stat_total} pass_conf={stat_conf} pass_action={stat_action} "
+            f"skip_fp={stat_fp} skip_not_dynamic={stat_dyn} sent={sent_count}"
+        )
 
 
 def main() -> None:

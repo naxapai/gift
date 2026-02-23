@@ -73,6 +73,7 @@ const state = {
     required: false,
     connected: false,
     wallet: null,
+    localWallet: null,
     challengeTtlSec: 180,
     proofMaxAgeSec: 300,
     ui: null,
@@ -311,8 +312,17 @@ async function fetchJson(url, options = {}, useCache = false) {
     ...options,
   };
   const req = fetch(url, requestOptions).then(async (res) => {
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
-    return res.json();
+    let payload = null;
+    try {
+      payload = await res.json();
+    } catch (e) {
+      payload = null;
+    }
+    if (!res.ok) {
+      const details = payload?.reason || payload?.message || payload?.error || "";
+      throw new Error(details ? `HTTP ${res.status}: ${details}` : `HTTP ${res.status}: ${url}`);
+    }
+    return payload || {};
   });
   if (useCache) state.requestCache.set(url, req);
   const data = await req;
@@ -338,6 +348,15 @@ function setAuthLocked(locked, text = "") {
   if (locked && text) {
     el.authGateText.textContent = text;
   }
+}
+
+function detectTelegramMiniAppContext() {
+  const href = String(window.location.href || "");
+  if (/[?&#]tgWebAppData=/.test(href) || /[?&#]tgWebAppVersion=/.test(href) || /[?&#]tgWebAppPlatform=/.test(href)) {
+    return true;
+  }
+  const ua = String(navigator.userAgent || "");
+  return /Telegram/i.test(ua);
 }
 
 function renderTelegramWidget(container) {
@@ -380,12 +399,16 @@ function renderAuthUi() {
   const mustLogin = Boolean(state.auth.required && !isLoggedIn);
   const authEnabled = Boolean(state.auth.enabled);
   const webAppMode = Boolean(state.auth.webappDetected);
+  const hasWebAppObject = Boolean(window.Telegram && window.Telegram.WebApp);
+  const bot = encodeURIComponent(state.auth.botUsername || "");
+  const openMiniAppUrl = bot ? `https://t.me/${bot}?startapp=auth` : "";
 
   if (isLoggedIn) {
     el.authUser.textContent = authDisplayName(state.auth.user);
     el.authUser.classList.remove("hidden");
     el.authLogoutBtn.classList.remove("hidden");
     el.telegramLoginWrap.classList.add("hidden");
+    el.telegramLoginWrap.innerHTML = "";
     el.authGateLoginWrap.innerHTML = "";
     setAuthLocked(false);
     return;
@@ -394,11 +417,36 @@ function renderAuthUi() {
   el.authUser.classList.add("hidden");
   el.authLogoutBtn.classList.add("hidden");
   el.telegramLoginWrap.classList.add("hidden");
+  el.telegramLoginWrap.innerHTML = "";
   if (authEnabled) {
-    if (!webAppMode) {
+    if (!webAppMode || !hasWebAppObject) {
       renderTelegramWidget(el.authGateLoginWrap);
+      if (bot) {
+        el.authGateLoginWrap.insertAdjacentHTML(
+          "beforeend",
+          `<a class="tg-widget-fallback" style="margin-left:8px" href="https://t.me/${bot}" target="_blank" rel="noopener">Войти через Telegram</a>`
+        );
+      }
+      if (openMiniAppUrl) {
+        el.authGateLoginWrap.insertAdjacentHTML(
+          "beforeend",
+          `<div class="muted small" style="margin-top:10px">Если открыли во внешнем браузере: <a href="${openMiniAppUrl}" target="_blank" rel="noopener">открыть Mini App в Telegram</a></div>`
+        );
+      }
     } else {
-      el.authGateLoginWrap.innerHTML = `<div class="muted small">Авторизация внутри Telegram…</div>`;
+      el.authGateLoginWrap.innerHTML = `
+        <div class="muted small">Авторизация внутри Telegram…</div>
+        <button id="webappRetryBtn" class="btn secondary" style="margin-top:10px">Повторить вход</button>
+        ${openMiniAppUrl ? `<div class="muted small" style="margin-top:8px"><a href="${openMiniAppUrl}" target="_blank" rel="noopener">Открыть Mini App</a></div>` : ""}
+      `;
+      const retryBtn = document.getElementById("webappRetryBtn");
+      if (retryBtn) {
+        retryBtn.addEventListener("click", async () => {
+          await tryTelegramWebAppLogin();
+          await refreshAuthMe();
+          renderAuthUi();
+        });
+      }
     }
   } else {
     const msg = "Telegram Auth не настроен на сервере (TELEGRAM_BOT_TOKEN / TELEGRAM_BOT_USERNAME).";
@@ -409,6 +457,20 @@ function renderAuthUi() {
     setAuthLocked(true, "Для доступа к аналитике выполните вход через Telegram.");
   } else {
     setAuthLocked(false);
+    if (authEnabled) {
+      el.telegramLoginWrap.classList.remove("hidden");
+      if (!webAppMode || !hasWebAppObject) {
+        renderTelegramWidget(el.telegramLoginWrap);
+        if (bot) {
+          el.telegramLoginWrap.insertAdjacentHTML(
+            "beforeend",
+            `<a class="tg-widget-fallback" style="margin-left:8px" href="https://t.me/${bot}" target="_blank" rel="noopener">Войти через Telegram</a>`
+          );
+        }
+      } else if (openMiniAppUrl) {
+        el.telegramLoginWrap.innerHTML = `<a class="tg-widget-fallback" href="${openMiniAppUrl}" target="_blank" rel="noopener">Войти через Telegram</a>`;
+      }
+    }
   }
 }
 
@@ -452,6 +514,9 @@ async function initAuth() {
 
 async function tryTelegramWebAppLogin() {
   if (state.auth.webappAutoLoginInFlight) return false;
+  if (detectTelegramMiniAppContext()) {
+    state.auth.webappDetected = true;
+  }
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
   if (!tg) return false;
   state.auth.webappDetected = true;
@@ -485,7 +550,7 @@ function scheduleWebAppAuthRetry() {
   if (!state.auth.webappDetected) return;
   if (state.auth.webappRetryTimer) return;
   let attempts = 0;
-  const maxAttempts = 20;
+  const maxAttempts = 120;
   state.auth.webappRetryTimer = setInterval(async () => {
     if (!state.auth.required || state.auth.authenticated) {
       clearInterval(state.auth.webappRetryTimer);
@@ -507,7 +572,7 @@ function scheduleWebAppAuthRetry() {
         }, { once: true });
       }
     }
-  }, 400);
+  }, 500);
 }
 
 window.onTelegramAuth = async function onTelegramAuth(user) {
@@ -538,13 +603,29 @@ function shortTonAddress(addr) {
   return `${a.slice(0, 8)}...${a.slice(-6)}`;
 }
 
+function tonLocalWalletFromUi() {
+  const w = state.ton?.ui?.wallet;
+  const account = w?.account || {};
+  const address = String(account.address || "").trim();
+  if (!address) return null;
+  return {
+    address,
+    chain: account.chain || "-",
+  };
+}
+
 function renderTonWalletUi() {
   if (!el.tonWalletStatus || !el.tonConnectBtn || !el.tonDisconnectBtn) return;
   if (state.ton.connected && state.ton.wallet) {
     const w = state.ton.wallet;
-    el.tonWalletStatus.innerHTML = `Статус: подключен • <strong>${shortTonAddress(w.address)}</strong> • ${w.chain || "-"}`;
+    el.tonWalletStatus.innerHTML = `Статус: подключен • <strong>${shortTonAddress(w.address)}</strong> • ${w.chain || "-"} • подтвержден`;
     el.tonDisconnectBtn.classList.remove("hidden");
     el.tonConnectBtn.textContent = "Переподключить TON";
+  } else if (state.ton.localWallet) {
+    const w = state.ton.localWallet;
+    el.tonWalletStatus.innerHTML = `Статус: подключен в кошельке • <strong>${shortTonAddress(w.address)}</strong> • ${w.chain || "-"} • ожидание подтверждения`;
+    el.tonDisconnectBtn.classList.remove("hidden");
+    el.tonConnectBtn.textContent = "Завершить подключение TON";
   } else {
     el.tonWalletStatus.textContent = "Статус: не подключен";
     el.tonDisconnectBtn.classList.add("hidden");
@@ -557,10 +638,16 @@ async function refreshTonMe() {
     const me = await fetchJson("/api/auth/ton/me", { cache: "no-store" });
     state.ton.connected = Boolean(me.connected);
     state.ton.wallet = me.wallet || null;
+    if (state.ton.connected) {
+      state.ton.localWallet = null;
+    } else {
+      state.ton.localWallet = tonLocalWalletFromUi();
+    }
     state.ton.required = Boolean(me.required);
   } catch (e) {
     state.ton.connected = false;
     state.ton.wallet = null;
+    state.ton.localWallet = tonLocalWalletFromUi();
   }
   renderTonWalletUi();
 }
@@ -588,6 +675,15 @@ async function initTonAuth() {
       buttonRootId: null,
     });
   }
+  try {
+    if (state.ton.ui.connectionRestored && typeof state.ton.ui.connectionRestored.then === "function") {
+      await state.ton.ui.connectionRestored;
+    }
+  } catch (e) {
+    // noop
+  }
+  state.ton.localWallet = tonLocalWalletFromUi();
+  renderTonWalletUi();
 }
 
 async function connectTonWallet() {
@@ -605,6 +701,11 @@ async function connectTonWallet() {
     const connected = await state.ton.ui.connectWallet({
       tonProof: challenge,
     });
+    state.ton.localWallet = {
+      address: connected?.account?.address || "",
+      chain: connected?.account?.chain || "-",
+    };
+    renderTonWalletUi();
     const proof = connected?.connectItems?.tonProof?.proof;
     const account = connected?.account;
     if (!proof || !account) throw new Error("ton_proof_missing");
@@ -622,6 +723,7 @@ async function connectTonWallet() {
   } catch (e) {
     const message = String(e?.message || e || "");
     showToast(`Ошибка TON: ${message}`);
+    await refreshTonMe();
   }
 }
 
@@ -638,6 +740,7 @@ async function disconnectTonWallet() {
       // noop
     }
   }
+  state.ton.localWallet = null;
   await refreshTonMe();
   showToast("TON кошелек отключен");
 }
@@ -1915,6 +2018,7 @@ function startAutoSync() {
 
 async function bootstrap() {
   bindEvents();
+  state.auth.webappDetected = detectTelegramMiniAppContext();
   const tonInitPromise = initTonAuth();
   const webAppPreAuth = await tryTelegramWebAppLogin();
   const ready = await initAuth();
