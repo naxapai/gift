@@ -275,6 +275,29 @@ python3 sync_verified.py
 5. Проверьте health:
    - `https://<your-domain>/healthz`
 
+#### Минимальный bridge в этом же сервисе (готово)
+
+Bridge endpoint:
+
+- `GET /bridge/gifts/verified`
+- Авторизация: `Authorization: Bearer <BRIDGE_API_TOKEN>`
+
+Что поставить в Render -> `telegram-gifts-market` -> Environment:
+
+```bash
+VERIFIED_SOURCE=hybrid
+TELEGRAM_GIFTS_API_URL=https://telegram-gifts-market.onrender.com/bridge/gifts/verified
+TELEGRAM_GIFTS_API_TOKEN=<RANDOM_LONG_SECRET>
+BRIDGE_API_TOKEN=<тот_же_Random_Long_Secret>
+```
+
+Проверка bridge:
+
+```bash
+curl -sS "https://telegram-gifts-market.onrender.com/bridge/gifts/verified" \
+  -H "Authorization: Bearer <RANDOM_LONG_SECRET>" | head -c 400
+```
+
 ### Вариант 2: Docker (любой VPS/облако)
 
 В проекте есть `/Users/nexapai/Downloads/подарки/Dockerfile`.

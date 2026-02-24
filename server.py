@@ -61,6 +61,8 @@ BOT_AUTORUN = os.getenv("BOT_AUTORUN", "true").strip().lower() in {"1", "true", 
 BOT_INTERVAL_SEC = max(15, int(os.getenv("BOT_POLL_INTERVAL", "30")))
 BOT_API_BASE_URL = os.getenv("BOT_API_BASE_URL", "").strip()
 BOT_API_AUTH_TOKEN = os.getenv("BOT_API_AUTH_TOKEN", "").strip() or API_AUTH_TOKEN
+BRIDGE_API_TOKEN = os.getenv("BRIDGE_API_TOKEN", "").strip() or os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip()
+BRIDGE_API_PATH = (os.getenv("BRIDGE_API_PATH", "/bridge/gifts/verified").strip() or "/bridge/gifts/verified")
 MANUAL_FULL_SYNC_COOLDOWN_SEC = max(300, int(os.getenv("MANUAL_FULL_SYNC_COOLDOWN_SEC", "3600")))
 MANUAL_FULL_SYNC_TIMEOUT_SEC = max(120, int(os.getenv("MANUAL_FULL_SYNC_TIMEOUT_SEC", "1800")))
 LAST_FULL_SYNC_TS_FILE = Path(os.getenv("FRAGMENT_LAST_FULL_TS_FILE", "/tmp/fragment_sync_last_full.ts"))
@@ -729,6 +731,44 @@ def _require_auth(handler: BaseHTTPRequestHandler) -> dict | None:
     return None
 
 
+def _bridge_token_ok(handler: BaseHTTPRequestHandler) -> bool:
+    expected = BRIDGE_API_TOKEN
+    if not expected:
+        return False
+    auth_header = (handler.headers.get("Authorization", "") or "").strip()
+    if auth_header == f"Bearer {expected}":
+        return True
+    x_api_key = (handler.headers.get("X-API-Key", "") or "").strip()
+    if x_api_key == expected:
+        return True
+    parsed = urlparse(handler.path)
+    params = parse_qs(parsed.query)
+    token_q = (params.get("token") or [""])[0].strip()
+    return token_q == expected
+
+
+def _bridge_verified_payload() -> dict:
+    from market_data import load_verified_dataset
+
+    file_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
+    dataset = load_verified_dataset(file_path)
+    gifts = dataset.get("gifts") if isinstance(dataset, dict) else []
+    filters = dataset.get("filters") if isinstance(dataset, dict) else {}
+    return {
+        "ok": True,
+        "source": "local_verified_snapshot",
+        "generated_at": dataset.get("generated_at"),
+        "counts": {
+            "gifts": len(gifts) if isinstance(gifts, list) else 0,
+            "collections": len((filters or {}).get("collections") or []) if isinstance(filters, dict) else 0,
+            "models": len((filters or {}).get("models") or {}) if isinstance(filters, dict) else 0,
+            "backdrops": len((filters or {}).get("backdrops") or {}) if isinstance(filters, dict) else 0,
+            "symbols": len((filters or {}).get("symbols") or {}) if isinstance(filters, dict) else 0,
+        },
+        "data": dataset,
+    }
+
+
 def _json_response(
     handler: BaseHTTPRequestHandler,
     payload: dict,
@@ -839,6 +879,34 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path == BRIDGE_API_PATH:
+            if not BRIDGE_API_TOKEN:
+                _json_response(
+                    self,
+                    {"ok": False, "error": "bridge_token_not_configured"},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    cache_control="no-store",
+                )
+                return
+            if not _bridge_token_ok(self):
+                _json_response(
+                    self,
+                    {"ok": False, "error": "unauthorized"},
+                    status=HTTPStatus.UNAUTHORIZED,
+                    cache_control="no-store",
+                )
+                return
+            try:
+                _json_response(self, _bridge_verified_payload(), cache_control="no-store")
+            except Exception as e:  # noqa: BLE001
+                _json_response(
+                    self,
+                    {"ok": False, "error": f"bridge_failed: {type(e).__name__}: {str(e)[:180]}"},
+                    status=HTTPStatus.BAD_GATEWAY,
+                    cache_control="no-store",
+                )
+            return
 
         if path == "/api/auth/bootstrap":
             user = _auth_user_from_request(self)

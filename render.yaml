@@ -25,8 +25,10 @@ services:
       - key: VERIFIED_MIN_MODELS_RATIO
         value: "0.40"
       - key: TELEGRAM_GIFTS_API_URL
-        sync: false
+        value: "https://telegram-gifts-market.onrender.com/bridge/gifts/verified"
       - key: TELEGRAM_GIFTS_API_TOKEN
+        sync: false
+      - key: BRIDGE_API_TOKEN
         sync: false
       - key: TELEGRAM_GIFTS_API_TOKEN_HEADER
         value: "Authorization"
