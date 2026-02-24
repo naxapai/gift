@@ -63,6 +63,9 @@ const state = {
     buyTotal: 0,
     sellTotal: 0,
   },
+  ui: {
+    catalogFiltersCollapsed: true,
+  },
   catalogFilters: {
     baseId: "",
     modelId: "",
@@ -143,6 +146,8 @@ const el = {
   overviewSignalPeriod: document.getElementById("overviewSignalPeriod"),
 
   baseSearch: document.getElementById("baseSearch"),
+  catalogFiltersBody: document.getElementById("catalogFiltersBody"),
+  catalogFiltersToggleBtn: document.getElementById("catalogFiltersToggleBtn"),
   baseFilterChips: document.getElementById("baseFilterChips"),
   basesBody: document.getElementById("basesBody"),
   catalogBaseSelect: document.getElementById("catalogBaseSelect"),
@@ -401,6 +406,18 @@ function setAuthLocked(locked, text = "") {
   }
   if (locked && text) {
     el.authGateText.textContent = text;
+  }
+}
+
+function setCatalogFiltersCollapsed(collapsed) {
+  state.ui.catalogFiltersCollapsed = Boolean(collapsed);
+  if (el.catalogFiltersBody) {
+    el.catalogFiltersBody.classList.toggle("hidden", state.ui.catalogFiltersCollapsed);
+  }
+  if (el.catalogFiltersToggleBtn) {
+    el.catalogFiltersToggleBtn.classList.toggle("expanded", !state.ui.catalogFiltersCollapsed);
+    el.catalogFiltersToggleBtn.setAttribute("aria-expanded", state.ui.catalogFiltersCollapsed ? "false" : "true");
+    el.catalogFiltersToggleBtn.setAttribute("aria-label", state.ui.catalogFiltersCollapsed ? "Развернуть фильтры" : "Свернуть фильтры");
   }
 }
 
@@ -2446,6 +2463,11 @@ function bindEvents() {
   if (el.signalFilterAll) el.signalFilterAll.addEventListener("click", () => setSignalFilter("all"));
   if (el.signalFilterBuy) el.signalFilterBuy.addEventListener("click", () => setSignalFilter("buy"));
   if (el.signalFilterSell) el.signalFilterSell.addEventListener("click", () => setSignalFilter("sell"));
+  if (el.catalogFiltersToggleBtn) {
+    el.catalogFiltersToggleBtn.addEventListener("click", () => {
+      setCatalogFiltersCollapsed(!state.ui.catalogFiltersCollapsed);
+    });
+  }
   if (el.overviewSignalPeriod) {
     el.overviewSignalPeriod.value = state.overviewSignal.period;
     syncCustomSelect(el.overviewSignalPeriod);
@@ -2460,6 +2482,7 @@ function bindEvents() {
     });
   }
   setSignalFilter(state.signals.filter);
+  setCatalogFiltersCollapsed(true);
   syncCustomSelect(el.screenerType);
   syncCustomSelect(el.chartPeriod);
   syncCustomSelect(el.listingsSortField);

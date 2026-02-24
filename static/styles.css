@@ -1193,6 +1193,27 @@ body.auth-locked #staleBanner {
   margin-top: 8px;
 }
 
+.catalog-filters-body {
+  display: grid;
+}
+
+.filters-collapse-btn {
+  min-height: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+  border-radius: 10px;
+  font-size: 1rem;
+  line-height: 1;
+  transition: transform 120ms ease, border-color 120ms ease, background-color 120ms ease;
+}
+
+.filters-collapse-btn.expanded {
+  transform: rotate(180deg);
+  border-color: var(--accent);
+  background: #e6f7f5;
+}
+
 .sr-only {
   position: absolute !important;
   width: 1px !important;

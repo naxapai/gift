@@ -153,28 +153,33 @@
           <h1 id="catalogTitle" class="page-title">Каталог коллекций</h1>
           <div class="bento-grid catalog-grid">
             <article class="bento-card filters-card sticky">
-              <header class="card-head"><h2>Фильтры</h2></header>
-              <label class="field">
-                <span>Поиск коллекции</span>
-                <input id="baseSearch" type="search" placeholder="Введите название" />
-              </label>
-              <label class="field">
-                <span>Коллекция</span>
-                <select id="catalogBaseSelect"></select>
-              </label>
-              <label class="field">
-                <span>Модель</span>
-                <select id="catalogModelSelect"></select>
-              </label>
-              <label class="field">
-                <span>Фон</span>
-                <select id="catalogBackgroundSelect" multiple size="6" aria-label="Выбор нескольких фонов"></select>
-              </label>
-              <label class="field">
-                <span>Узор</span>
-                <select id="catalogPatternSelect" multiple size="6" aria-label="Выбор нескольких узоров"></select>
-              </label>
-              <div id="baseFilterChips" class="chips"></div>
+              <header class="card-head">
+                <h2>Фильтры</h2>
+                <button id="catalogFiltersToggleBtn" class="btn ghost filters-collapse-btn" type="button" aria-label="Развернуть фильтры" aria-expanded="false">▾</button>
+              </header>
+              <div id="catalogFiltersBody" class="catalog-filters-body hidden">
+                <label class="field">
+                  <span>Поиск коллекции</span>
+                  <input id="baseSearch" type="search" placeholder="Введите название" />
+                </label>
+                <label class="field">
+                  <span>Коллекция</span>
+                  <select id="catalogBaseSelect"></select>
+                </label>
+                <label class="field">
+                  <span>Модель</span>
+                  <select id="catalogModelSelect"></select>
+                </label>
+                <label class="field">
+                  <span>Фон</span>
+                  <select id="catalogBackgroundSelect" multiple size="6" aria-label="Выбор нескольких фонов"></select>
+                </label>
+                <label class="field">
+                  <span>Узор</span>
+                  <select id="catalogPatternSelect" multiple size="6" aria-label="Выбор нескольких узоров"></select>
+                </label>
+                <div id="baseFilterChips" class="chips"></div>
+              </div>
             </article>
 
             <article class="bento-card list-card">
