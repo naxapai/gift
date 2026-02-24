@@ -16,7 +16,27 @@
       <div id="authPanel" class="auth-panel">
         <div id="authUser" class="auth-user hidden"></div>
         <div id="telegramLoginWrap" class="telegram-login-wrap"></div>
-        <button id="headerTonConnectBtn" class="btn secondary">Подключить TON</button>
+        <div id="headerTonWallet" class="header-ton-wallet">
+          <div class="header-ton-btn-wrap">
+            <button id="headerTonConnectBtn" class="btn secondary ton-connect-main">Подключить TON</button>
+            <button id="headerTonMenuBtn" class="btn secondary ton-connect-arrow hidden" type="button" aria-label="Меню TON кошелька" aria-expanded="false">▾</button>
+          </div>
+          <div id="headerTonDropdown" class="ton-wallet-dropdown hidden" role="dialog" aria-label="Информация о TON кошельке">
+            <div class="ton-wallet-row">
+              <span class="muted">Кошелек</span>
+              <strong id="headerTonWalletAddress">-</strong>
+            </div>
+            <div class="ton-wallet-row">
+              <span class="muted">Баланс</span>
+              <strong id="headerTonWalletBalance">- TON</strong>
+            </div>
+            <div class="ton-wallet-row">
+              <span class="muted">Подключен</span>
+              <strong id="headerTonWalletConnectedAt">-</strong>
+            </div>
+            <button id="headerTonDisconnectBtn" class="btn ghost ton-wallet-disconnect" type="button">Отключить</button>
+          </div>
+        </div>
         <button id="authLogoutBtn" class="btn ghost hidden">Выйти</button>
       </div>
     </header>

@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlencode
+from urllib.request import Request, urlopen
 
 from core import GiftAnalyticsService
 import bot as signal_bot
@@ -52,6 +53,10 @@ TON_AUTH_SESSION_TTL_SEC = max(300, int(os.getenv("TON_AUTH_SESSION_TTL_SEC", "8
 TON_PROOF_MAX_AGE_SEC = max(60, int(os.getenv("TON_PROOF_MAX_AGE_SEC", "300")))
 TON_CHALLENGE_TTL_SEC = max(30, int(os.getenv("TON_CHALLENGE_TTL_SEC", "180")))
 TON_ALLOW_WEAK_VERIFY = os.getenv("TON_ALLOW_WEAK_VERIFY", "true").strip().lower() in {"1", "true", "yes", "on"}
+TON_BALANCE_API_URL = (os.getenv("TON_BALANCE_API_URL", "https://toncenter.com/api/v2/getAddressBalance").strip() or "https://toncenter.com/api/v2/getAddressBalance")
+TON_BALANCE_TIMEOUT_SEC = max(2.0, float(os.getenv("TON_BALANCE_TIMEOUT_SEC", "8")))
+TON_BALANCE_CACHE_TTL_SEC = max(5.0, float(os.getenv("TON_BALANCE_CACHE_TTL_SEC", "30")))
+TONCENTER_API_KEY = os.getenv("TONCENTER_API_KEY", "").strip()
 BOT_AUTORUN = os.getenv("BOT_AUTORUN", "true").strip().lower() in {"1", "true", "yes", "on"}
 BOT_INTERVAL_SEC = max(15, int(os.getenv("BOT_POLL_INTERVAL", "30")))
 BOT_API_BASE_URL = os.getenv("BOT_API_BASE_URL", "").strip()
@@ -79,6 +84,8 @@ _REFRESH_STATUS = {
     "last_finished_at": None,
     "last_error": "",
 }
+_TON_BALANCE_CACHE_LOCK = threading.Lock()
+_TON_BALANCE_CACHE: dict[str, dict] = {}
 
 
 def _read_last_full_sync_ts() -> int | None:
@@ -569,6 +576,38 @@ def _host_only(handler: BaseHTTPRequestHandler) -> str:
     return (handler.headers.get("Host", "") or "").split(":")[0].strip().lower()
 
 
+def _fetch_ton_wallet_balance(address: str) -> tuple[float | None, str]:
+    wallet = str(address or "").strip()
+    if not wallet:
+        return None, "wallet_address_missing"
+    now = time.time()
+    with _TON_BALANCE_CACHE_LOCK:
+        cached = _TON_BALANCE_CACHE.get(wallet)
+        if cached and float(cached.get("expires_at", 0)) > now:
+            return cached.get("balance_ton"), "ok_cached"
+    url = f"{TON_BALANCE_API_URL}?{urlencode({'address': wallet})}"
+    req = Request(url, headers={"Accept": "application/json"})
+    if TONCENTER_API_KEY:
+        req.add_header("X-API-Key", TONCENTER_API_KEY)
+    try:
+        with urlopen(req, timeout=TON_BALANCE_TIMEOUT_SEC) as resp:
+            raw = resp.read()
+        payload = json.loads(raw.decode("utf-8"))
+        if payload.get("ok") is not True:
+            return None, "provider_not_ok"
+        nano_raw = payload.get("result")
+        nano = int(str(nano_raw))
+        balance_ton = nano / 1_000_000_000
+    except Exception:
+        return None, "provider_unavailable"
+    with _TON_BALANCE_CACHE_LOCK:
+        _TON_BALANCE_CACHE[wallet] = {
+            "balance_ton": balance_ton,
+            "expires_at": now + TON_BALANCE_CACHE_TTL_SEC,
+        }
+    return balance_ton, "ok"
+
+
 def _validate_ton_verify_payload(handler: BaseHTTPRequestHandler, payload: dict) -> tuple[bool, str, dict | None]:
     account = payload.get("account")
     proof = payload.get("ton_proof")
@@ -855,6 +894,31 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "connected": bool(wallet),
                     "required": TON_AUTH_REQUIRED,
                     "wallet": wallet,
+                },
+                cache_control="no-store",
+            )
+            return
+
+        if path == "/api/auth/ton/balance":
+            wallet = _ton_wallet_from_request(self) or {}
+            address = str(wallet.get("address", "")).strip()
+            if not address:
+                _json_response(
+                    self,
+                    {"ok": False, "error": "ton_wallet_not_connected"},
+                    status=HTTPStatus.UNAUTHORIZED,
+                    cache_control="no-store",
+                )
+                return
+            balance_ton, reason = _fetch_ton_wallet_balance(address)
+            _json_response(
+                self,
+                {
+                    "ok": balance_ton is not None,
+                    "ton_balance": balance_ton,
+                    "reason": reason,
+                    "address": address,
+                    "fetched_at": int(time.time()),
                 },
                 cache_control="no-store",
             )

@@ -83,6 +83,10 @@ const state = {
     wallet: null,
     localWallet: null,
     connecting: false,
+    menuOpen: false,
+    balanceTon: null,
+    balanceUpdatedAt: 0,
+    balanceLoading: false,
     challengeTtlSec: 180,
     proofMaxAgeSec: 300,
     ui: null,
@@ -105,7 +109,14 @@ const el = {
   authGateText: document.getElementById("authGateText"),
   authUser: document.getElementById("authUser"),
   telegramLoginWrap: document.getElementById("telegramLoginWrap"),
+  headerTonWallet: document.getElementById("headerTonWallet"),
   headerTonConnectBtn: document.getElementById("headerTonConnectBtn"),
+  headerTonMenuBtn: document.getElementById("headerTonMenuBtn"),
+  headerTonDropdown: document.getElementById("headerTonDropdown"),
+  headerTonWalletAddress: document.getElementById("headerTonWalletAddress"),
+  headerTonWalletBalance: document.getElementById("headerTonWalletBalance"),
+  headerTonWalletConnectedAt: document.getElementById("headerTonWalletConnectedAt"),
+  headerTonDisconnectBtn: document.getElementById("headerTonDisconnectBtn"),
   authGateLoginWrap: document.getElementById("authGateLoginWrap"),
   authLogoutBtn: document.getElementById("authLogoutBtn"),
   tonWalletStatus: document.getElementById("tonWalletStatus"),
@@ -615,6 +626,56 @@ function shortTonAddress(addr) {
   return `${a.slice(0, 8)}...${a.slice(-6)}`;
 }
 
+function formatTonConnectedAt(wallet) {
+  const ts = Number(wallet?.verified_at || 0);
+  if (!Number.isFinite(ts) || ts <= 0) return "-";
+  return `${formatMskDateTime(new Date(ts * 1000))} МСК`;
+}
+
+function closeTonWalletDropdown() {
+  state.ton.menuOpen = false;
+  if (el.headerTonDropdown) el.headerTonDropdown.classList.add("hidden");
+  if (el.headerTonMenuBtn) {
+    el.headerTonMenuBtn.classList.remove("open");
+    el.headerTonMenuBtn.setAttribute("aria-expanded", "false");
+  }
+}
+
+async function refreshTonBalance(force = false) {
+  const wallet = state.ton.wallet;
+  if (!state.ton.connected || !wallet?.address) return;
+  const now = Date.now();
+  if (!force && state.ton.balanceUpdatedAt && now - state.ton.balanceUpdatedAt < 30000) return;
+  if (state.ton.balanceLoading) return;
+  state.ton.balanceLoading = true;
+  renderTonWalletUi();
+  try {
+    const resp = await fetchJson("/api/auth/ton/balance", { cache: "no-store" });
+    const tonBalance = Number(resp?.ton_balance);
+    state.ton.balanceTon = Number.isFinite(tonBalance) ? tonBalance : null;
+    state.ton.balanceUpdatedAt = Date.now();
+  } catch (e) {
+    state.ton.balanceTon = null;
+  } finally {
+    state.ton.balanceLoading = false;
+    renderTonWalletUi();
+  }
+}
+
+function toggleTonWalletDropdown(force) {
+  if (!state.ton.connected) return;
+  const open = typeof force === "boolean" ? force : !state.ton.menuOpen;
+  state.ton.menuOpen = open;
+  if (el.headerTonDropdown) el.headerTonDropdown.classList.toggle("hidden", !open);
+  if (el.headerTonMenuBtn) {
+    el.headerTonMenuBtn.classList.toggle("open", open);
+    el.headerTonMenuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if (open) {
+    refreshTonBalance(false);
+  }
+}
+
 function tonLocalWalletFromUi() {
   const w = state.ton?.ui?.wallet;
   const account = w?.account || {};
@@ -636,9 +697,14 @@ function renderTonWalletUi() {
     }
     el.headerTonConnectBtn.disabled = Boolean(state.ton.connecting);
   }
+  if (el.headerTonMenuBtn) {
+    el.headerTonMenuBtn.classList.toggle("hidden", !state.ton.connected);
+    el.headerTonMenuBtn.disabled = Boolean(state.ton.connecting || !state.ton.connected);
+  }
   el.tonConnectBtn.disabled = Boolean(state.ton.connecting);
   el.tonDisconnectBtn.disabled = Boolean(state.ton.connecting);
   if (state.ton.connecting) {
+    closeTonWalletDropdown();
     el.tonWalletStatus.textContent = "Статус: выполняется подключение TON...";
     el.tonConnectBtn.textContent = "Подключение...";
     return;
@@ -648,15 +714,32 @@ function renderTonWalletUi() {
     el.tonWalletStatus.innerHTML = `Статус: подключен • <strong>${shortTonAddress(w.address)}</strong> • ${w.chain || "-"} • подтвержден`;
     el.tonDisconnectBtn.classList.remove("hidden");
     el.tonConnectBtn.textContent = "Переподключить TON";
+    if (el.headerTonWalletAddress) el.headerTonWalletAddress.textContent = shortTonAddress(w.address);
+    if (el.headerTonWalletConnectedAt) el.headerTonWalletConnectedAt.textContent = formatTonConnectedAt(w);
+    if (el.headerTonWalletBalance) {
+      if (state.ton.balanceLoading) {
+        el.headerTonWalletBalance.textContent = "Обновление...";
+      } else {
+        el.headerTonWalletBalance.textContent = state.ton.balanceTon == null ? "- TON" : `${formatTon(state.ton.balanceTon)} TON`;
+      }
+    }
   } else if (state.ton.localWallet) {
+    closeTonWalletDropdown();
     const w = state.ton.localWallet;
     el.tonWalletStatus.innerHTML = `Статус: подключен в кошельке • <strong>${shortTonAddress(w.address)}</strong> • ${w.chain || "-"} • ожидание подтверждения`;
     el.tonDisconnectBtn.classList.remove("hidden");
     el.tonConnectBtn.textContent = "Завершить подключение TON";
+    if (el.headerTonWalletAddress) el.headerTonWalletAddress.textContent = shortTonAddress(w.address);
+    if (el.headerTonWalletConnectedAt) el.headerTonWalletConnectedAt.textContent = "-";
+    if (el.headerTonWalletBalance) el.headerTonWalletBalance.textContent = "- TON";
   } else {
+    closeTonWalletDropdown();
     el.tonWalletStatus.textContent = "Статус: не подключен";
     el.tonDisconnectBtn.classList.add("hidden");
     el.tonConnectBtn.textContent = "Подключить TON";
+    if (el.headerTonWalletAddress) el.headerTonWalletAddress.textContent = "-";
+    if (el.headerTonWalletConnectedAt) el.headerTonWalletConnectedAt.textContent = "-";
+    if (el.headerTonWalletBalance) el.headerTonWalletBalance.textContent = "- TON";
   }
 }
 
@@ -668,14 +751,19 @@ async function refreshTonMe() {
     if (state.ton.connected) {
       state.ton.localWallet = null;
     } else {
+      state.ton.balanceTon = null;
+      state.ton.balanceUpdatedAt = 0;
       state.ton.localWallet = tonLocalWalletFromUi();
     }
     state.ton.required = Boolean(me.required);
   } catch (e) {
     state.ton.connected = false;
     state.ton.wallet = null;
+    state.ton.balanceTon = null;
+    state.ton.balanceUpdatedAt = 0;
     state.ton.localWallet = tonLocalWalletFromUi();
   }
+  if (!state.ton.connected) closeTonWalletDropdown();
   renderTonWalletUi();
 }
 
@@ -801,6 +889,9 @@ async function disconnectTonWallet() {
     }
   }
   state.ton.localWallet = null;
+  state.ton.balanceTon = null;
+  state.ton.balanceUpdatedAt = 0;
+  closeTonWalletDropdown();
   await refreshTonMe();
   showToast("TON кошелек отключен");
 }
@@ -2453,6 +2544,9 @@ function bindEvents() {
   });
 
   document.addEventListener("click", (e) => {
+    if (el.headerTonWallet && !e.target.closest("#headerTonWallet")) {
+      closeTonWalletDropdown();
+    }
     if (!e.target.closest(".custom-select")) {
       closeAllCustomSelects();
     }
@@ -2492,7 +2586,25 @@ function bindEvents() {
     el.tonConnectBtn.addEventListener("click", connectTonWallet);
   }
   if (el.headerTonConnectBtn) {
-    el.headerTonConnectBtn.addEventListener("click", connectTonWallet);
+    el.headerTonConnectBtn.addEventListener("click", async () => {
+      if (state.ton.connected) {
+        toggleTonWalletDropdown();
+        return;
+      }
+      await connectTonWallet();
+    });
+  }
+  if (el.headerTonMenuBtn) {
+    el.headerTonMenuBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleTonWalletDropdown();
+    });
+  }
+  if (el.headerTonDisconnectBtn) {
+    el.headerTonDisconnectBtn.addEventListener("click", async () => {
+      await disconnectTonWallet();
+    });
   }
   if (el.tonDisconnectBtn) {
     el.tonDisconnectBtn.addEventListener("click", disconnectTonWallet);
