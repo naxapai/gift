@@ -86,6 +86,24 @@ services:
         value: "10"
       - key: BOT_SIGNAL_INTERVAL_SEC
         value: "300"
+      - key: SIGNALS_CONTRARIAN_ENABLED
+        value: "true"
+      - key: SIGNALS_CONTRARIAN_OVERSOLD_Q
+        value: "0.18"
+      - key: SIGNALS_CONTRARIAN_MIN_LIQUIDITY
+        value: "0.52"
+      - key: SIGNALS_CONTRARIAN_MIN_ACTIVE
+        value: "180"
+      - key: SIGNALS_CONTRARIAN_SCORE_BOOST
+        value: "10.0"
+      - key: SIGNALS_BUY_SCORE
+        value: "72"
+      - key: SIGNALS_BUY_CONFIDENCE
+        value: "58"
+      - key: SIGNALS_BUY_SCORE_BEAR
+        value: "62"
+      - key: SIGNALS_BUY_CONFIDENCE_BEAR
+        value: "52"
       - key: TG_BOT_TOKEN
         sync: false
       - key: TG_CHAT_ID

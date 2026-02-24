@@ -80,6 +80,14 @@ def _safe_pstdev(values: Iterable[float]) -> float:
     return float(pstdev(vals)) if len(vals) > 1 else 0.0
 
 
+def _market_regime(trend_score: float, breadth_24h: float) -> str:
+    if trend_score >= 0.8 or breadth_24h >= 0.56:
+        return "bull"
+    if trend_score <= -0.8 or breadth_24h <= 0.44:
+        return "bear"
+    return "sideways"
+
+
 def _signals_quality_degraded(variants_count: int, gifts_count: int, model_count: int) -> bool:
     min_gifts = max(1, int(os.getenv("SIGNALS_QUALITY_MIN_GIFTS", "5000")))
     min_variants_abs = max(1, int(os.getenv("SIGNALS_QUALITY_MIN_VARIANTS_ABS", "200")))
@@ -1006,8 +1014,27 @@ class GiftAnalyticsService:
             m["pump_risk_24h"] = round(pump_risk, 4)
 
     def recompute_recos(self) -> None:
+        variants = list(self.variants.values())
+        if not variants:
+            return
+        avg_1h = _safe_mean([float((v.get("metrics") or {}).get("floor_change_pct_1h", 0) or 0) for v in variants])
+        avg_12h = _safe_mean([float((v.get("metrics") or {}).get("floor_change_pct_12h", 0) or 0) for v in variants])
+        avg_24h = _safe_mean([float((v.get("metrics") or {}).get("floor_change_pct_24h", 0) or 0) for v in variants])
+        positive_24h = sum(1 for v in variants if float((v.get("metrics") or {}).get("floor_change_pct_24h", 0) or 0) > 0)
+        breadth_24h = positive_24h / max(len(variants), 1)
+        trend_score = (0.18 * avg_1h) + (0.27 * avg_12h) + (0.35 * avg_24h)
+        regime = _market_regime(trend_score, breadth_24h)
+
+        contrarian_enabled = os.getenv("SIGNALS_CONTRARIAN_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+        oversold_q = _clamp(float(os.getenv("SIGNALS_CONTRARIAN_OVERSOLD_Q", "0.18")), 0.02, 0.45)
+        min_liq = _clamp(float(os.getenv("SIGNALS_CONTRARIAN_MIN_LIQUIDITY", "0.52")), 0.1, 1.0)
+        min_active = max(1, int(os.getenv("SIGNALS_CONTRARIAN_MIN_ACTIVE", "180")))
+        boost_pts = _clamp(float(os.getenv("SIGNALS_CONTRARIAN_SCORE_BOOST", "10.0")), 0.0, 25.0)
+        ch24_samples = [float((v.get("metrics") or {}).get("floor_change_pct_24h", 0) or 0) for v in variants]
+        oversold_threshold = _percentile(ch24_samples, oversold_q)
+
         ranges = self._market_ranges()
-        for v in self.variants.values():
+        for v in variants:
             m = v["metrics"]
             # Multi-horizon momentum: fast move + intraday + daily trend.
             mom_1h = _signed_norm(m.get("floor_change_pct_1h", 0), 8.0)
@@ -1043,7 +1070,16 @@ class GiftAnalyticsService:
                 - 0.14 * pump_penalty
                 - 0.08 * spread_penalty
             )
-            raw_score = 50 + (edge * 50)
+            contrarian_opportunity = (
+                contrarian_enabled
+                and regime == "bear"
+                and float(m.get("floor_change_pct_24h", 0) or 0) <= float(oversold_threshold)
+                and liquidity >= min_liq
+                and int(m.get("active_listings", 0) or 0) >= min_active
+                and volatility_penalty <= 0.65
+                and thin_penalty <= 0.7
+            )
+            raw_score = 50 + (edge * 50) + (boost_pts if contrarian_opportunity else 0.0)
             reco = _clamp(raw_score, 0, 100)
 
             signal_strength = _clamp(abs(edge), 0, 1)
@@ -1054,6 +1090,8 @@ class GiftAnalyticsService:
                 (0.45 * volatility_penalty + 0.35 * thin_penalty + 0.20 * pump_penalty),
                 confidence=confidence,
                 data_quality=data_quality,
+                regime=regime,
+                contrarian_opportunity=bool(contrarian_opportunity),
             )
 
             forecast = _build_forecast(m, momentum, confidence)
@@ -2160,6 +2198,8 @@ def _reco_action(
     risk: float,
     confidence: int = 50,
     data_quality: float = 1.0,
+    regime: str = "sideways",
+    contrarian_opportunity: bool = False,
 ) -> str:
     # Hard quality gate: avoid aggressive advice on weak datasets.
     if data_quality < 0.25:
@@ -2167,7 +2207,13 @@ def _reco_action(
     if data_quality < 0.35:
         return "HOLD"
 
-    if reco >= 72 and confidence >= 58 and liquidity >= 0.28 and risk <= 0.62:
+    buy_score = float(os.getenv("SIGNALS_BUY_SCORE", "72"))
+    buy_conf = int(os.getenv("SIGNALS_BUY_CONFIDENCE", "58"))
+    if regime == "bear" and contrarian_opportunity:
+        buy_score = float(os.getenv("SIGNALS_BUY_SCORE_BEAR", "62"))
+        buy_conf = int(os.getenv("SIGNALS_BUY_CONFIDENCE_BEAR", "52"))
+
+    if reco >= buy_score and confidence >= buy_conf and liquidity >= 0.28 and risk <= 0.62:
         return "BUY"
     if reco >= 60 and confidence >= 52:
         return "WATCH"
