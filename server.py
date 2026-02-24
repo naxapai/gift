@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import math
 import secrets
 import threading
 import time
@@ -63,6 +64,9 @@ BOT_API_BASE_URL = os.getenv("BOT_API_BASE_URL", "").strip()
 BOT_API_AUTH_TOKEN = os.getenv("BOT_API_AUTH_TOKEN", "").strip() or API_AUTH_TOKEN
 BRIDGE_API_TOKEN = os.getenv("BRIDGE_API_TOKEN", "").strip() or os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip()
 BRIDGE_API_PATH = (os.getenv("BRIDGE_API_PATH", "/bridge/gifts/verified").strip() or "/bridge/gifts/verified")
+ADMIN_TELEGRAM_USER_ID = os.getenv("ADMIN_TELEGRAM_USER_ID", "").strip()
+ADMIN_TELEGRAM_USER_IDS_RAW = os.getenv("ADMIN_TELEGRAM_USER_IDS", "").strip()
+SIGNAL_ENGINE_OVERRIDES_FILE = ROOT / "data" / "signal_engine_overrides.json"
 MANUAL_FULL_SYNC_COOLDOWN_SEC = max(300, int(os.getenv("MANUAL_FULL_SYNC_COOLDOWN_SEC", "3600")))
 MANUAL_FULL_SYNC_TIMEOUT_SEC = max(120, int(os.getenv("MANUAL_FULL_SYNC_TIMEOUT_SEC", "1800")))
 LAST_FULL_SYNC_TS_FILE = Path(os.getenv("FRAGMENT_LAST_FULL_TS_FILE", "/tmp/fragment_sync_last_full.ts"))
@@ -90,6 +94,70 @@ _TON_BALANCE_CACHE_LOCK = threading.Lock()
 _TON_BALANCE_CACHE: dict[str, dict] = {}
 
 
+SIGNAL_ENGINE_DEFAULTS: dict = {
+    "version": "1.0",
+    "windows": {
+        "median_sales_primary": {"n": 30, "hours": 24},
+        "median_sales_fallback": {"n": 10, "days": 7},
+        "floor_delta_window_minutes": 30,
+        "liquidity_window_hours": 24,
+        "recent_sales_buffer_n": 200,
+    },
+    "floor": {"spread_guard": 0.12, "type_preference": "real_first"},
+    "fair_price": {"alpha": 0.7, "target_liq_sales_per_hour": 0.5, "max_liq_penalty": 0.25},
+    "rarity_premiums": {
+        "serial": {
+            "s1": 0.8,
+            "s2_3": 0.5,
+            "s4_10": 0.25,
+            "s11_50": 0.12,
+            "s51_100": 0.07,
+            "s101_250": 0.04,
+            "last": 0.25,
+            "last10": 0.12,
+        },
+        "nice_numbers": {
+            "enabled": True,
+            "set": [69, 77, 88, 99, 100, 111, 222, 333, 444, 555, 666, 777, 1000],
+            "premium_default": 0.07,
+        },
+        "patterns": {"palindrome": 0.04, "repeat_digits": 0.03, "lucky_7_bonus": 0.03, "cap": 0.08},
+        "cap_total": 0.8,
+    },
+    "trend": {"vol_ref_30m": 20, "w_floor": 0.6, "w_vol": 0.4},
+    "risk_penalties": {
+        "synthetic_floor": 0.15,
+        "thin_liquidity_sales24h_lt": 5,
+        "thin_liquidity_penalty": 0.10,
+        "provider_degraded_penalty": 0.10,
+        "exec_fail_spike_penalty": 0.25,
+    },
+    "score_weights": {"undervalue": 0.45, "rarity": 0.25, "trend": 0.20, "liquidity": 0.10},
+    "thresholds": {
+        "min_undervalue": 0.22,
+        "min_score_signal": 0.62,
+        "min_score_autobuy": 0.72,
+        "min_score_racemode": 0.80,
+        "min_expected_profit_pct": 0.18,
+    },
+    "fees": {"fees_pct_default": 0.03},
+    "sell_rules": {
+        "quick_flip": {"floor_minus_ton": 0.10, "fair_mult": 0.98},
+        "swing": {"trend_threshold": 0.4, "fair_mult": 1.02},
+        "trailing_stop": {"trailing_pct": 0.08},
+    },
+    "drop_pressure": {
+        "window_sec": 300,
+        "sales_norm": 20,
+        "transfers_norm": 200,
+        "w_sales": 0.6,
+        "w_transfers": 0.4,
+        "boost_threshold": 0.7,
+        "min_score_relax": 0.04,
+    },
+}
+
+
 def _read_last_full_sync_ts() -> int | None:
     try:
         raw = LAST_FULL_SYNC_TS_FILE.read_text(encoding="utf-8").strip()
@@ -112,6 +180,216 @@ def _read_last_full_sync_ts() -> int | None:
     except Exception:
         return None
 
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _parse_admin_ids() -> set[int]:
+    out: set[int] = set()
+    for raw in [ADMIN_TELEGRAM_USER_ID, ADMIN_TELEGRAM_USER_IDS_RAW]:
+        for part in str(raw or "").replace(";", ",").split(","):
+            token = part.strip()
+            if not token:
+                continue
+            try:
+                out.add(int(token))
+            except Exception:
+                continue
+    return out
+
+
+ADMIN_TELEGRAM_IDS = _parse_admin_ids()
+
+
+def _is_admin_user(user: dict | None) -> bool:
+    if not isinstance(user, dict) or not ADMIN_TELEGRAM_IDS:
+        return False
+    try:
+        uid = int(user.get("id"))
+    except Exception:
+        return False
+    return uid in ADMIN_TELEGRAM_IDS
+
+
+def _deep_merge(base, patch):
+    if isinstance(base, dict) and isinstance(patch, dict):
+        out = dict(base)
+        for k, v in patch.items():
+            out[k] = _deep_merge(out.get(k), v)
+        return out
+    return patch
+
+
+def _load_signal_engine_overrides() -> dict:
+    try:
+        if SIGNAL_ENGINE_OVERRIDES_FILE.exists():
+            payload = json.loads(SIGNAL_ENGINE_OVERRIDES_FILE.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return payload
+    except Exception:
+        pass
+    return {}
+
+
+def _save_signal_engine_overrides(overrides: dict) -> None:
+    SIGNAL_ENGINE_OVERRIDES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SIGNAL_ENGINE_OVERRIDES_FILE.write_text(
+        json.dumps(overrides, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _signal_engine_effective_config() -> tuple[dict, dict, dict]:
+    defaults = json.loads(json.dumps(SIGNAL_ENGINE_DEFAULTS))
+    overrides = _load_signal_engine_overrides()
+    if not isinstance(overrides, dict):
+        overrides = {}
+    effective = _deep_merge(defaults, overrides)
+    return defaults, overrides, effective
+
+
+def _signal_engine_signal_preview(limit: int, cfg: dict) -> dict:
+    svc = _state()
+    rows = (svc.list_variants(sort="reco_score_desc", page=1, page_size=max(50, min(limit * 3, 5000))).get("items") or [])
+    out: list[dict] = []
+    alpha = _safe_float(((cfg.get("fair_price") or {}).get("alpha")), 0.7)
+    liq_target = _safe_float(((cfg.get("fair_price") or {}).get("target_liq_sales_per_hour")), 0.5)
+    liq_pen_cap = _safe_float(((cfg.get("fair_price") or {}).get("max_liq_penalty")), 0.25)
+    spread_guard = _safe_float(((cfg.get("floor") or {}).get("spread_guard")), 0.12)
+    w = (cfg.get("score_weights") or {})
+    w_u = _safe_float(w.get("undervalue"), 0.45)
+    w_r = _safe_float(w.get("rarity"), 0.25)
+    w_t = _safe_float(w.get("trend"), 0.20)
+    w_l = _safe_float(w.get("liquidity"), 0.10)
+    tr = (cfg.get("thresholds") or {})
+    th_und = _safe_float(tr.get("min_undervalue"), 0.22)
+    th_signal = _safe_float(tr.get("min_score_signal"), 0.62)
+    th_autobuy = _safe_float(tr.get("min_score_autobuy"), 0.72)
+    th_profit = _safe_float(tr.get("min_expected_profit_pct"), 0.18)
+    fee_default = _safe_float(((cfg.get("fees") or {}).get("fees_pct_default")), 0.03)
+    trend_cfg = cfg.get("trend") or {}
+    w_floor = _safe_float(trend_cfg.get("w_floor"), 0.6)
+    w_vol = _safe_float(trend_cfg.get("w_vol"), 0.4)
+    vol_ref = max(1.0, _safe_float(trend_cfg.get("vol_ref_30m"), 20.0))
+    risk_cfg = cfg.get("risk_penalties") or {}
+
+    for v in rows:
+        metrics = v.get("metrics") or {}
+        traits = v.get("traits") or {}
+        floor = max(0.0001, _safe_float(metrics.get("floor_ton"), 0.0001))
+        median = _safe_float(metrics.get("median_ton"), floor)
+        if median <= 0:
+            median = floor
+        model_name = str(((traits.get("model") or {}).get("name")) or "")
+        bg_name = str(((traits.get("background") or {}).get("name")) or "")
+        pt_name = str(((traits.get("pattern") or {}).get("name")) or "")
+        name = " • ".join([x for x in [model_name, bg_name, pt_name] if x]) or str(v.get("variant_id") or "-")
+        price = floor
+        sales24h = int(_safe_float(metrics.get("trades_count_24h"), 0))
+        liq6h = sales24h / 24.0
+        liq_pen = _clamp((max(0.0, liq_target - liq6h) / max(liq_target, 1e-9)), 0.0, liq_pen_cap)
+        prem_rarity = 0.0
+        fair_base = alpha * median + (1 - alpha) * floor
+        fair = max(0.0001, fair_base * (1 + prem_rarity) * (1 - liq_pen))
+        undervalue = _clamp((fair - price) / max(fair, 1e-9), -1.0, 1.0)
+
+        floor_change_1h = _safe_float(metrics.get("floor_change_pct_1h"), 0.0) / 100.0
+        f_30m = floor / max(1e-6, (1.0 + floor_change_1h * 0.5))
+        d_f = (floor - f_30m) / max(f_30m, 1e-9)
+        vol30m = _safe_float(metrics.get("volume_ton_24h"), 0.0) / 48.0
+        trend_raw = _clamp((w_floor * d_f) + (w_vol * (math.log1p(max(0.0, vol30m)) / math.log1p(vol_ref))), -1.0, 1.0)
+        t = (trend_raw + 1.0) / 2.0
+
+        supply_proxy = max(1.0, _safe_float(metrics.get("active_listings"), 1.0))
+        liq_score = _clamp((sales24h / max(1e-9, supply_proxy / 1000.0)), 0.0, 1.0)
+        spread_proxy = abs(_safe_float(metrics.get("spread_proxy_24h"), 0.0))
+        floor_type = "synthetic" if spread_proxy > spread_guard else "real"
+        risk_pen = 0.0
+        if floor_type == "synthetic":
+            risk_pen += _safe_float(risk_cfg.get("synthetic_floor"), 0.15)
+        if sales24h < int(_safe_float(risk_cfg.get("thin_liquidity_sales24h_lt"), 5)):
+            risk_pen += _safe_float(risk_cfg.get("thin_liquidity_penalty"), 0.10)
+        risk_pen = _clamp(risk_pen, 0.0, 1.0)
+
+        u = _clamp(undervalue / 0.6, 0.0, 1.0)
+        r = _clamp(prem_rarity / 0.8, 0.0, 1.0)
+        score = _clamp((w_u * u) + (w_r * r) + (w_t * t) + (w_l * liq_score) - risk_pen, 0.0, 1.0)
+        confidence = _clamp(0.3 + 0.7 * min(1.0, sales24h / 30.0), 0.0, 1.0)
+        target_sell = min(
+            floor,
+            fair * _safe_float((((cfg.get("sell_rules") or {}).get("quick_flip") or {}).get("fair_mult"), 0.98)),
+        )
+        expected_profit = max(0.0, (target_sell - price) / max(price, 1e-9)) - fee_default
+
+        action_hint = "SKIP"
+        if score >= th_autobuy and expected_profit >= th_profit:
+            action_hint = "BUY"
+        elif undervalue >= th_und and score >= th_signal:
+            action_hint = "WATCH"
+
+        if action_hint == "SKIP":
+            continue
+
+        risk_flags: list[str] = []
+        if floor_type == "synthetic":
+            risk_flags.append("SYNTH_FLOOR")
+        if sales24h < int(_safe_float(risk_cfg.get("thin_liquidity_sales24h_lt"), 5)):
+            risk_flags.append("THIN_LIQUIDITY")
+
+        out.append(
+            {
+                "signalId": str(v.get("variant_id") or ""),
+                "type": "undervalued" if action_hint in {"BUY", "WATCH"} else "trend",
+                "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "collectionId": str(v.get("base_id") or ""),
+                "collectionName": str(v.get("base_id") or "").replace("_", " ").title(),
+                "itemId": str(v.get("variant_id") or ""),
+                "serial": None,
+                "supply": None,
+                "priceTon": round(price, 6),
+                "floorTon": round(floor, 6),
+                "floorType": floor_type,
+                "fairTon": round(fair, 6),
+                "undervaluePct": round(_clamp(undervalue, -1.0, 1.0), 6),
+                "score": round(score, 6),
+                "confidence": round(confidence, 6),
+                "expectedProfitPct": round(_clamp(expected_profit, -1.0, 1.0), 6),
+                "riskFlags": risk_flags,
+                "actionHint": action_hint,
+                "explain": {
+                    "name": name,
+                    "P": round(price, 6),
+                    "F": round(floor, 6),
+                    "M": round(median, 6),
+                    "Fair": round(fair, 6),
+                    "undervalue": round(undervalue, 6),
+                    "pen_liq": round(liq_pen, 6),
+                    "dF": round(d_f, 6),
+                    "vol30m": round(vol30m, 6),
+                    "t": round(t, 6),
+                    "sales24h": sales24h,
+                    "liq_score": round(liq_score, 6),
+                    "risk_pen": round(risk_pen, 6),
+                    "expected_profit_pct": round(expected_profit, 6),
+                },
+            }
+        )
+        if len(out) >= limit:
+            break
+    return {
+        "ok": True,
+        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "total": len(out),
+        "items": out,
+    }
 
 def _run_full_sync_once() -> tuple[bool, str]:
     env = os.environ.copy()
@@ -732,6 +1010,20 @@ def _require_auth(handler: BaseHTTPRequestHandler) -> dict | None:
     return None
 
 
+def _require_admin(handler: BaseHTTPRequestHandler) -> dict | None:
+    user = _require_auth(handler)
+    if not user:
+        return None
+    if _is_admin_user(user):
+        return user
+    _json_response(
+        handler,
+        {"ok": False, "error": "forbidden", "message": "Доступ только для администратора"},
+        status=HTTPStatus.FORBIDDEN,
+    )
+    return None
+
+
 def _bridge_token_ok(handler: BaseHTTPRequestHandler) -> bool:
     expected = BRIDGE_API_TOKEN
     if not expected:
@@ -961,6 +1253,20 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/admin/access":
+            user = _auth_user_from_request(self)
+            _json_response(
+                self,
+                {
+                    "ok": True,
+                    "authenticated": bool(user),
+                    "is_admin": bool(_is_admin_user(user)),
+                    "user_id": int(user.get("id")) if isinstance(user, dict) and str(user.get("id", "")).strip() else None,
+                },
+                cache_control="no-store",
+            )
+            return
+
         if path == "/api/auth/telegram/callback":
             params = parse_qs(parsed.query)
             payload = {k: (v[0] if isinstance(v, list) and v else "") for k, v in params.items()}
@@ -1047,6 +1353,35 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/") and not path.startswith("/api/auth/"):
             if not _require_auth(self):
                 return
+
+        if path == "/api/admin/signal-engine/config":
+            if not _require_admin(self):
+                return
+            defaults, overrides, effective = _signal_engine_effective_config()
+            _json_response(
+                self,
+                {
+                    "ok": True,
+                    "defaults": defaults,
+                    "overrides": overrides,
+                    "effective": effective,
+                },
+                cache_control="no-store",
+            )
+            return
+
+        if path == "/api/admin/signal-engine/signals":
+            if not _require_admin(self):
+                return
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["100"])[0])
+            except Exception:
+                limit = 100
+            limit = max(1, min(limit, 500))
+            _, _, effective = _signal_engine_effective_config()
+            _json_response(self, _signal_engine_signal_preview(limit=limit, cfg=effective), cache_control="no-store")
+            return
 
         if path == "/api/rates/stars":
             _json_response(self, _state().stars_rate())
@@ -1296,6 +1631,21 @@ class RequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/admin/refresh":
             _json_response(self, _start_manual_refresh(), cache_control="no-store")
             return
+        if parsed.path == "/api/admin/signal-engine/config/reset":
+            if not _require_admin(self):
+                return
+            try:
+                if SIGNAL_ENGINE_OVERRIDES_FILE.exists():
+                    SIGNAL_ENGINE_OVERRIDES_FILE.unlink()
+            except Exception:
+                pass
+            defaults, overrides, effective = _signal_engine_effective_config()
+            _json_response(
+                self,
+                {"ok": True, "defaults": defaults, "overrides": overrides, "effective": effective},
+                cache_control="no-store",
+            )
+            return
         if parsed.path == "/api/alerts":
             rule = _read_json_body(self)
             _json_response(self, _state().alerts_create(rule), status=201)
@@ -1307,6 +1657,27 @@ class RequestHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/") and not parsed.path.startswith("/api/auth/"):
             if not _require_auth(self):
                 return
+        if parsed.path == "/api/admin/signal-engine/config":
+            if not _require_admin(self):
+                return
+            payload = _read_json_body(self)
+            overrides = payload.get("overrides") if isinstance(payload.get("overrides"), dict) else payload
+            if not isinstance(overrides, dict):
+                _json_response(
+                    self,
+                    {"ok": False, "error": "invalid_payload", "message": "Ожидался JSON-объект overrides"},
+                    status=HTTPStatus.BAD_REQUEST,
+                    cache_control="no-store",
+                )
+                return
+            _save_signal_engine_overrides(overrides)
+            defaults, saved_overrides, effective = _signal_engine_effective_config()
+            _json_response(
+                self,
+                {"ok": True, "defaults": defaults, "overrides": saved_overrides, "effective": effective},
+                cache_control="no-store",
+            )
+            return
         if parsed.path.startswith("/api/alerts/"):
             alert_id = parsed.path.split("/")[-1]
             rule = _read_json_body(self)

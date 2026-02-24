@@ -56,6 +56,7 @@ const state = {
     signals: false,
     watchlist: false,
     alerts: false,
+    admin: false,
   },
   signals: {
     filter: "all",
@@ -101,6 +102,15 @@ const state = {
     proofMaxAgeSec: 300,
     ui: null,
   },
+  admin: {
+    checked: false,
+    isAdmin: false,
+    userId: null,
+    configDefaults: null,
+    configOverrides: {},
+    configEffective: null,
+    previewItems: [],
+  },
 };
 
 const STORAGE_PAGE_KEY = "active_page";
@@ -111,6 +121,7 @@ const el = {
   pages: document.querySelectorAll(".page"),
   navBtns: document.querySelectorAll(".nav-btn"),
   mobileNavBtns: document.querySelectorAll(".mobile-nav-btn"),
+  adminNavBtn: document.getElementById("adminNavBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   globalSearch: document.getElementById("globalSearch"),
   staleBanner: document.getElementById("staleBanner"),
@@ -174,6 +185,14 @@ const el = {
   alertsJson: document.getElementById("alertsJson"),
 
   showStars: document.getElementById("showStars"),
+  adminAccessInfo: document.getElementById("adminAccessInfo"),
+  adminCfgEditor: document.getElementById("adminCfgEditor"),
+  adminCfgReloadBtn: document.getElementById("adminCfgReloadBtn"),
+  adminCfgSaveBtn: document.getElementById("adminCfgSaveBtn"),
+  adminCfgResetBtn: document.getElementById("adminCfgResetBtn"),
+  adminSignalsRefreshBtn: document.getElementById("adminSignalsRefreshBtn"),
+  adminSignalsStats: document.getElementById("adminSignalsStats"),
+  adminSignalsBody: document.getElementById("adminSignalsBody"),
 
   baseTitle: document.getElementById("baseTitle"),
   baseFloor: document.getElementById("baseFloor"),
@@ -205,7 +224,7 @@ let eventsBound = false;
 let bootstrapped = false;
 
 function preselectInitialPage() {
-  const allowed = new Set(["overview", "catalog", "screeners", "signals", "watchlist", "alerts", "settings", "base-details", "variant-details"]);
+  const allowed = new Set(["overview", "catalog", "screeners", "signals", "watchlist", "alerts", "settings", "admin", "base-details", "variant-details"]);
   const fromHash = window.location.hash.replace("#", "");
   let pageId = fromHash || localStorage.getItem(STORAGE_PAGE_KEY) || "overview";
   if (!allowed.has(pageId)) pageId = "overview";
@@ -353,6 +372,10 @@ function showToast(message) {
 }
 
 function setPage(pageId) {
+  if (pageId === "admin" && !state.admin.isAdmin) {
+    showToast("Доступ к разделу Админ запрещен");
+    pageId = "overview";
+  }
   el.pages.forEach((p) => p.classList.remove("active"));
   const pageEl = document.getElementById(pageId);
   if (!pageEl) return;
@@ -599,6 +622,100 @@ async function initAuth() {
   }
   renderAuthUi();
   return !state.auth.required || state.auth.authenticated;
+}
+
+function applyAdminVisibility() {
+  const canShow = Boolean(state.admin.isAdmin);
+  if (el.adminNavBtn) {
+    el.adminNavBtn.classList.toggle("hidden", !canShow);
+  }
+  if (el.adminAccessInfo) {
+    if (!state.admin.checked) {
+      el.adminAccessInfo.textContent = "Проверка прав…";
+    } else if (state.admin.isAdmin) {
+      el.adminAccessInfo.textContent = `Разрешено (Telegram ID: ${state.admin.userId ?? "-"})`;
+    } else {
+      el.adminAccessInfo.textContent = "Нет прав администратора";
+    }
+  }
+  if (!canShow) {
+    const activePage = document.querySelector(".page.active")?.id || "";
+    if (activePage === "admin") {
+      setPage("overview");
+    }
+  }
+}
+
+async function refreshAdminAccess() {
+  try {
+    const resp = await fetchJson("/api/admin/access", { cache: "no-store" });
+    state.admin.checked = true;
+    state.admin.isAdmin = Boolean(resp.is_admin);
+    state.admin.userId = resp.user_id ?? null;
+  } catch (_e) {
+    state.admin.checked = true;
+    state.admin.isAdmin = false;
+    state.admin.userId = null;
+  }
+  applyAdminVisibility();
+}
+
+function renderAdminSignals(items = []) {
+  if (!el.adminSignalsBody || !el.adminSignalsStats) return;
+  const rows = Array.isArray(items) ? items : [];
+  const buyCount = rows.filter((x) => String(x.actionHint || "").toUpperCase() === "BUY").length;
+  const watchCount = rows.filter((x) => String(x.actionHint || "").toUpperCase() === "WATCH").length;
+  el.adminSignalsStats.innerHTML = [
+    ["Всего", rows.length],
+    ["BUY", buyCount],
+    ["WATCH", watchCount],
+  ].map(([k, v]) => `<div><span class="muted">${k}</span><strong>${v}</strong></div>`).join("");
+  if (!rows.length) {
+    el.adminSignalsBody.innerHTML = `<tr><td colspan="7"><div class="empty-state">Preview сигналы не найдены</div></td></tr>`;
+    return;
+  }
+  el.adminSignalsBody.innerHTML = rows.map((s) => {
+    const action = String(s.actionHint || "SKIP").toUpperCase();
+    const tone = action === "BUY" ? "buy" : action === "WATCH" ? "watch" : "hold";
+    const undervaluePct = Number(s.undervaluePct || 0) * 100;
+    const scorePct = Number(s.score || 0) * 100;
+    return `
+      <tr>
+        <td>${escapeHtml(s.collectionName || "-")}</td>
+        <td>${formatTon(s.priceTon)}</td>
+        <td>${formatTon(s.floorTon)}</td>
+        <td>${formatTon(s.fairTon)}</td>
+        <td style="${percentClass(undervaluePct)}">${undervaluePct.toFixed(1)}%</td>
+        <td>${scorePct.toFixed(1)}%</td>
+        <td><span class="chip ${tone}">${escapeHtml(action)}</span></td>
+      </tr>
+    `;
+  }).join("");
+}
+
+async function loadAdminConfig() {
+  if (!state.admin.isAdmin) return;
+  const resp = await fetchJson("/api/admin/signal-engine/config", { cache: "no-store" });
+  state.admin.configDefaults = resp.defaults || null;
+  state.admin.configOverrides = resp.overrides || {};
+  state.admin.configEffective = resp.effective || null;
+  if (el.adminCfgEditor) {
+    el.adminCfgEditor.value = JSON.stringify(state.admin.configOverrides || {}, null, 2);
+  }
+}
+
+async function refreshAdminSignalsPreview() {
+  if (!state.admin.isAdmin) return;
+  const resp = await fetchJson("/api/admin/signal-engine/signals?limit=120", { cache: "no-store" });
+  state.admin.previewItems = Array.isArray(resp.items) ? resp.items : [];
+  renderAdminSignals(state.admin.previewItems);
+}
+
+async function ensureAdminPageData() {
+  if (!state.admin.isAdmin) return;
+  await loadAdminConfig();
+  await refreshAdminSignalsPreview();
+  state.pageLoaded.admin = true;
 }
 
 async function tryTelegramWebAppLogin() {
@@ -2722,10 +2839,77 @@ function bindEvents() {
     }
     state.auth.authenticated = false;
     state.auth.user = null;
+    state.admin.checked = true;
+    state.admin.isAdmin = false;
+    state.admin.userId = null;
     state.requestCache.clear();
     renderAuthUi();
+    applyAdminVisibility();
     showToast("Вы вышли из аккаунта");
   });
+
+  if (el.adminCfgReloadBtn) {
+    el.adminCfgReloadBtn.addEventListener("click", async () => {
+      try {
+        await loadAdminConfig();
+        showToast("Конфиг обновлен");
+      } catch (e) {
+        showToast(`Ошибка конфига: ${e.message}`);
+      }
+    });
+  }
+  if (el.adminCfgSaveBtn) {
+    el.adminCfgSaveBtn.addEventListener("click", async () => {
+      if (!state.admin.isAdmin || !el.adminCfgEditor) return;
+      let parsed;
+      try {
+        parsed = JSON.parse(el.adminCfgEditor.value || "{}");
+      } catch (e) {
+        showToast("Ошибка JSON в overrides");
+        return;
+      }
+      try {
+        await fetchJson("/api/admin/signal-engine/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overrides: parsed }),
+          cache: "no-store",
+        });
+        state.pageLoaded.admin = false;
+        await ensureAdminPageData();
+        showToast("Конфиг сохранен");
+      } catch (e) {
+        showToast(`Ошибка сохранения: ${e.message}`);
+      }
+    });
+  }
+  if (el.adminCfgResetBtn) {
+    el.adminCfgResetBtn.addEventListener("click", async () => {
+      if (!state.admin.isAdmin) return;
+      try {
+        await fetchJson("/api/admin/signal-engine/config/reset", {
+          method: "POST",
+          cache: "no-store",
+        });
+        state.pageLoaded.admin = false;
+        await ensureAdminPageData();
+        showToast("Конфиг сброшен");
+      } catch (e) {
+        showToast(`Ошибка сброса: ${e.message}`);
+      }
+    });
+  }
+  if (el.adminSignalsRefreshBtn) {
+    el.adminSignalsRefreshBtn.addEventListener("click", async () => {
+      if (!state.admin.isAdmin) return;
+      try {
+        await refreshAdminSignalsPreview();
+        showToast("Preview сигналов обновлен");
+      } catch (e) {
+        showToast(`Ошибка preview: ${e.message}`);
+      }
+    });
+  }
 
   if (el.tonConnectBtn) {
     el.tonConnectBtn.addEventListener("click", connectTonWallet);
@@ -2773,7 +2957,7 @@ async function loadAll() {
   }
 
   const activePage = window.location.hash.replace("#", "") || localStorage.getItem(STORAGE_PAGE_KEY) || "overview";
-  const allowed = new Set(["overview", "catalog", "screeners", "signals", "watchlist", "alerts", "settings", "base-details", "variant-details"]);
+  const allowed = new Set(["overview", "catalog", "screeners", "signals", "watchlist", "alerts", "settings", "admin", "base-details", "variant-details"]);
   const pageToOpen = allowed.has(activePage) ? activePage : "overview";
 
   if (pageToOpen === "variant-details") {
@@ -2824,6 +3008,10 @@ async function ensurePageData(pageId) {
     if (!state.pageLoaded.alerts) {
       await loadAlerts();
     }
+    return;
+  }
+  if (pageId === "admin") {
+    await ensureAdminPageData();
   }
 }
 
@@ -2873,6 +3061,7 @@ async function bootstrap() {
   const tonInitPromise = initTonAuth();
   const webAppPreAuth = await tryTelegramWebAppLogin();
   const ready = await initAuth();
+  await refreshAdminAccess();
   if (!webAppPreAuth) {
     scheduleWebAppAuthRetry();
   }
@@ -2888,6 +3077,7 @@ async function bootstrap() {
     history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     await refreshAuthMe();
     renderAuthUi();
+    await refreshAdminAccess();
   }
   if (ready) {
     await loadAll();

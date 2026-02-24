@@ -61,6 +61,7 @@
         <button class="nav-btn" data-page="signals">Сигналы</button>
         <button class="nav-btn" data-page="watchlist">Избранное</button>
         <button class="nav-btn" data-page="settings">Настройки</button>
+        <button id="adminNavBtn" class="nav-btn hidden" data-page="admin">Админ</button>
       </aside>
 
       <main class="page-wrap">
@@ -360,6 +361,54 @@
               </div>
               <div id="tonConnectHint" class="muted small">
                 Подключение через TonConnect с одноразовым challenge и защитой от повторов.
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="admin" class="page" aria-labelledby="adminTitle">
+          <h1 id="adminTitle" class="page-title">Админ</h1>
+          <div class="bento-grid settings-grid">
+            <article class="bento-card">
+              <header class="card-head"><h2>Доступ</h2></header>
+              <div id="adminAccessInfo" class="muted">Проверка прав…</div>
+              <div class="muted small">Страница доступна только разрешенному Telegram ID.</div>
+            </article>
+
+            <article class="bento-card list-card">
+              <header class="card-head"><h2>SignalEngine JSON-конфиг</h2></header>
+              <div class="row-actions">
+                <button id="adminCfgReloadBtn" class="btn secondary">Обновить</button>
+                <button id="adminCfgSaveBtn" class="btn primary">Сохранить</button>
+                <button id="adminCfgResetBtn" class="btn ghost">Сбросить</button>
+              </div>
+              <label class="field">
+                <span>overrides (JSON)</span>
+                <textarea id="adminCfgEditor" class="code" rows="14" spellcheck="false"></textarea>
+              </label>
+            </article>
+
+            <article class="bento-card list-card">
+              <header class="card-head"><h2>Preview Signals (по ТЗ)</h2></header>
+              <div class="row-actions">
+                <button id="adminSignalsRefreshBtn" class="btn secondary">Пересчитать preview</button>
+              </div>
+              <div id="adminSignalsStats" class="kpi-list"></div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>Коллекция</th>
+                      <th>Цена</th>
+                      <th>Floor</th>
+                      <th>Fair</th>
+                      <th>Undervalue</th>
+                      <th>Score</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="adminSignalsBody"></tbody>
+                </table>
               </div>
             </article>
           </div>
