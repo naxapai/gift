@@ -36,6 +36,10 @@ services:
         value: "Bearer "
       - key: TELEGRAM_GIFTS_API_TIMEOUT_SEC
         value: "25"
+      - key: TELEGRAM_GIFTS_FRAGMENT_RESERVE
+        value: "false"
+      - key: INGEST_MAX_INFLIGHT_SEC
+        value: "300"
       - key: FRAGMENT_GIFTS_URL
         value: "https://fragment.com/gifts"
       - key: FRAGMENT_MAX_COLLECTIONS

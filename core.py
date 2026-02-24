@@ -477,10 +477,19 @@ class GiftAnalyticsService:
 
     def ingest(self) -> None:
         now = _now()
+        max_inflight_sec = max(60, int(os.getenv("INGEST_MAX_INFLIGHT_SEC", "300")))
         with self.lock:
             if self.state.get("ingest_in_progress"):
-                _log_ingest("ingest skipped (already in progress)")
-                return
+                started_raw = self.state.get("last_ingest_started_at")
+                started_dt = _parse_ts(str(started_raw)) if started_raw else None
+                inflight_age = int((now - started_dt).total_seconds()) if started_dt else 0
+                if started_dt and inflight_age >= max_inflight_sec:
+                    self.state["ingest_in_progress"] = False
+                    self.state["last_error"] = f"INGEST_LOCK_RESET(age={inflight_age}s)"
+                    _log_ingest(f"ingest stale lock reset age={inflight_age}s max={max_inflight_sec}s")
+                else:
+                    _log_ingest("ingest skipped (already in progress)")
+                    return
             self.state["ingest_in_progress"] = True
             self.state["last_ingest_started_at"] = _iso(now)
         _log_ingest("ingest start")

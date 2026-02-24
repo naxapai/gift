@@ -1493,6 +1493,25 @@ def _fetch_fragment_reserve_dataset(file_path: str | None, reason: str) -> Dict:
     return dataset
 
 
+def _fetch_file_fallback_dataset(file_path: str | None, reason: str) -> Dict:
+    fallback = load_verified_dataset(file_path)
+    try:
+        if isinstance(fallback, dict):
+            meta = dict(fallback.get("meta") or {})
+            meta.update(
+                {
+                    "source_fallback": "file",
+                    "fallback_reason": reason[:240],
+                    "failed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+            )
+            fallback["meta"] = meta
+            _save_fragment_snapshot_meta(meta)
+    except Exception:
+        pass
+    return fallback
+
+
 def load_verified_dataset_source() -> Dict:
     source = os.getenv("VERIFIED_SOURCE", "telegram_api").strip().lower()
     file_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
@@ -1551,7 +1570,11 @@ def load_verified_dataset_source() -> Dict:
             save_verified_dataset(dataset, file_path)
             return dataset
         except Exception as e:
-            return _fetch_fragment_reserve_dataset(file_path, f"telegram_api_failed:{type(e).__name__}:{str(e)[:180]}")
+            allow_fragment_reserve = os.getenv("TELEGRAM_GIFTS_FRAGMENT_RESERVE", "false").strip().lower() in {"1", "true", "yes", "on"}
+            reason = f"telegram_api_failed:{type(e).__name__}:{str(e)[:180]}"
+            if allow_fragment_reserve:
+                return _fetch_fragment_reserve_dataset(file_path, reason)
+            return _fetch_file_fallback_dataset(file_path, reason)
     if source == "hybrid":
         fallback = _load_verified_fallback_snapshot(file_path)
         # 1) Prefer telegram bridge for fastest, richer traited payload.
