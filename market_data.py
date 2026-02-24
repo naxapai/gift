@@ -1394,6 +1394,72 @@ def _merge_fragment_analytics_store(dataset: Dict) -> None:
     _save_fragment_analytics_store(store_payload)
 
 
+def _dataset_stats(dataset: Dict) -> Dict[str, int]:
+    if not isinstance(dataset, dict):
+        return {"gifts": 0, "collections": 0, "models": 0, "backdrops": 0, "symbols": 0}
+    filters = dataset.get("filters") if isinstance(dataset.get("filters"), dict) else {}
+    return {
+        "gifts": len(dataset.get("gifts") or []),
+        "collections": len(filters.get("collections") or []),
+        "models": len(filters.get("models") or {}),
+        "backdrops": len(filters.get("backdrops") or {}),
+        "symbols": len(filters.get("symbols") or {}),
+    }
+
+
+def _load_verified_fallback_snapshot(file_path: str | None) -> Dict | None:
+    try:
+        if file_path:
+            p = Path(file_path)
+            if p.exists():
+                return load_verified_dataset(file_path)
+        if VERIFIED_DATA_FILE.exists():
+            return load_verified_dataset(None)
+    except Exception:
+        return None
+    return None
+
+
+def _ensure_live_dataset_quality(dataset: Dict, fallback: Dict | None, source: str) -> None:
+    stats = _dataset_stats(dataset)
+    gifts = int(stats.get("gifts") or 0)
+    collections = int(stats.get("collections") or 0)
+    models = int(stats.get("models") or 0)
+    if gifts <= 0:
+        raise ValueError(f"{source} returned empty gifts")
+
+    min_abs_gifts = max(1, int(os.getenv("VERIFIED_MIN_GIFTS_ABS", "200")))
+    if gifts < min_abs_gifts:
+        raise ValueError(f"{source} gifts below abs minimum: {gifts} < {min_abs_gifts}")
+
+    if not isinstance(fallback, dict):
+        return
+
+    prev = _dataset_stats(fallback)
+    prev_gifts = int(prev.get("gifts") or 0)
+    prev_collections = int(prev.get("collections") or 0)
+    prev_models = int(prev.get("models") or 0)
+
+    min_gifts_ratio = max(0.0, min(1.0, float(os.getenv("VERIFIED_MIN_GIFTS_RATIO", "0.6"))))
+    min_collections_ratio = max(0.0, min(1.0, float(os.getenv("VERIFIED_MIN_COLLECTIONS_RATIO", "0.5"))))
+    min_models_ratio = max(0.0, min(1.0, float(os.getenv("VERIFIED_MIN_MODELS_RATIO", "0.4"))))
+
+    if prev_gifts > 0:
+        min_gifts = max(min_abs_gifts, int(prev_gifts * min_gifts_ratio))
+        if gifts < min_gifts:
+            raise ValueError(f"{source} gifts below baseline ratio: {gifts} < {min_gifts} (prev={prev_gifts})")
+    if prev_collections > 0:
+        min_collections = max(1, int(prev_collections * min_collections_ratio))
+        if collections < min_collections:
+            raise ValueError(
+                f"{source} collections below baseline ratio: {collections} < {min_collections} (prev={prev_collections})"
+            )
+    if prev_models > 0:
+        min_models = max(1, int(prev_models * min_models_ratio))
+        if models < min_models:
+            raise ValueError(f"{source} models below baseline ratio: {models} < {min_models} (prev={prev_models})")
+
+
 def load_verified_dataset_source() -> Dict:
     source = os.getenv("VERIFIED_SOURCE", "file").strip().lower()
     file_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
@@ -1412,6 +1478,7 @@ def load_verified_dataset_source() -> Dict:
         timeout_sec = int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "25"))
 
         try:
+            fallback = _load_verified_fallback_snapshot(file_path)
             dataset = fetch_verified_dataset_from_api(
                 api_url=api_url,
                 api_token=api_token,
@@ -1419,8 +1486,7 @@ def load_verified_dataset_source() -> Dict:
                 token_header=token_header,
                 token_prefix=token_prefix,
             )
-            if not _has_gifts(dataset):
-                raise ValueError("verified api returned empty gifts")
+            _ensure_live_dataset_quality(dataset, fallback, "verified_api")
             # Cache last successful verified snapshot for audit and fallback debugging.
             save_verified_dataset(dataset, file_path)
             return dataset
@@ -1434,6 +1500,7 @@ def load_verified_dataset_source() -> Dict:
         token_prefix = os.getenv("TELEGRAM_GIFTS_API_TOKEN_PREFIX", "Bearer ").strip()
         timeout_sec = int(os.getenv("TELEGRAM_GIFTS_API_TIMEOUT_SEC", os.getenv("VERIFIED_API_TIMEOUT_SEC", "25")))
         try:
+            fallback = _load_verified_fallback_snapshot(file_path)
             dataset = fetch_verified_dataset_from_telegram_api(
                 api_url=api_url,
                 api_token=api_token,
@@ -1441,8 +1508,7 @@ def load_verified_dataset_source() -> Dict:
                 token_header=token_header,
                 token_prefix=token_prefix,
             )
-            if not _has_gifts(dataset):
-                raise ValueError("telegram gifts api returned empty gifts")
+            _ensure_live_dataset_quality(dataset, fallback, "telegram_api")
             save_verified_dataset(dataset, file_path)
             return dataset
         except Exception as e:
@@ -1463,6 +1529,47 @@ def load_verified_dataset_source() -> Dict:
             except Exception:
                 pass
             return fallback
+    if source == "hybrid":
+        fallback = _load_verified_fallback_snapshot(file_path)
+        # 1) Prefer telegram bridge for fastest, richer traited payload.
+        api_url = os.getenv("TELEGRAM_GIFTS_API_URL", "").strip()
+        api_token = os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip()
+        token_header = os.getenv("TELEGRAM_GIFTS_API_TOKEN_HEADER", "Authorization").strip()
+        token_prefix = os.getenv("TELEGRAM_GIFTS_API_TOKEN_PREFIX", "Bearer ").strip()
+        timeout_sec = int(os.getenv("TELEGRAM_GIFTS_API_TIMEOUT_SEC", os.getenv("VERIFIED_API_TIMEOUT_SEC", "25")))
+        if api_url:
+            try:
+                dataset = fetch_verified_dataset_from_telegram_api(
+                    api_url=api_url,
+                    api_token=api_token,
+                    timeout_sec=timeout_sec,
+                    token_header=token_header,
+                    token_prefix=token_prefix,
+                )
+                _ensure_live_dataset_quality(dataset, fallback, "hybrid.telegram_api")
+                save_verified_dataset(dataset, file_path)
+                return dataset
+            except Exception:
+                pass
+        # 2) Fallback to direct Fragment snapshot.
+        try:
+            root_url = os.getenv("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts").strip()
+            max_collections = int(os.getenv("FRAGMENT_MAX_COLLECTIONS", "0"))
+            max_pages_per_collection = int(os.getenv("FRAGMENT_MAX_PAGES_PER_COLLECTION", "500"))
+            collection_start = int(os.getenv("FRAGMENT_COLLECTION_START", "0"))
+            dataset = fetch_verified_dataset_from_fragment(
+                root_url=root_url,
+                timeout_sec=int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "25")),
+                max_collections=max_collections,
+                max_pages_per_collection=max_pages_per_collection,
+                collection_start=collection_start,
+            )
+            _ensure_live_dataset_quality(dataset, fallback, "hybrid.fragment")
+            save_verified_dataset(dataset, file_path)
+            return dataset
+        except Exception:
+            # 3) Final stable fallback: last successful snapshot from file.
+            return load_verified_dataset(file_path)
     if source == "fragment":
         timeout_sec = int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "25"))
         root_url = os.getenv("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts").strip()
@@ -1470,6 +1577,7 @@ def load_verified_dataset_source() -> Dict:
         max_pages_per_collection = int(os.getenv("FRAGMENT_MAX_PAGES_PER_COLLECTION", "500"))
         collection_start = int(os.getenv("FRAGMENT_COLLECTION_START", "0"))
         try:
+            fallback = _load_verified_fallback_snapshot(file_path)
             dataset = fetch_verified_dataset_from_fragment(
                 root_url=root_url,
                 timeout_sec=timeout_sec,
@@ -1477,8 +1585,7 @@ def load_verified_dataset_source() -> Dict:
                 max_pages_per_collection=max_pages_per_collection,
                 collection_start=collection_start,
             )
-            if not _has_gifts(dataset):
-                raise ValueError("fragment returned empty gifts")
+            _ensure_live_dataset_quality(dataset, fallback, "fragment")
             save_verified_dataset(dataset, file_path)
             return dataset
         except Exception as e:
@@ -1501,7 +1608,7 @@ def load_verified_dataset_source() -> Dict:
                 pass
             return fallback
 
-    raise ValueError("VERIFIED_SOURCE must be one of: 'file', 'api', 'telegram_api', 'fragment'")
+    raise ValueError("VERIFIED_SOURCE must be one of: 'file', 'api', 'telegram_api', 'hybrid', 'fragment'")
 
 
 def save_dataset(dataset: Dict) -> None:

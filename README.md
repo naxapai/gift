@@ -127,6 +127,7 @@ curl -sS "https://api.telegram.org/bot<TG_BOT_TOKEN>/setWebhook" \
   - `file` — локальный файл `data/verified_gifts.json` (или `VERIFIED_DATA_FILE`);
   - `api` — внешний верифицированный API (`VERIFIED_API_URL`);
   - `telegram_api` — API-bridge над Telegram Gifts/MTProto (`TELEGRAM_GIFTS_API_URL`);
+  - `hybrid` — сначала `telegram_api`, затем `fragment`, затем fallback на `file`;
   - `fragment` — официальный маркет Fragment (`https://fragment.com/gifts`).
 - Если файл отсутствует/невалиден, сервер завершится с ошибкой (чтобы не показывать synthetic данные).
 
@@ -163,6 +164,25 @@ python3 server.py
 - bridge может отдавать как готовый `verified_gifts` (`gifts` + `series` + `profile`), так и сырой `items`-формат;
 - сервер нормализует payload в production-формат автоматически и кеширует последний валидный snapshot;
 - при ошибке bridge используется fallback на локальный `VERIFIED_DATA_FILE` без обнуления аналитики.
+
+### Hybrid режим (рекомендуется для максимальной устойчивости)
+
+```bash
+export VERIFIED_ONLY=true
+export VERIFIED_SOURCE=hybrid
+export TELEGRAM_GIFTS_API_URL="https://your-bridge/api/gifts/verified"
+export TELEGRAM_GIFTS_API_TOKEN="your_token"
+python3 server.py
+```
+
+Guard от деградации snapshot (чтобы не принять урезанный каталог как валидный):
+
+```bash
+export VERIFIED_MIN_GIFTS_ABS=200
+export VERIFIED_MIN_GIFTS_RATIO=0.60
+export VERIFIED_MIN_COLLECTIONS_RATIO=0.50
+export VERIFIED_MIN_MODELS_RATIO=0.40
+```
 
 ### Подключение официального verified источника Fragment
 

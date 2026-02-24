@@ -55,6 +55,19 @@ def _count_suspicious_trait_collections(dataset: dict, min_gifts: int = 20) -> i
     return suspicious
 
 
+def _dataset_stats(dataset: dict) -> dict:
+    if not isinstance(dataset, dict):
+        return {"gifts": 0, "collections": 0, "models": 0, "backdrops": 0, "symbols": 0}
+    filters = dataset.get("filters") if isinstance(dataset.get("filters"), dict) else {}
+    return {
+        "gifts": len(dataset.get("gifts") or []),
+        "collections": len(filters.get("collections") or []),
+        "models": len(filters.get("models") or {}),
+        "backdrops": len(filters.get("backdrops") or {}),
+        "symbols": len(filters.get("symbols") or {}),
+    }
+
+
 def main() -> None:
     root_url = os.getenv("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts").strip()
     timeout_sec = int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "10"))
@@ -68,6 +81,10 @@ def main() -> None:
     state_file = os.getenv("FRAGMENT_SYNC_STATE_FILE", "").strip() or "data/fragment_sync_state.json"
     min_promote_gifts = int(os.getenv("FRAGMENT_MIN_PROMOTE_GIFTS", "500"))
     min_promote_ratio = float(os.getenv("FRAGMENT_MIN_PROMOTE_RATIO", "0.5"))
+    min_promote_collections_ratio = float(os.getenv("FRAGMENT_MIN_PROMOTE_COLLECTIONS_RATIO", "0.55"))
+    min_promote_models_ratio = float(os.getenv("FRAGMENT_MIN_PROMOTE_MODELS_RATIO", "0.45"))
+    min_promote_backdrops_ratio = float(os.getenv("FRAGMENT_MIN_PROMOTE_BACKDROPS_RATIO", "0.45"))
+    min_promote_symbols_ratio = float(os.getenv("FRAGMENT_MIN_PROMOTE_SYMBOLS_RATIO", "0.45"))
     max_suspicious_collections = int(os.getenv("FRAGMENT_MAX_SUSPICIOUS_COLLECTIONS", "3"))
     ssl_no_verify = os.getenv("FRAGMENT_SSL_NO_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"}
     if ssl_no_verify:
@@ -107,6 +124,7 @@ def main() -> None:
         "lot_traits_covered_active": 0,
     }
     previous_gifts_count = 0
+    baseline_stats = {"gifts": 0, "collections": 0, "models": 0, "backdrops": 0, "symbols": 0}
 
     total_batches = math.ceil(total_collections / batch_size)
     start_batch = 0
@@ -150,8 +168,21 @@ def main() -> None:
             with open(output_file, "r", encoding="utf-8") as fh:
                 existing = json.load(fh)
             previous_gifts_count = len(existing.get("gifts") or [])
+            baseline_stats = _dataset_stats(existing)
         except Exception:
             previous_gifts_count = 0
+            baseline_stats = {"gifts": 0, "collections": 0, "models": 0, "backdrops": 0, "symbols": 0}
+
+    if os.path.exists(full_backup_file):
+        try:
+            with open(full_backup_file, "r", encoding="utf-8") as fh:
+                backup = json.load(fh)
+            backup_stats = _dataset_stats(backup)
+            if int(backup_stats.get("gifts") or 0) > int(baseline_stats.get("gifts") or 0):
+                baseline_stats = backup_stats
+                previous_gifts_count = int(backup_stats.get("gifts") or 0)
+        except Exception:
+            pass
 
     # Resume mode: process only remaining tail to guarantee completion under watchdog limits.
     batch_order = list(range(start_batch, total_batches))
@@ -308,7 +339,37 @@ def main() -> None:
     promote_threshold = 0 if previous_gifts_count <= 0 else max(min_promote_gifts, int(previous_gifts_count * min_promote_ratio))
     suspicious_collections = _count_suspicious_trait_collections(final)
     suspicious_ok = suspicious_collections <= max(0, max_suspicious_collections)
-    can_promote = (previous_gifts_count <= 0 or final_count >= promote_threshold) and suspicious_ok
+    final_stats = _dataset_stats(final)
+    baseline_collections = int(baseline_stats.get("collections") or 0)
+    baseline_models = int(baseline_stats.get("models") or 0)
+    baseline_backdrops = int(baseline_stats.get("backdrops") or 0)
+    baseline_symbols = int(baseline_stats.get("symbols") or 0)
+
+    collections_ok = (
+        baseline_collections <= 0
+        or int(final_stats.get("collections") or 0) >= max(1, int(baseline_collections * min_promote_collections_ratio))
+    )
+    models_ok = (
+        baseline_models <= 0
+        or int(final_stats.get("models") or 0) >= max(1, int(baseline_models * min_promote_models_ratio))
+    )
+    backdrops_ok = (
+        baseline_backdrops <= 0
+        or int(final_stats.get("backdrops") or 0) >= max(1, int(baseline_backdrops * min_promote_backdrops_ratio))
+    )
+    symbols_ok = (
+        baseline_symbols <= 0
+        or int(final_stats.get("symbols") or 0) >= max(1, int(baseline_symbols * min_promote_symbols_ratio))
+    )
+
+    can_promote = (
+        (previous_gifts_count <= 0 or final_count >= promote_threshold)
+        and suspicious_ok
+        and collections_ok
+        and models_ok
+        and backdrops_ok
+        and symbols_ok
+    )
     if can_promote:
         save_verified_dataset(final, output_file)
         save_verified_dataset(final, full_backup_file)
@@ -326,6 +387,12 @@ def main() -> None:
         "suspicious_collections": suspicious_collections,
         "max_suspicious_collections": max_suspicious_collections,
         "previous_gifts": previous_gifts_count,
+        "baseline_stats": baseline_stats,
+        "final_stats": final_stats,
+        "collections_ok": collections_ok,
+        "models_ok": models_ok,
+        "backdrops_ok": backdrops_ok,
+        "symbols_ok": symbols_ok,
         "failed_batches": failed_batches,
     }, ensure_ascii=False))
     try:
