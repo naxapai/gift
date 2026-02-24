@@ -323,6 +323,12 @@ class GiftAnalyticsService:
         self.ai_cache_last_prune_ts = 0
         self.ai_cache_dirty = False
         self.ai_cache_last_save_mono = 0.0
+        self.ai_inflight_lock = threading.Lock()
+        self.ai_inflight: Dict[str, threading.Event] = {}
+        self.ai_failure_streak = 0
+        self.ai_cooldown_until_mono = 0.0
+        self.ai_cooldown_base_sec = float(os.getenv("AI_RECO_COOLDOWN_BASE_SEC", "15"))
+        self.ai_cooldown_max_sec = float(os.getenv("AI_RECO_COOLDOWN_MAX_SEC", "300"))
         self._data_version = 0
         self._reco_version = -1
         self._view_cache: Dict[tuple, tuple[int, dict | list]] = {}
@@ -1069,20 +1075,30 @@ class GiftAnalyticsService:
         cached = self._cache_get(cache_key)
         if cached is not None:
             return cached
-        variants = list(self.variants.values())
-        floors = [v["metrics"]["floor_ton"] for v in variants]
-        active = [v["metrics"]["active_listings"] for v in variants]
-        models = {v.get("traits", {}).get("model", {}).get("id") for v in variants if v.get("traits", {}).get("model", {}).get("id")}
-        avg_1h = _safe_mean([v["metrics"].get("floor_change_pct_1h", 0) for v in variants])
-        avg_12h = _safe_mean([v["metrics"].get("floor_change_pct_12h", 0) for v in variants])
-        avg_24h = _safe_mean([v["metrics"].get("floor_change_pct_24h", 0) for v in variants])
-        avg_7d = _safe_mean([v["metrics"].get("floor_change_pct_7d", 0) for v in variants])
-        avg_30d = _safe_mean([v["metrics"].get("floor_change_pct_30d", 0) for v in variants])
-        buy_signals = sum(1 for v in variants if v.get("reco", {}).get("action") == "BUY")
-        sell_signals = sum(1 for v in variants if v.get("reco", {}).get("action") == "SELL")
-        positive_24h = sum(1 for v in variants if float(v["metrics"].get("floor_change_pct_24h", 0) or 0) > 0)
-        breadth_24h = positive_24h / max(len(variants), 1)
-        trend_score = (0.18 * avg_1h) + (0.27 * avg_12h) + (0.35 * avg_24h) + (0.20 * avg_7d)
+        with self.lock:
+            variants = list(self.variants.values())
+            state_updated_at = self.state.get("updated_at")
+            state_ingestion_lag = self.state.get("ingestion_lag_seconds")
+            state_last_error = self.state.get("last_error")
+            state_ingest_in_progress = self.state.get("ingest_in_progress")
+            state_last_ingest_started_at = self.state.get("last_ingest_started_at")
+            source_for_sale = int(self.source_totals.get("for_sale", 0) or 0)
+            source_sold = int(self.source_totals.get("sold", 0) or 0)
+            trades_total = len(self.trade_events)
+
+            floors = [v["metrics"]["floor_ton"] for v in variants]
+            active = [v["metrics"]["active_listings"] for v in variants]
+            models = {v.get("traits", {}).get("model", {}).get("id") for v in variants if v.get("traits", {}).get("model", {}).get("id")}
+            avg_1h = _safe_mean([v["metrics"].get("floor_change_pct_1h", 0) for v in variants])
+            avg_12h = _safe_mean([v["metrics"].get("floor_change_pct_12h", 0) for v in variants])
+            avg_24h = _safe_mean([v["metrics"].get("floor_change_pct_24h", 0) for v in variants])
+            avg_7d = _safe_mean([v["metrics"].get("floor_change_pct_7d", 0) for v in variants])
+            avg_30d = _safe_mean([v["metrics"].get("floor_change_pct_30d", 0) for v in variants])
+            buy_signals = sum(1 for v in variants if v.get("reco", {}).get("action") == "BUY")
+            sell_signals = sum(1 for v in variants if v.get("reco", {}).get("action") == "SELL")
+            positive_24h = sum(1 for v in variants if float(v["metrics"].get("floor_change_pct_24h", 0) or 0) > 0)
+            breadth_24h = positive_24h / max(len(variants), 1)
+            trend_score = (0.18 * avg_1h) + (0.27 * avg_12h) + (0.35 * avg_24h) + (0.20 * avg_7d)
 
         net_signal = buy_signals - sell_signals
         market_state = "Боковик"
@@ -1092,10 +1108,7 @@ class GiftAnalyticsService:
             market_state = "Падение"
 
         anomalies = sum(1 for v in variants if v["metrics"].get("pump_risk_24h", 0) > 0.7)
-        source_for_sale = int(self.source_totals.get("for_sale", 0) or 0)
-        source_sold = int(self.source_totals.get("sold", 0) or 0)
         active_total = sum(active) if active else 0
-        trades_total = len(self.trade_events)
         # Fragment meta can temporarily return zeros/fallback payloads; in this case
         # use observed local aggregates to avoid frozen "0 sold" in UI.
         total_for_sale = source_for_sale if source_for_sale > 0 else active_total
@@ -1111,7 +1124,7 @@ class GiftAnalyticsService:
             sell_signals = 0
 
         payload = {
-            "updated_at": self.state.get("updated_at"),
+            "updated_at": state_updated_at,
             "variant_count": variants_count,
             "gifts_count": gifts_count,
             "base_count": len({v["base_id"] for v in variants}),
@@ -1134,10 +1147,10 @@ class GiftAnalyticsService:
             "total_for_sale": int(total_for_sale),
             "total_sold": int(total_sold),
             "data_stale": self.is_stale(),
-            "ingestion_lag_seconds": self.state.get("ingestion_lag_seconds"),
-            "last_error": self.state.get("last_error"),
-            "ingest_in_progress": self.state.get("ingest_in_progress"),
-            "last_ingest_started_at": self.state.get("last_ingest_started_at"),
+            "ingestion_lag_seconds": state_ingestion_lag,
+            "last_error": state_last_error,
+            "ingest_in_progress": state_ingest_in_progress,
+            "last_ingest_started_at": state_last_ingest_started_at,
             # Runtime diagnostics for Render env drift / stale deploy checks.
             "runtime_source": os.getenv("VERIFIED_SOURCE", "file"),
             "runtime_gift_mode": os.getenv("FRAGMENT_GIFT_MODE", "lot"),
@@ -1376,25 +1389,66 @@ class GiftAnalyticsService:
             base_reco["ai_debug"] = {"enabled": True, "reason": "AI_WARMUP_PENDING"}
             return base_reco
 
-        ai_reco = self._fetch_ai_reco(variant_payload, api_key)
-        if not ai_reco:
+        now_mono = time.monotonic()
+        if now_mono < self.ai_cooldown_until_mono:
             base_reco["source"] = "rules_fallback"
-            base_reco["ai_debug"] = {"enabled": True, "error": self.ai_last_error or "AI_EMPTY_RESPONSE"}
+            base_reco["ai_debug"] = {
+                "enabled": True,
+                "reason": "AI_COOLDOWN_ACTIVE",
+                "cooldown_sec_left": round(self.ai_cooldown_until_mono - now_mono, 1),
+            }
             return base_reco
 
-        self.ai_reco_cache[cache_key] = {
-            "reco": ai_reco,
-            "expires_at_ts": now_ts + self.ai_cache_ttl_sec,
-            "saved_at": _iso(_now()),
-        }
-        self.ai_cache_dirty = True
-        self._save_ai_cache(force=False)
+        leader = False
+        wait_event: threading.Event | None = None
+        with self.ai_inflight_lock:
+            existing = self.ai_inflight.get(cache_key)
+            if existing is None:
+                wait_event = threading.Event()
+                self.ai_inflight[cache_key] = wait_event
+                leader = True
+            else:
+                wait_event = existing
 
-        reco = dict(base_reco)
-        reco.update(ai_reco)
-        reco["source"] = "ai_live"
-        reco["ai_debug"] = {"enabled": True, "cached": False}
-        return reco
+        if not leader and wait_event is not None:
+            wait_event.wait(timeout=max(1.0, self.ai_timeout_sec + 2.0))
+            cached_after = self.ai_reco_cache.get(cache_key)
+            now_ts = int(_now().timestamp())
+            if isinstance(cached_after, dict) and int(cached_after.get("expires_at_ts", 0)) > now_ts:
+                reco = dict(base_reco)
+                reco.update(cached_after.get("reco") or {})
+                reco["source"] = "ai_cached"
+                reco["ai_debug"] = {"enabled": True, "cached": True, "coalesced": True}
+                return reco
+            base_reco["source"] = "rules_fallback"
+            base_reco["ai_debug"] = {"enabled": True, "reason": "AI_INFLIGHT_TIMEOUT"}
+            return base_reco
+
+        try:
+            ai_reco = self._fetch_ai_reco(variant_payload, api_key)
+            if not ai_reco:
+                base_reco["source"] = "rules_fallback"
+                base_reco["ai_debug"] = {"enabled": True, "error": self.ai_last_error or "AI_EMPTY_RESPONSE"}
+                return base_reco
+
+            self.ai_reco_cache[cache_key] = {
+                "reco": ai_reco,
+                "expires_at_ts": now_ts + self.ai_cache_ttl_sec,
+                "saved_at": _iso(_now()),
+            }
+            self.ai_cache_dirty = True
+            self._save_ai_cache(force=False)
+
+            reco = dict(base_reco)
+            reco.update(ai_reco)
+            reco["source"] = "ai_live"
+            reco["ai_debug"] = {"enabled": True, "cached": False}
+            return reco
+        finally:
+            with self.ai_inflight_lock:
+                ev = self.ai_inflight.pop(cache_key, None)
+                if ev:
+                    ev.set()
 
     def ai_status(self, probe: bool = False) -> dict:
         self._prune_ai_cache(force=False)
@@ -1570,6 +1624,7 @@ class GiftAnalyticsService:
                     time.sleep(max(0.0, sleep_sec))
                     continue
                 self.ai_last_error = f"OPENAI_HTTP_ERROR: status={e.code} body={err_body}"
+                self._mark_ai_failure()
                 return None
             except (urllib.error.URLError, TimeoutError, ValueError) as e:
                 if attempt + 1 < max_attempts:
@@ -1578,9 +1633,11 @@ class GiftAnalyticsService:
                     time.sleep(max(0.0, sleep_sec))
                     continue
                 self.ai_last_error = f"OPENAI_HTTP_ERROR: {e}"
+                self._mark_ai_failure()
                 return None
         if not isinstance(raw, dict):
             self.ai_last_error = "OPENAI_EMPTY_RESPONSE"
+            self._mark_ai_failure()
             return None
 
         try:
@@ -1588,9 +1645,11 @@ class GiftAnalyticsService:
             parsed = self._parse_ai_json(text)
             if not isinstance(parsed, dict):
                 self.ai_last_error = "OPENAI_PARSE_ERROR: response is not JSON object"
+                self._mark_ai_failure()
                 return None
         except Exception as e:
             self.ai_last_error = f"OPENAI_PARSE_ERROR: {e}"
+            self._mark_ai_failure()
             return None
 
         action = str(parsed.get("action", "HOLD")).upper()
@@ -1610,6 +1669,7 @@ class GiftAnalyticsService:
             for x in risks_raw
             if str(x).strip()
         ][:5]
+        self._mark_ai_success()
         return {
             "action": action,
             "reco_score": round(_clamp(reco_score, 0, 100), 1),
@@ -1617,6 +1677,18 @@ class GiftAnalyticsService:
             "reasons": reasons,
             "risks": risks,
         }
+
+    def _mark_ai_failure(self) -> None:
+        self.ai_failure_streak = min(8, int(self.ai_failure_streak or 0) + 1)
+        cooldown = min(
+            max(1.0, self.ai_cooldown_max_sec),
+            max(1.0, self.ai_cooldown_base_sec) * (2 ** max(0, self.ai_failure_streak - 1)),
+        )
+        self.ai_cooldown_until_mono = time.monotonic() + cooldown
+
+    def _mark_ai_success(self) -> None:
+        self.ai_failure_streak = 0
+        self.ai_cooldown_until_mono = 0.0
 
     def _parse_ai_json(self, text: str):
         try:
@@ -1706,9 +1778,16 @@ class GiftAnalyticsService:
         }
 
     def screeners(self, screener: str, entity: str, period: str, metric_type: str, include_ai: bool = False) -> dict:
-        items = list(self.variants.values())
-        if entity != "variant":
+        cache_key = ("screeners", screener, entity, period, metric_type, bool(include_ai))
+        if not include_ai:
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                return cached
+        with self.lock:
             items = list(self.variants.values())
+            updated_at = self.state.get("updated_at")
+        if entity != "variant":
+            items = list(items)
         key = f"floor_change_pct_{period}"
         if period not in WINDOWS:
             key = "floor_change_pct_24h"
@@ -1725,17 +1804,27 @@ class GiftAnalyticsService:
             top_items = self._apply_ai_to_variant_list(top_items)
         else:
             top_items = [self._short_variant(v) for v in top_items]
-        return {
+        payload = {
             "entity": entity,
             "period": period,
             "type": metric_type,
-            "updated_at": self.state.get("updated_at"),
+            "updated_at": updated_at,
             "items": top_items,
             "stars_rate": self.stars_rate(),
         }
+        if not include_ai:
+            self._cache_set(cache_key, payload)
+        return payload
 
     def recommendations(self, scope: str, entity: str, include_ai: bool = False) -> dict:
-        items = list(self.variants.values())
+        cache_key = ("recommendations", scope, entity, bool(include_ai))
+        if not include_ai:
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                return cached
+        with self.lock:
+            items = list(self.variants.values())
+            updated_at = self.state.get("updated_at")
         if scope == "watchlist":
             watch = _load_json(FAVORITES_FILE, {}).get("default", [])
             items = [v for v in items if v["variant_id"] in watch]
@@ -1767,12 +1856,15 @@ class GiftAnalyticsService:
                 )
         else:
             rec_items = [self._short_reco(v) for v in selected]
-        return {
+        payload = {
             "scope": scope,
             "entity": entity,
-            "updated_at": self.state.get("updated_at"),
+            "updated_at": updated_at,
             "items": rec_items,
         }
+        if not include_ai:
+            self._cache_set(cache_key, payload)
+        return payload
 
     def signals_latest(self, action: str = "all", limit: int = 1000) -> dict:
         self._ensure_recos()
@@ -1780,8 +1872,14 @@ class GiftAnalyticsService:
         if action_norm not in {"all", "buy", "sell"}:
             action_norm = "all"
         lim = max(1, min(int(limit or 1000), 5000))
+        cache_key = ("signals_latest", action_norm, lim)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
 
-        variants = list(self.variants.values())
+        with self.lock:
+            variants = list(self.variants.values())
+            updated_at = self.state.get("updated_at")
         gifts_count = sum(int((v.get("metrics") or {}).get("active_listings", 0) or 0) for v in variants)
         variants_count = len(variants)
         signals_quality_degraded = (
@@ -1789,8 +1887,8 @@ class GiftAnalyticsService:
             and variants_count <= max(200, int(gifts_count * 0.02))
         )
         if signals_quality_degraded:
-            return {
-                "updated_at": self.state.get("updated_at"),
+            payload = {
+                "updated_at": updated_at,
                 "filter": action_norm,
                 "total": 0,
                 "buy_total": 0,
@@ -1799,6 +1897,8 @@ class GiftAnalyticsService:
                 "signals_quality_reason": "variants_to_gifts_ratio_too_low",
                 "items": [],
             }
+            self._cache_set(cache_key, payload)
+            return payload
         buy_total = sum(1 for v in variants if str((v.get("reco") or {}).get("action", "")).upper() == "BUY")
         sell_total = sum(1 for v in variants if str((v.get("reco") or {}).get("action", "")).upper() == "SELL")
 
@@ -1814,8 +1914,8 @@ class GiftAnalyticsService:
             selected.append(v)
         selected = sorted(selected, key=lambda x: float((x.get("reco") or {}).get("reco_score", 0) or 0), reverse=True)
         items = [self._short_variant(v) for v in selected[:lim]]
-        return {
-            "updated_at": self.state.get("updated_at"),
+        payload = {
+            "updated_at": updated_at,
             "filter": action_norm,
             "total": len(selected),
             "buy_total": buy_total,
@@ -1824,6 +1924,8 @@ class GiftAnalyticsService:
             "signals_quality_reason": "",
             "items": items,
         }
+        self._cache_set(cache_key, payload)
+        return payload
 
     def alerts_list(self) -> List[dict]:
         return self.alert_rules
