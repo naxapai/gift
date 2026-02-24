@@ -235,6 +235,12 @@ body.auth-locked #staleBanner {
   user-select: none;
 }
 
+body.booting .shell,
+body.booting .mobile-nav,
+body.booting #staleBanner {
+  visibility: hidden;
+}
+
 .search {
   min-width: 280px;
   height: 42px;

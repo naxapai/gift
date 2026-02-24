@@ -2853,6 +2853,7 @@ async function bootstrap() {
   if (bootstrapped) return;
   bootstrapped = true;
   preselectInitialPage();
+  document.body.classList.remove("booting");
   bindEvents();
   state.auth.webappDetected = detectTelegramMiniAppContext();
   const tonInitPromise = initTonAuth();
