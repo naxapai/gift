@@ -62,6 +62,8 @@ const state = {
     items: [],
     buyTotal: 0,
     sellTotal: 0,
+    qualityDegraded: false,
+    qualityReason: "",
   },
   ui: {
     catalogFiltersCollapsed: true,
@@ -1001,8 +1003,8 @@ function renderOverview(overview) {
     ["Всего продано", overview.total_sold ?? 0],
     ["Среднее 7д", formatPct(overview.avg_change_7d || 0)],
     ["Среднее 30д", formatPct(overview.avg_change_30d || 0)],
-    ["Сигналы покупки", overview.buy_signals ?? 0],
-    ["Сигналы продажи", overview.sell_signals ?? 0],
+    ["Сигналы покупки", overview.signals_quality_degraded ? "н/д" : (overview.buy_signals ?? 0)],
+    ["Сигналы продажи", overview.signals_quality_degraded ? "н/д" : (overview.sell_signals ?? 0)],
     ["Аномалии", overview.anomalies],
     ["Курс в ⭐", state.starsRate?.stars_per_ton ? `${Math.round(state.starsRate.stars_per_ton)}` : "н/д"],
   ];
@@ -1685,6 +1687,16 @@ function collectSignalItems() {
 
 function renderSignals() {
   if (!el.signalsBody || !el.signalsStats) return;
+  if (state.signals.qualityDegraded) {
+    el.signalsBody.innerHTML = `<tr><td colspan="7"><div class="empty-state">Сигналы временно недоступны: идет восстановление качества данных Fragment</div></td></tr>`;
+    el.signalsStats.innerHTML = [
+      ["Сигналов", "н/д"],
+      ["BUY", "н/д"],
+      ["SELL", "н/д"],
+      ["Показано", 0],
+    ].map(([k, v]) => `<div class="kpi-item"><div class="kpi-key">${k}</div><div class="kpi-value">${v}</div></div>`).join("");
+    return;
+  }
   const allSignals = collectSignalItems();
   const buyCount = Number(state.signals.buyTotal || 0);
   const sellCount = Number(state.signals.sellTotal || 0);
@@ -2405,6 +2417,8 @@ async function loadSignalsPage() {
   state.signals.items = resp.items || [];
   state.signals.buyTotal = Number(resp.buy_total || 0);
   state.signals.sellTotal = Number(resp.sell_total || 0);
+  state.signals.qualityDegraded = Boolean(resp.signals_quality_degraded);
+  state.signals.qualityReason = String(resp.signals_quality_reason || "");
   renderSignals();
   state.pageLoaded.signals = true;
 }

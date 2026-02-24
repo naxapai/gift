@@ -1069,10 +1069,20 @@ class GiftAnalyticsService:
         # use observed local aggregates to avoid frozen "0 sold" in UI.
         total_for_sale = source_for_sale if source_for_sale > 0 else active_total
         total_sold = source_sold if source_sold > 0 else trades_total
+        variants_count = len(variants)
+        gifts_count = active_total
+        signals_quality_degraded = (
+            gifts_count >= 5000
+            and variants_count <= max(200, int(gifts_count * 0.02))
+        )
+        if signals_quality_degraded:
+            buy_signals = 0
+            sell_signals = 0
+
         payload = {
             "updated_at": self.state.get("updated_at"),
-            "variant_count": len(variants),
-            "gifts_count": sum(active) if active else 0,
+            "variant_count": variants_count,
+            "gifts_count": gifts_count,
             "base_count": len({v["base_id"] for v in variants}),
             "model_count": len(models),
             "floor_ton_min": min(floors) if floors else None,
@@ -1083,6 +1093,12 @@ class GiftAnalyticsService:
             "market_state": market_state,
             "buy_signals": buy_signals,
             "sell_signals": sell_signals,
+            "signals_quality_degraded": signals_quality_degraded,
+            "signals_quality_reason": (
+                "variants_to_gifts_ratio_too_low"
+                if signals_quality_degraded
+                else ""
+            ),
             "anomalies": anomalies,
             "total_for_sale": int(total_for_sale),
             "total_sold": int(total_sold),
@@ -1735,6 +1751,23 @@ class GiftAnalyticsService:
         lim = max(1, min(int(limit or 1000), 5000))
 
         variants = list(self.variants.values())
+        gifts_count = sum(int((v.get("metrics") or {}).get("active_listings", 0) or 0) for v in variants)
+        variants_count = len(variants)
+        signals_quality_degraded = (
+            gifts_count >= 5000
+            and variants_count <= max(200, int(gifts_count * 0.02))
+        )
+        if signals_quality_degraded:
+            return {
+                "updated_at": self.state.get("updated_at"),
+                "filter": action_norm,
+                "total": 0,
+                "buy_total": 0,
+                "sell_total": 0,
+                "signals_quality_degraded": True,
+                "signals_quality_reason": "variants_to_gifts_ratio_too_low",
+                "items": [],
+            }
         buy_total = sum(1 for v in variants if str((v.get("reco") or {}).get("action", "")).upper() == "BUY")
         sell_total = sum(1 for v in variants if str((v.get("reco") or {}).get("action", "")).upper() == "SELL")
 
@@ -1756,6 +1789,8 @@ class GiftAnalyticsService:
             "total": len(selected),
             "buy_total": buy_total,
             "sell_total": sell_total,
+            "signals_quality_degraded": False,
+            "signals_quality_reason": "",
             "items": items,
         }
 
