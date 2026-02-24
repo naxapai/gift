@@ -551,7 +551,8 @@ class GiftAnalyticsService:
         dataset = load_verified_dataset_source()
         meta = dataset.get("meta") if isinstance(dataset, dict) else {}
         fallback_mode = str((meta or {}).get("source_fallback") or "").strip().lower() == "file"
-        if fallback_mode:
+        allow_live_recovery = os.getenv("VERIFIED_FALLBACK_LIVE_RECOVERY", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if fallback_mode and allow_live_recovery and self.verified_source in {"hybrid", "fragment", "file"}:
             # Degradation path: verified source returned file fallback.
             # Try direct Fragment client fetch as a live recovery channel.
             try:

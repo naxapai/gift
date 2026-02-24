@@ -153,7 +153,8 @@ def _run_full_sync_once() -> tuple[bool, str]:
                 pass
             return True, ""
         # Reserve channel: Fragment full sync.
-        if os.getenv("ALLOW_FRAGMENT_RESERVE_SYNC", "true").strip().lower() not in {"1", "true", "yes", "on"}:
+        reserve_default = "false" if source == "telegram_api" else "true"
+        if os.getenv("ALLOW_FRAGMENT_RESERVE_SYNC", reserve_default).strip().lower() not in {"1", "true", "yes", "on"}:
             return False, err_primary
 
     env.setdefault("FRAGMENT_SSL_NO_VERIFY", "true")
