@@ -532,8 +532,39 @@ class GiftAnalyticsService:
         from market_data import load_verified_dataset_source
 
         dataset = load_verified_dataset_source()
+        meta = dataset.get("meta") if isinstance(dataset, dict) else {}
+        fallback_mode = str((meta or {}).get("source_fallback") or "").strip().lower() == "file"
+        if fallback_mode:
+            # Degradation path: verified source returned file fallback.
+            # Try direct Fragment client fetch as a live recovery channel.
+            try:
+                events_live, bases_live = self.fragment.fetch_active_listings(
+                    max_collections=self.max_collections,
+                    max_pages=self.max_pages,
+                )
+                if events_live and bases_live:
+                    self._update_source_totals_from_events(events_live)
+                    return events_live, bases_live
+            except Exception:
+                # Keep fallback dataset path below.
+                pass
         self._update_source_totals(dataset)
         return self._events_bases_from_verified_dataset(dataset)
+
+    def _update_source_totals_from_events(self, events: List[ListingEvent]) -> None:
+        for_sale = 0
+        sold = 0
+        auction = 0
+        for ev in events or []:
+            st = str(getattr(ev, "status", "") or "").strip().lower()
+            if st == "sold":
+                sold += 1
+            elif st == "auction":
+                auction += 1
+                for_sale += 1
+            else:
+                for_sale += 1
+        self.source_totals = {"for_sale": for_sale, "sold": sold, "auction": auction}
 
     def _update_source_totals(self, dataset: Dict) -> None:
         meta = dataset.get("meta") if isinstance(dataset, dict) else {}
