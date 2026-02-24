@@ -313,11 +313,16 @@ class GiftAnalyticsService:
         self.ai_pipeline_enabled = os.getenv("AI_PIPELINE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
         self.ai_pipeline_live_per_request = int(os.getenv("AI_PIPELINE_LIVE_PER_REQUEST", "8"))
         self.ai_status_probe_ttl_sec = int(os.getenv("AI_STATUS_PROBE_TTL_SEC", "120"))
+        self.ai_cache_prune_interval_sec = int(os.getenv("AI_RECO_CACHE_PRUNE_INTERVAL_SEC", "300"))
+        self.ai_cache_save_debounce_sec = float(os.getenv("AI_RECO_CACHE_SAVE_DEBOUNCE_SEC", "2.0"))
         self.ai_key_rejected = False
         self.ai_last_error = ""
         self.ai_lock = threading.Lock()
         self.ai_next_allowed_ts = 0.0
         self.ai_probe_cache: dict = {"checked_at_ts": 0, "payload": None}
+        self.ai_cache_last_prune_ts = 0
+        self.ai_cache_dirty = False
+        self.ai_cache_last_save_mono = 0.0
         self._data_version = 0
         self._reco_version = -1
         self._view_cache: Dict[tuple, tuple[int, dict | list]] = {}
@@ -330,6 +335,7 @@ class GiftAnalyticsService:
         self._restore_from_listing_state()
         if self.fragment_bootstrap_cache and not self.variants:
             self._bootstrap_from_verified_file()
+        self._prune_ai_cache(force=True)
         self._start_ingest_loop()
 
     def _invalidate_view_cache(self) -> None:
@@ -431,8 +437,32 @@ class GiftAnalyticsService:
         _save_json(ALERTS_FILE, self.alert_rules)
         _save_json(ALERT_EVENTS_FILE, self.alert_events)
 
-    def _save_ai_cache(self) -> None:
+    def _prune_ai_cache(self, force: bool = False) -> None:
+        now_ts = int(time.time())
+        if not force and (now_ts - self.ai_cache_last_prune_ts) < max(10, self.ai_cache_prune_interval_sec):
+            return
+        self.ai_cache_last_prune_ts = now_ts
+        before = len(self.ai_reco_cache)
+        if before <= 0:
+            return
+        self.ai_reco_cache = {
+            k: v
+            for k, v in self.ai_reco_cache.items()
+            if isinstance(v, dict) and int(v.get("expires_at_ts", 0) or 0) > now_ts
+        }
+        if len(self.ai_reco_cache) != before:
+            self.ai_cache_dirty = True
+            self._save_ai_cache(force=False)
+
+    def _save_ai_cache(self, force: bool = False) -> None:
+        if not self.ai_cache_dirty and not force:
+            return
+        now_mono = time.monotonic()
+        if (not force) and (now_mono - self.ai_cache_last_save_mono) < max(0.1, self.ai_cache_save_debounce_sec):
+            return
         _save_json(AI_RECO_CACHE_FILE, self.ai_reco_cache)
+        self.ai_cache_dirty = False
+        self.ai_cache_last_save_mono = now_mono
 
     def stars_rate(self) -> dict:
         return self.stars.to_dict()
@@ -1261,6 +1291,7 @@ class GiftAnalyticsService:
 
     def _ai_enrich_reco(self, variant_payload: dict, allow_live: bool = True) -> dict:
         base_reco = dict(variant_payload.get("reco") or {})
+        self._prune_ai_cache(force=False)
         if not self.ai_enabled:
             base_reco["source"] = "rules"
             base_reco["ai_debug"] = {"enabled": False, "reason": "AI_RECO_ENABLED=false"}
@@ -1301,7 +1332,8 @@ class GiftAnalyticsService:
             "expires_at_ts": now_ts + self.ai_cache_ttl_sec,
             "saved_at": _iso(_now()),
         }
-        self._save_ai_cache()
+        self.ai_cache_dirty = True
+        self._save_ai_cache(force=False)
 
         reco = dict(base_reco)
         reco.update(ai_reco)
@@ -1310,6 +1342,7 @@ class GiftAnalyticsService:
         return reco
 
     def ai_status(self, probe: bool = False) -> dict:
+        self._prune_ai_cache(force=False)
         api_key = _sanitize_openai_key(os.getenv("OPENAI_API_KEY", ""))
         now_ts = int(time.time())
         valid_cache = sum(
@@ -1512,8 +1545,16 @@ class GiftAnalyticsService:
         confidence = int(parsed.get("confidence", 60))
         reasons_raw = parsed.get("reasons") or []
         risks_raw = parsed.get("risks") or []
-        reasons = [{"code": "R_AI", "text": str(x)} for x in reasons_raw[:6]]
-        risks = [{"code": "K_AI", "text": str(x)} for x in risks_raw[:5]]
+        reasons = [
+            {"code": "R_AI", "text": str(x).strip()[:220]}
+            for x in reasons_raw
+            if str(x).strip()
+        ][:6]
+        risks = [
+            {"code": "K_AI", "text": str(x).strip()[:220]}
+            for x in risks_raw
+            if str(x).strip()
+        ][:5]
         return {
             "action": action,
             "reco_score": round(_clamp(reco_score, 0, 100), 1),
