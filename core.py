@@ -1061,6 +1061,14 @@ class GiftAnalyticsService:
             market_state = "Падение"
 
         anomalies = sum(1 for v in variants if v["metrics"].get("pump_risk_24h", 0) > 0.7)
+        source_for_sale = int(self.source_totals.get("for_sale", 0) or 0)
+        source_sold = int(self.source_totals.get("sold", 0) or 0)
+        active_total = sum(active) if active else 0
+        trades_total = len(self.trade_events)
+        # Fragment meta can temporarily return zeros/fallback payloads; in this case
+        # use observed local aggregates to avoid frozen "0 sold" in UI.
+        total_for_sale = source_for_sale if source_for_sale > 0 else active_total
+        total_sold = source_sold if source_sold > 0 else trades_total
         payload = {
             "updated_at": self.state.get("updated_at"),
             "variant_count": len(variants),
@@ -1069,15 +1077,15 @@ class GiftAnalyticsService:
             "model_count": len(models),
             "floor_ton_min": min(floors) if floors else None,
             "floor_ton_median": _safe_median(floors) if floors else None,
-            "active_listings": sum(active) if active else 0,
+            "active_listings": active_total,
             "avg_change_7d": round(avg_7d, 3),
             "avg_change_30d": round(avg_30d, 3),
             "market_state": market_state,
             "buy_signals": buy_signals,
             "sell_signals": sell_signals,
             "anomalies": anomalies,
-            "total_for_sale": int(self.source_totals.get("for_sale", sum(active) if active else 0)),
-            "total_sold": int(self.source_totals.get("sold", len(self.trade_events))),
+            "total_for_sale": int(total_for_sale),
+            "total_sold": int(total_sold),
             "data_stale": self.is_stale(),
             "ingestion_lag_seconds": self.state.get("ingestion_lag_seconds"),
             "last_error": self.state.get("last_error"),
