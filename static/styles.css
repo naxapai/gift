@@ -1199,6 +1199,18 @@ body.auth-locked #staleBanner {
 
 .catalog-filters-body {
   display: grid;
+  overflow: hidden;
+  max-height: 760px;
+  opacity: 1;
+  transform: translateY(0);
+  transition: max-height 260ms ease, opacity 190ms ease, transform 190ms ease;
+}
+
+.catalog-filters-body.is-collapsed {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
 }
 
 .filters-collapse-btn {

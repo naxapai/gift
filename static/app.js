@@ -432,7 +432,8 @@ function setAuthLocked(locked, text = "") {
 function setCatalogFiltersCollapsed(collapsed) {
   state.ui.catalogFiltersCollapsed = Boolean(collapsed);
   if (el.catalogFiltersBody) {
-    el.catalogFiltersBody.classList.toggle("hidden", state.ui.catalogFiltersCollapsed);
+    el.catalogFiltersBody.classList.toggle("is-collapsed", state.ui.catalogFiltersCollapsed);
+    el.catalogFiltersBody.setAttribute("aria-hidden", state.ui.catalogFiltersCollapsed ? "true" : "false");
   }
   if (el.catalogFiltersToggleBtn) {
     el.catalogFiltersToggleBtn.classList.toggle("expanded", !state.ui.catalogFiltersCollapsed);
