@@ -59,6 +59,9 @@ const state = {
   },
   signals: {
     filter: "all",
+    items: [],
+    buyTotal: 0,
+    sellTotal: 0,
   },
   catalogFilters: {
     baseId: "",
@@ -942,9 +945,6 @@ function renderOverview(overview) {
 
   el.staleBanner.classList.toggle("hidden", !overview.data_stale);
 
-  const signalItems = collectSignalItems();
-  const signalBuy = signalItems.filter((v) => String(v?.reco?.action || "").toUpperCase() === "BUY").length;
-  const signalSell = signalItems.filter((v) => String(v?.reco?.action || "").toUpperCase() === "SELL").length;
   const kpis = [
     ["Кол-во коллекций", overview.base_count],
     ["Мин. цена", `${formatTon(overview.floor_ton_min)} TON`],
@@ -954,8 +954,8 @@ function renderOverview(overview) {
     ["Всего продано", overview.total_sold ?? 0],
     ["Среднее 7д", formatPct(overview.avg_change_7d || 0)],
     ["Среднее 30д", formatPct(overview.avg_change_30d || 0)],
-    ["Сигналы покупки", signalItems.length ? signalBuy : (overview.buy_signals ?? 0)],
-    ["Сигналы продажи", signalItems.length ? signalSell : (overview.sell_signals ?? 0)],
+    ["Сигналы покупки", overview.buy_signals ?? 0],
+    ["Сигналы продажи", overview.sell_signals ?? 0],
     ["Аномалии", overview.anomalies],
     ["Курс в ⭐", state.starsRate?.stars_per_ton ? `${Math.round(state.starsRate.stars_per_ton)}` : "н/д"],
   ];
@@ -1598,20 +1598,15 @@ function renderScreeners(items) {
 }
 
 function collectSignalItems() {
-  const items = [];
-  for (const v of state.variants || []) {
-    const action = String(v?.reco?.action || "").toUpperCase();
-    if (action !== "BUY" && action !== "SELL") continue;
-    items.push(v);
-  }
-  return items.sort((a, b) => Number(b?.reco?.reco_score || 0) - Number(a?.reco?.reco_score || 0));
+  const items = Array.isArray(state.signals.items) ? state.signals.items : [];
+  return items.slice().sort((a, b) => Number(b?.reco?.reco_score || 0) - Number(a?.reco?.reco_score || 0));
 }
 
 function renderSignals() {
   if (!el.signalsBody || !el.signalsStats) return;
   const allSignals = collectSignalItems();
-  const buyCount = allSignals.filter((v) => String(v?.reco?.action || "").toUpperCase() === "BUY").length;
-  const sellCount = allSignals.filter((v) => String(v?.reco?.action || "").toUpperCase() === "SELL").length;
+  const buyCount = Number(state.signals.buyTotal || 0);
+  const sellCount = Number(state.signals.sellTotal || 0);
   const activeFilter = state.signals.filter || "all";
   const filtered = allSignals.filter((v) => {
     const action = String(v?.reco?.action || "").toUpperCase();
@@ -1665,7 +1660,9 @@ function setSignalFilter(filter) {
     if (!btn) continue;
     btn.classList.toggle("active", btn.dataset.filter === state.signals.filter);
   }
-  renderSignals();
+  loadSignalsPage().catch(() => {
+    renderSignals();
+  });
 }
 
 function renderWatchlist() {
@@ -2325,10 +2322,11 @@ async function loadScreenersPage() {
 }
 
 async function loadSignalsPage() {
-  // Signals page must reflect fresh recomputation quickly; do not keep 10m variants cache here.
-  const nowMs = Date.now();
-  const forceRefresh = (nowMs - Number(state.variantsCache.loadedAtMs || 0)) >= 60 * 1000;
-  await loadVariantsForFilters(forceRefresh);
+  const filter = state.signals.filter || "all";
+  const resp = await fetchJson(`/api/signals/latest?filter=${encodeURIComponent(filter)}&limit=5000`, { cache: "no-store" });
+  state.signals.items = resp.items || [];
+  state.signals.buyTotal = Number(resp.buy_total || 0);
+  state.signals.sellTotal = Number(resp.sell_total || 0);
   renderSignals();
   state.pageLoaded.signals = true;
 }

@@ -1077,6 +1077,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, data)
             return
 
+        if path == "/api/signals/latest":
+            params = parse_qs(parsed.query)
+            action = (params.get("filter") or ["all"])[0]
+            limit = int((params.get("limit") or ["1000"])[0])
+            data = _state().signals_latest(action=action, limit=limit)
+            _json_response(self, data, cache_control="no-store")
+            return
+
         if path == "/api/alerts":
             _json_response(self, {"items": _state().alerts_list()})
             return

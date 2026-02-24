@@ -1727,6 +1727,38 @@ class GiftAnalyticsService:
             "items": rec_items,
         }
 
+    def signals_latest(self, action: str = "all", limit: int = 1000) -> dict:
+        self._ensure_recos()
+        action_norm = str(action or "all").strip().lower()
+        if action_norm not in {"all", "buy", "sell"}:
+            action_norm = "all"
+        lim = max(1, min(int(limit or 1000), 5000))
+
+        variants = list(self.variants.values())
+        buy_total = sum(1 for v in variants if str((v.get("reco") or {}).get("action", "")).upper() == "BUY")
+        sell_total = sum(1 for v in variants if str((v.get("reco") or {}).get("action", "")).upper() == "SELL")
+
+        selected = []
+        for v in variants:
+            a = str((v.get("reco") or {}).get("action", "")).upper()
+            if a not in {"BUY", "SELL"}:
+                continue
+            if action_norm == "buy" and a != "BUY":
+                continue
+            if action_norm == "sell" and a != "SELL":
+                continue
+            selected.append(v)
+        selected = sorted(selected, key=lambda x: float((x.get("reco") or {}).get("reco_score", 0) or 0), reverse=True)
+        items = [self._short_variant(v) for v in selected[:lim]]
+        return {
+            "updated_at": self.state.get("updated_at"),
+            "filter": action_norm,
+            "total": len(selected),
+            "buy_total": buy_total,
+            "sell_total": sell_total,
+            "items": items,
+        }
+
     def alerts_list(self) -> List[dict]:
         return self.alert_rules
 
