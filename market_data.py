@@ -592,6 +592,8 @@ def fetch_verified_dataset_from_fragment(
 ) -> Dict:
     started_at = time.monotonic()
     fetch_budget_sec = max(30, int(os.getenv("FRAGMENT_FETCH_BUDGET_SEC", "180")))
+    hard_budget_sec = fetch_budget_sec
+    max_detail_lots_per_collection = max(0, int(os.getenv("FRAGMENT_MAX_DETAIL_LOTS_PER_COLLECTION", "120")))
     cj = cookiejar.CookieJar()
     no_verify_ssl = os.getenv("FRAGMENT_SSL_NO_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"}
     ssl_context = ssl._create_unverified_context() if no_verify_ssl else ssl.create_default_context()
@@ -605,6 +607,9 @@ def fetch_verified_dataset_from_fragment(
     request_backoff_sec = max(0.1, float(os.getenv("FRAGMENT_REQUEST_BACKOFF_SEC", "0.8")))
     req_lock = threading.Lock()
     last_req_ts = 0.0
+
+    def _out_of_budget() -> bool:
+        return (time.monotonic() - started_at) > hard_budget_sec
 
     def _throttle_request() -> None:
         nonlocal last_req_ts
@@ -712,12 +717,14 @@ def fetch_verified_dataset_from_fragment(
     budget_exhausted = False
 
     for collection in collections:
-        if time.monotonic() - started_at > fetch_budget_sec:
+        if _out_of_budget():
             budget_exhausted = True
             break
         slug = collection["slug"]
         try:
             def _fetch_events(filter_value: str) -> list[dict]:
+                if _out_of_budget():
+                    return []
                 page_url = f"https://fragment.com/gifts/{slug}?sort=price&filter={filter_value}"
                 collection_html = _get_text(page_url)
                 api_hash = _fragment_extract_api_hash(collection_html)
@@ -741,7 +748,7 @@ def fetch_verified_dataset_from_fragment(
 
                 page_no = 1
                 while next_offset and page_no < max_pages_per_collection:
-                    if time.monotonic() - started_at > fetch_budget_sec:
+                    if _out_of_budget():
                         break
                     page_no += 1
                     params["offset_id"] = next_offset
@@ -778,7 +785,7 @@ def fetch_verified_dataset_from_fragment(
 
             sale_events = _fetch_events("sale")
             auction_events = _fetch_events("auction")
-            sold_events = _fetch_events("sold") if include_sold else []
+            sold_events = _fetch_events("sold") if (include_sold and not _out_of_budget()) else []
             events = sale_events + auction_events + sold_events
 
             if not events:
@@ -828,6 +835,8 @@ def fetch_verified_dataset_from_fragment(
 
                 if enrich_lot_traits and lot_latest:
                     missing_lot_ids = [lot_id for lot_id in lot_latest.keys() if lot_id not in lot_details]
+                    if max_detail_lots_per_collection > 0:
+                        missing_lot_ids = missing_lot_ids[:max_detail_lots_per_collection]
 
                     def _fetch_lot_detail(lot_id: str) -> dict:
                         detail = _get_text(f"https://fragment.com/gift/{lot_id}?sort=price")
@@ -840,10 +849,12 @@ def fetch_verified_dataset_from_fragment(
                             "detail_status": detail_status,
                         }
 
-                    if missing_lot_ids:
+                    if missing_lot_ids and not _out_of_budget():
                         with ThreadPoolExecutor(max_workers=detail_workers) as pool:
                             fut_to_lot = {pool.submit(_fetch_lot_detail, lot_id): lot_id for lot_id in missing_lot_ids}
                             for fut in as_completed(fut_to_lot):
+                                if _out_of_budget():
+                                    break
                                 lot_id = fut_to_lot[fut]
                                 try:
                                     payload = fut.result()
