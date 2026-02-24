@@ -37,7 +37,6 @@ COMMANDS_ENABLED = os.getenv("BOT_COMMANDS_ENABLED", "true").strip().lower() in 
 UPDATES_TIMEOUT_SEC = int(os.getenv("BOT_UPDATES_TIMEOUT_SEC", "1"))
 SIGNAL_COMMAND_WINDOW_SEC = int(os.getenv("BOT_SIGNAL_COMMAND_WINDOW_SEC", "3600"))
 SIGNAL_COMMAND_COOLDOWN_SEC = int(os.getenv("BOT_SIGNAL_COMMAND_COOLDOWN_SEC", "3600"))
-SIGNAL_COMMAND_MAX_ITEMS = int(os.getenv("BOT_SIGNAL_COMMAND_MAX_ITEMS", "8"))
 MSK_TZ = timezone(timedelta(hours=3))
 
 
@@ -348,9 +347,9 @@ def _handle_commands(cache: Dict) -> None:
 
                 send_message_to(
                     chat_id,
-                    f"Сигналы за последний час: {len(recent)} (показаны первые {min(len(recent), SIGNAL_COMMAND_MAX_ITEMS)})",
+                    f"Сигналы за последний час: {len(recent)}",
                 )
-                for item in recent[: max(1, SIGNAL_COMMAND_MAX_ITEMS)]:
+                for item in recent:
                     _send_signal_to(chat_id, item)
                 cmd_state[key] = now_ts
             elif cmd == "/signal_gift":
