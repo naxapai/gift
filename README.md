@@ -30,6 +30,33 @@ cd /Users/nexapai/Downloads/подарки
 python3 server.py
 ```
 
+### AI рекомендации (OpenAI)
+
+Для стабильной работы AI-пайплайна в карточке подарка, скринерах, каталоге и Telegram-боте:
+
+1. Создайте файл `/Users/nexapai/Downloads/подарки/.env.local`
+2. Добавьте переменные:
+
+```bash
+OPENAI_API_KEY=ваш_ключ
+OPENAI_MODEL=gpt-4o-mini
+AI_RECO_ENABLED=true
+AI_PIPELINE_ENABLED=true
+```
+
+3. Запускайте через watchdog:
+
+```bash
+cd /Users/nexapai/Downloads/подарки
+./scripts/server_start.sh
+```
+
+Проверка статуса:
+
+```bash
+curl -sS "http://127.0.0.1:8080/api/ai/status?probe=1"
+```
+
 Откройте:
 - `http://127.0.0.1:8091`
 - `http://192.168.0.10:8091`
@@ -99,6 +126,7 @@ curl -sS "https://api.telegram.org/bot<TG_BOT_TOKEN>/setWebhook" \
 - Источник выбирается через `VERIFIED_SOURCE`:
   - `file` — локальный файл `data/verified_gifts.json` (или `VERIFIED_DATA_FILE`);
   - `api` — внешний верифицированный API (`VERIFIED_API_URL`);
+  - `telegram_api` — API-bridge над Telegram Gifts/MTProto (`TELEGRAM_GIFTS_API_URL`);
   - `fragment` — официальный маркет Fragment (`https://fragment.com/gifts`).
 - Если файл отсутствует/невалиден, сервер завершится с ошибкой (чтобы не показывать synthetic данные).
 
@@ -117,6 +145,24 @@ export VERIFIED_API_TOKEN_HEADER="Authorization"
 export VERIFIED_API_TOKEN_PREFIX="Bearer "
 python3 server.py
 ```
+
+### Подключение Telegram Gifts API bridge (рекомендуемый production-путь)
+
+```bash
+export VERIFIED_ONLY=true
+export VERIFIED_SOURCE=telegram_api
+export TELEGRAM_GIFTS_API_URL="https://your-bridge/api/gifts/verified"
+export TELEGRAM_GIFTS_API_TOKEN="your_token"
+export TELEGRAM_GIFTS_API_TOKEN_HEADER="Authorization"
+export TELEGRAM_GIFTS_API_TOKEN_PREFIX="Bearer "
+export TELEGRAM_GIFTS_API_TIMEOUT_SEC=25
+python3 server.py
+```
+
+Примечания:
+- bridge может отдавать как готовый `verified_gifts` (`gifts` + `series` + `profile`), так и сырой `items`-формат;
+- сервер нормализует payload в production-формат автоматически и кеширует последний валидный snapshot;
+- при ошибке bridge используется fallback на локальный `VERIFIED_DATA_FILE` без обнуления аналитики.
 
 ### Подключение официального verified источника Fragment
 

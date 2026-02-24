@@ -273,6 +273,203 @@ def fetch_verified_dataset_from_api(
     return dataset
 
 
+def _coerce_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _slugify_soft(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower())
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    return slug
+
+
+def _normalize_telegram_gifts_dataset(payload: Dict) -> Dict:
+    if not isinstance(payload, dict):
+        raise ValueError("Telegram gifts payload must be a JSON object.")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if not isinstance(data, dict):
+        raise ValueError("Telegram gifts payload must contain an object dataset.")
+
+    raw_items = data.get("gifts")
+    if not isinstance(raw_items, list):
+        raw_items = data.get("items")
+    if not isinstance(raw_items, list):
+        raise ValueError("Telegram gifts dataset must contain 'gifts' or 'items' list.")
+
+    filters = data.get("filters") if isinstance(data.get("filters"), dict) else {}
+    out_filters = {
+        "collections": list(filters.get("collections") or []) if isinstance(filters.get("collections"), list) else [],
+        "models": dict(filters.get("models") or {}) if isinstance(filters.get("models"), dict) else {},
+        "backdrops": dict(filters.get("backdrops") or {}) if isinstance(filters.get("backdrops"), dict) else {},
+        "symbols": dict(filters.get("symbols") or {}) if isinstance(filters.get("symbols"), dict) else {},
+    }
+    collections_seen = {str(c.get("slug") or "").strip().lower() for c in out_filters["collections"] if isinstance(c, dict)}
+    collections_seen.discard("")
+
+    now_day = datetime.now(timezone.utc).date().isoformat()
+    gifts: List[dict] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        profile = item.get("profile") if isinstance(item.get("profile"), dict) else {}
+        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        model = str(
+            profile.get("model")
+            or attrs.get("model")
+            or attrs.get("Model")
+            or item.get("model")
+            or item.get("gift_model")
+            or ""
+        ).strip()
+        background = str(
+            profile.get("background")
+            or attrs.get("background")
+            or attrs.get("Backdrop")
+            or attrs.get("backdrop")
+            or item.get("background")
+            or item.get("backdrop")
+            or ""
+        ).strip()
+        pattern = str(
+            profile.get("pattern")
+            or attrs.get("pattern")
+            or attrs.get("Symbol")
+            or attrs.get("symbol")
+            or item.get("pattern")
+            or item.get("symbol")
+            or ""
+        ).strip()
+
+        gift_id = str(item.get("gift_id") or item.get("id") or item.get("slug") or "").strip()
+        if not gift_id:
+            continue
+        gift_name = str(item.get("name") or item.get("title") or gift_id).strip()
+        collection_name = str(
+            item.get("collection_name")
+            or item.get("collection")
+            or item.get("base_name")
+            or item.get("base")
+            or ""
+        ).strip()
+        collection_slug = str(item.get("collection_slug") or item.get("base_id") or "").strip()
+        if not collection_slug and collection_name:
+            collection_slug = _slugify_soft(collection_name)
+        if not collection_slug:
+            collection_slug = _slugify_soft(gift_name.split("•")[0].strip())
+        if not collection_name:
+            collection_name = str(item.get("base_name") or collection_slug).strip()
+
+        floor_ton = _coerce_float(
+            profile.get("value_ton_estimate")
+            or item.get("floor_ton")
+            or item.get("price_ton")
+            or item.get("price")
+            or 0.0
+        )
+        if floor_ton <= 0:
+            floor_ton = 0.0001
+
+        series = item.get("series")
+        if not isinstance(series, list) or not series:
+            series = [
+                {
+                    "dt": now_day,
+                    "price": round(floor_ton, 6),
+                    "demand": 1.0,
+                    "supply": 1.0,
+                    "volume": int(_coerce_float(item.get("volume_24h") or 1, 1.0)) or 1,
+                }
+            ]
+
+        normalized_profile = dict(profile)
+        if model:
+            normalized_profile["model"] = model
+        if background:
+            normalized_profile["background"] = background
+        if pattern:
+            normalized_profile["pattern"] = pattern
+        if not normalized_profile.get("value_ton_estimate"):
+            normalized_profile["value_ton_estimate"] = round(floor_ton, 6)
+        normalized_profile.setdefault("source_note", "telegram gifts api")
+
+        if model:
+            out_filters["models"][model] = int(out_filters["models"].get(model, 0)) + 1
+        if background:
+            out_filters["backdrops"][background] = int(out_filters["backdrops"].get(background, 0)) + 1
+        if pattern:
+            out_filters["symbols"][pattern] = int(out_filters["symbols"].get(pattern, 0)) + 1
+        if collection_slug and collection_slug.lower() not in collections_seen:
+            collections_seen.add(collection_slug.lower())
+            out_filters["collections"].append(
+                {
+                    "slug": collection_slug,
+                    "name": collection_name or collection_slug,
+                    "total_supply": int(_coerce_float(item.get("total_supply") or 0, 0.0)),
+                }
+            )
+
+        gifts.append(
+            {
+                "gift_id": gift_id,
+                "name": gift_name,
+                "group": str(item.get("group") or "Telegram Gifts"),
+                "collection_slug": collection_slug,
+                "last_lot_id": str(item.get("last_lot_id") or item.get("lot_id") or gift_id).strip(),
+                "preview_image_url": str(item.get("preview_image_url") or item.get("preview_url") or "").strip(),
+                "latest_status": str(item.get("latest_status") or item.get("status") or "sale").strip().lower(),
+                "status_counts": item.get("status_counts") if isinstance(item.get("status_counts"), dict) else {},
+                "series": series,
+                "profile": normalized_profile,
+            }
+        )
+
+    generated_at = str(data.get("generated_at") or data.get("updated_at") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    out_meta = dict(meta)
+    out_meta.setdefault("source", "telegram_api")
+    out_meta.setdefault("gifts", len(gifts))
+    out_meta.setdefault("collections_total", len(out_filters["collections"]))
+    out_meta.setdefault("gift_mode", "lot")
+    out_meta.setdefault("incomplete", False)
+
+    return {
+        "generated_at": generated_at,
+        "gifts": gifts,
+        "filters": out_filters,
+        "meta": out_meta,
+    }
+
+
+def fetch_verified_dataset_from_telegram_api(
+    api_url: str,
+    api_token: str = "",
+    timeout_sec: int = 25,
+    token_header: str = "Authorization",
+    token_prefix: str = "Bearer ",
+) -> Dict:
+    if not api_url:
+        raise ValueError("TELEGRAM_GIFTS_API_URL is required for VERIFIED_SOURCE=telegram_api")
+
+    req = urllib.request.Request(api_url, method="GET")
+    req.add_header("Accept", "application/json")
+    if api_token:
+        req.add_header(token_header, f"{token_prefix}{api_token}".strip())
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Unable to fetch telegram gifts dataset: {e}") from e
+
+    dataset = _normalize_telegram_gifts_dataset(payload)
+    _reconcile_dataset_spot_prices(dataset)
+    _validate_verified_dataset(dataset)
+    return dataset
+
+
 def _clean_fragment_text(value: str) -> str:
     return re.sub(r"\s+", " ", unescape(value or "")).strip()
 
@@ -1230,6 +1427,42 @@ def load_verified_dataset_source() -> Dict:
         except Exception:
             # Never replace runtime dataset with empty/invalid API payload.
             return load_verified_dataset(file_path)
+    if source == "telegram_api":
+        api_url = os.getenv("TELEGRAM_GIFTS_API_URL", "").strip()
+        api_token = os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip()
+        token_header = os.getenv("TELEGRAM_GIFTS_API_TOKEN_HEADER", "Authorization").strip()
+        token_prefix = os.getenv("TELEGRAM_GIFTS_API_TOKEN_PREFIX", "Bearer ").strip()
+        timeout_sec = int(os.getenv("TELEGRAM_GIFTS_API_TIMEOUT_SEC", os.getenv("VERIFIED_API_TIMEOUT_SEC", "25")))
+        try:
+            dataset = fetch_verified_dataset_from_telegram_api(
+                api_url=api_url,
+                api_token=api_token,
+                timeout_sec=timeout_sec,
+                token_header=token_header,
+                token_prefix=token_prefix,
+            )
+            if not _has_gifts(dataset):
+                raise ValueError("telegram gifts api returned empty gifts")
+            save_verified_dataset(dataset, file_path)
+            return dataset
+        except Exception as e:
+            fallback = load_verified_dataset(file_path)
+            err = f"telegram_api fetch failed: {type(e).__name__}: {str(e)[:240]}"
+            try:
+                if isinstance(fallback, dict):
+                    meta = dict(fallback.get("meta") or {})
+                    meta.update(
+                        {
+                            "source_fallback": "file",
+                            "error": err,
+                            "failed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        }
+                    )
+                    fallback["meta"] = meta
+                    _save_fragment_snapshot_meta(meta)
+            except Exception:
+                pass
+            return fallback
     if source == "fragment":
         timeout_sec = int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "25"))
         root_url = os.getenv("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts").strip()
@@ -1268,7 +1501,7 @@ def load_verified_dataset_source() -> Dict:
                 pass
             return fallback
 
-    raise ValueError("VERIFIED_SOURCE must be one of: 'file', 'api', 'fragment'")
+    raise ValueError("VERIFIED_SOURCE must be one of: 'file', 'api', 'telegram_api', 'fragment'")
 
 
 def save_dataset(dataset: Dict) -> None:
