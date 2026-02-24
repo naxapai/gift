@@ -113,6 +113,47 @@ def _read_last_full_sync_ts() -> int | None:
 
 def _run_full_sync_once() -> tuple[bool, str]:
     env = os.environ.copy()
+    env.setdefault("VERIFIED_SOURCE", os.getenv("VERIFIED_SOURCE", "hybrid"))
+    env.setdefault("VERIFIED_DATA_FILE", "data/verified_gifts.json")
+    env.setdefault("VERIFIED_API_TIMEOUT_SEC", "20")
+
+    def _run_cmd(cmd: list[str], timeout_sec: int) -> tuple[bool, str]:
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"{cmd[-1]} timeout>{timeout_sec}s"
+        except Exception as e:  # noqa: BLE001
+            return False, f"{cmd[-1]} start failed: {e}"
+        if proc.returncode != 0:
+            tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-3:])
+            return False, f"{cmd[-1]} failed rc={proc.returncode}: {tail[:280]}"
+        return True, ""
+
+    # Primary sync path: verified source (hybrid/telegram/api).
+    source = str(env.get("VERIFIED_SOURCE") or "").strip().lower()
+    if source in {"hybrid", "telegram_api", "api"}:
+        ok_primary, err_primary = _run_cmd(
+            ["python3", "-u", "sync_verified.py"],
+            timeout_sec=min(MANUAL_FULL_SYNC_TIMEOUT_SEC, max(90, int(MANUAL_FULL_SYNC_TIMEOUT_SEC * 0.35))),
+        )
+        if ok_primary:
+            try:
+                LAST_FULL_SYNC_TS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                LAST_FULL_SYNC_TS_FILE.write_text(str(int(time.time())), encoding="utf-8")
+            except Exception:
+                pass
+            return True, ""
+        # Reserve channel: Fragment full sync.
+        if os.getenv("ALLOW_FRAGMENT_RESERVE_SYNC", "true").strip().lower() not in {"1", "true", "yes", "on"}:
+            return False, err_primary
+
     env.setdefault("FRAGMENT_SSL_NO_VERIFY", "true")
     env.setdefault("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts")
     env.setdefault("FRAGMENT_MAX_PAGES_PER_COLLECTION", os.getenv("FULL_MAX_PAGES_PER_COLLECTION", "120"))
@@ -128,25 +169,10 @@ def _run_full_sync_once() -> tuple[bool, str]:
     env.setdefault("FRAGMENT_BATCH_RETRIES", os.getenv("FRAGMENT_BATCH_RETRIES", "6"))
     env.setdefault("FRAGMENT_RESUME", "true")
     env.setdefault("FRAGMENT_SYNC_STATE_FILE", "data/fragment_sync_state.json")
-    env.setdefault("VERIFIED_API_TIMEOUT_SEC", "20")
-    env.setdefault("VERIFIED_DATA_FILE", "data/verified_gifts.json")
-    try:
-        proc = subprocess.run(
-            ["python3", "-u", "sync_fragment_batches.py"],
-            cwd=str(ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=MANUAL_FULL_SYNC_TIMEOUT_SEC,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"full sync timeout>{MANUAL_FULL_SYNC_TIMEOUT_SEC}s"
-    except Exception as e:  # noqa: BLE001
-        return False, f"full sync start failed: {e}"
 
-    if proc.returncode != 0:
-        tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-3:])
-        return False, f"full sync failed rc={proc.returncode}: {tail[:280]}"
+    ok_fragment, err_fragment = _run_cmd(["python3", "-u", "sync_fragment_batches.py"], timeout_sec=MANUAL_FULL_SYNC_TIMEOUT_SEC)
+    if not ok_fragment:
+        return False, err_fragment
     try:
         LAST_FULL_SYNC_TS_FILE.parent.mkdir(parents=True, exist_ok=True)
         LAST_FULL_SYNC_TS_FILE.write_text(str(int(time.time())), encoding="utf-8")

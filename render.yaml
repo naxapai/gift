@@ -13,15 +13,37 @@ services:
       - key: VERIFIED_ONLY
         value: "true"
       - key: VERIFIED_SOURCE
-        value: "fragment"
+        value: "hybrid"
       - key: VERIFIED_REFRESH_SEC
         value: "300"
+      - key: VERIFIED_MIN_GIFTS_ABS
+        value: "200"
+      - key: VERIFIED_MIN_GIFTS_RATIO
+        value: "0.60"
+      - key: VERIFIED_MIN_COLLECTIONS_RATIO
+        value: "0.50"
+      - key: VERIFIED_MIN_MODELS_RATIO
+        value: "0.40"
+      - key: TELEGRAM_GIFTS_API_URL
+        sync: false
+      - key: TELEGRAM_GIFTS_API_TOKEN
+        sync: false
+      - key: TELEGRAM_GIFTS_API_TOKEN_HEADER
+        value: "Authorization"
+      - key: TELEGRAM_GIFTS_API_TOKEN_PREFIX
+        value: "Bearer "
+      - key: TELEGRAM_GIFTS_API_TIMEOUT_SEC
+        value: "25"
       - key: FRAGMENT_GIFTS_URL
         value: "https://fragment.com/gifts"
       - key: FRAGMENT_MAX_COLLECTIONS
         value: "0"
       - key: FRAGMENT_MAX_PAGES_PER_COLLECTION
         value: "500"
+      - key: FRAGMENT_MAX_FAILED_COLLECTIONS
+        value: "12"
+      - key: FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO
+        value: "0.88"
       - key: FRAGMENT_BOOTSTRAP_CACHE
         value: "true"
       - key: FRAGMENT_SERIES_MAX_POINTS

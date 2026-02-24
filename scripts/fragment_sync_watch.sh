@@ -3,9 +3,20 @@ set -u
 
 cd '/Users/nexapai/Downloads/подарки' || exit 1
 
+# Optional local overrides (API keys, feature toggles).
+if [ -f ".env.local" ]; then
+  set -a
+  source ".env.local"
+  set +a
+fi
+
+if [ "${FRAGMENT_RESERVE_SYNC_ENABLED:-true}" != "true" ] && [ "${FRAGMENT_RESERVE_SYNC_ENABLED:-true}" != "1" ]; then
+  exit 0
+fi
+
 LOG_FILE="/tmp/fragment_sync_watch.log"
 PID_FILE="/tmp/fragment_sync_watch.pid"
-FAST_LOOP_SLEEP_SEC="${FAST_LOOP_SLEEP_SEC:-90}"
+FAST_LOOP_SLEEP_SEC="${FAST_LOOP_SLEEP_SEC:-180}"
 FULL_SYNC_EVERY_SEC="${FULL_SYNC_EVERY_SEC:-3600}"
 MAX_SYNC_SEC_FAST="${MAX_SYNC_SEC_FAST:-720}"
 MAX_SYNC_SEC_FULL="${MAX_SYNC_SEC_FULL:-1500}"
@@ -61,13 +72,13 @@ run_sync_mode() {
     MODE_REQ_JITTER="${FULL_REQUEST_JITTER_SEC:-0.06}"
   else
     MODE_MAX_SYNC_SEC="$MAX_SYNC_SEC_FAST"
-    MODE_MAX_PAGES="${FAST_MAX_PAGES_PER_COLLECTION:-30}"
+    MODE_MAX_PAGES="${FAST_MAX_PAGES_PER_COLLECTION:-18}"
     MODE_INCLUDE_SOLD="${FAST_INCLUDE_SOLD:-false}"
     MODE_ENRICH_TRAITS="${FAST_ENRICH_LOT_TRAITS:-false}"
     MODE_DETAIL_WORKERS="${FAST_LOT_DETAIL_WORKERS:-4}"
-    MODE_FETCH_BUDGET_SEC="${FAST_FETCH_BUDGET_SEC:-520}"
-    MODE_MIN_REQ_INTERVAL="${FAST_MIN_REQUEST_INTERVAL_SEC:-0.28}"
-    MODE_REQ_JITTER="${FAST_REQUEST_JITTER_SEC:-0.1}"
+    MODE_FETCH_BUDGET_SEC="${FAST_FETCH_BUDGET_SEC:-420}"
+    MODE_MIN_REQ_INTERVAL="${FAST_MIN_REQUEST_INTERVAL_SEC:-0.32}"
+    MODE_REQ_JITTER="${FAST_REQUEST_JITTER_SEC:-0.12}"
   fi
 
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] dns_ok run_sync mode=$MODE pages=$MODE_MAX_PAGES include_sold=$MODE_INCLUDE_SOLD enrich=$MODE_ENRICH_TRAITS" >> "$LOG_FILE"

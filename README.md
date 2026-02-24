@@ -124,10 +124,10 @@ curl -sS "https://api.telegram.org/bot<TG_BOT_TOKEN>/setWebhook" \
 
 - `VERIFIED_ONLY=true` (по умолчанию) — использовать только верифицированный источник.
 - Источник выбирается через `VERIFIED_SOURCE`:
+  - `hybrid` — дефолтный production-режим: сначала `telegram_api`, затем `fragment`, затем fallback на `file`;
   - `file` — локальный файл `data/verified_gifts.json` (или `VERIFIED_DATA_FILE`);
   - `api` — внешний верифицированный API (`VERIFIED_API_URL`);
   - `telegram_api` — API-bridge над Telegram Gifts/MTProto (`TELEGRAM_GIFTS_API_URL`);
-  - `hybrid` — сначала `telegram_api`, затем `fragment`, затем fallback на `file`;
   - `fragment` — официальный маркет Fragment (`https://fragment.com/gifts`).
 - Если файл отсутствует/невалиден, сервер завершится с ошибкой (чтобы не показывать synthetic данные).
 
@@ -182,6 +182,13 @@ export VERIFIED_MIN_GIFTS_ABS=200
 export VERIFIED_MIN_GIFTS_RATIO=0.60
 export VERIFIED_MIN_COLLECTIONS_RATIO=0.50
 export VERIFIED_MIN_MODELS_RATIO=0.40
+```
+
+Рекомендуемые пороги fallback канала Fragment:
+
+```bash
+export FRAGMENT_MAX_FAILED_COLLECTIONS=12
+export FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO=0.88
 ```
 
 ### Подключение официального verified источника Fragment
