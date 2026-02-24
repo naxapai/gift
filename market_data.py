@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 from typing import Dict, List
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, parse_qsl, urlparse, urlunparse
 
 DATA_FILE = Path(__file__).parent / "data" / "gifts_history.json"
 VERIFIED_DATA_FILE = Path(__file__).parent / "data" / "verified_gifts.json"
@@ -453,16 +453,53 @@ def fetch_verified_dataset_from_telegram_api(
     if not api_url:
         raise ValueError("TELEGRAM_GIFTS_API_URL is required for VERIFIED_SOURCE=telegram_api")
 
-    req = urllib.request.Request(api_url, method="GET")
-    req.add_header("Accept", "application/json")
+    attempts: list[tuple[str, str, dict[str, str], str]] = []
+    attempts.append(("base", api_url, {}, ""))
     if api_token:
-        req.add_header(token_header, f"{token_prefix}{api_token}".strip())
+        # 1) Primary configured auth header.
+        attempts.append(
+            (
+                "configured_header",
+                api_url,
+                {token_header: f"{token_prefix}{api_token}".strip()},
+                "",
+            )
+        )
+        # 2) Standard Bearer auth.
+        attempts.append(("authorization_bearer", api_url, {"Authorization": f"Bearer {api_token}"}, ""))
+        # 3) API key header.
+        attempts.append(("x_api_key", api_url, {"X-API-Key": api_token}, ""))
+        # 4) Query token fallback.
+        parsed = urlparse(api_url)
+        q = parse_qsl(parsed.query, keep_blank_values=True)
+        q = [(k, v) for (k, v) in q if k != "token"]
+        q.append(("token", api_token))
+        token_url = urlunparse(parsed._replace(query=urlencode(q)))
+        attempts.append(("query_token", token_url, {}, ""))
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Unable to fetch telegram gifts dataset: {e}") from e
+    payload = None
+    last_error = ""
+    for name, url, headers, _ in attempts:
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Accept", "application/json")
+        for k, v in headers.items():
+            req.add_header(k, v)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as e:
+            last_error = f"{name}:HTTP_{e.code}"
+            continue
+        except urllib.error.URLError as e:
+            last_error = f"{name}:URLError:{e}"
+            continue
+        except Exception as e:
+            last_error = f"{name}:{type(e).__name__}:{str(e)[:120]}"
+            continue
+
+    if payload is None:
+        raise RuntimeError(f"Unable to fetch telegram gifts dataset: {last_error or 'unknown_error'}")
 
     dataset = _normalize_telegram_gifts_dataset(payload)
     _reconcile_dataset_spot_prices(dataset)
