@@ -13,7 +13,7 @@ services:
       - key: VERIFIED_ONLY
         value: "true"
       - key: VERIFIED_SOURCE
-        value: "hybrid"
+        value: "telegram_api"
       - key: VERIFIED_REFRESH_SEC
         value: "300"
       - key: VERIFIED_MIN_GIFTS_ABS
