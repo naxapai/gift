@@ -316,3 +316,42 @@ docker run -d --name gifts-app -p 8080:8080 \
 ```
 
 После запуска приложение доступно на `http://<server-ip>:8080`.
+
+## Roadmap MTProto/API (этапы)
+
+Этап 1 (реализован): отдельный bridge-сервис
+
+- файл: `/Users/nexapai/Downloads/подарки/bridge_api.py`
+- endpoint:
+  - `GET /healthz`
+  - `GET /api/bridge/status`
+  - `GET /api/gifts/verified` (Bearer `BRIDGE_API_TOKEN`)
+- источники:
+  - primary: `BRIDGE_UPSTREAM_URL` (внешний Telegram Gifts API)
+  - reserve: Fragment (`BRIDGE_FRAGMENT_RESERVE=true`)
+
+Запуск локально:
+
+```bash
+cd /Users/nexapai/Downloads/подарки
+./scripts/bridge_start.sh
+./scripts/bridge_status.sh
+```
+
+Ключевые env bridge:
+
+```bash
+BRIDGE_API_TOKEN=...
+BRIDGE_UPSTREAM_URL=https://<external-api>/api/gifts/verified
+BRIDGE_UPSTREAM_TOKEN=...
+BRIDGE_REFRESH_SEC=90
+BRIDGE_FRAGMENT_RESERVE=true
+```
+
+Подключение основного backend к bridge:
+
+```bash
+VERIFIED_SOURCE=telegram_api
+TELEGRAM_GIFTS_API_URL=https://<bridge-domain>/api/gifts/verified
+TELEGRAM_GIFTS_API_TOKEN=<BRIDGE_API_TOKEN>
+```
