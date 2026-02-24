@@ -100,6 +100,11 @@ def main() -> None:
         "total_sold": 0,
         "total_auction": 0,
         "collections_used": 0,
+        "lot_traits_cache_seeded": 0,
+        "lot_traits_cache_hits": 0,
+        "lot_traits_fetched": 0,
+        "lot_traits_active_lots": 0,
+        "lot_traits_covered_active": 0,
     }
     previous_gifts_count = 0
 
@@ -132,6 +137,11 @@ def main() -> None:
             meta_agg["total_sold"] = int((existing_meta or {}).get("total_sold") or 0)
             meta_agg["total_auction"] = int((existing_meta or {}).get("total_auction") or 0)
             meta_agg["collections_used"] = int((existing_meta or {}).get("collections_used") or 0)
+            meta_agg["lot_traits_cache_seeded"] = int((existing_meta or {}).get("lot_traits_cache_seeded") or 0)
+            meta_agg["lot_traits_cache_hits"] = int((existing_meta or {}).get("lot_traits_cache_hits") or 0)
+            meta_agg["lot_traits_fetched"] = int((existing_meta or {}).get("lot_traits_fetched") or 0)
+            meta_agg["lot_traits_active_lots"] = int((existing_meta or {}).get("lot_traits_active_lots") or 0)
+            meta_agg["lot_traits_covered_active"] = int((existing_meta or {}).get("lot_traits_covered_active") or 0)
         except Exception:
             pass
     elif os.path.exists(output_file):
@@ -192,6 +202,11 @@ def main() -> None:
             meta_agg["total_sold"] += int(ds_meta.get("total_sold") or 0)
             meta_agg["total_auction"] += int(ds_meta.get("total_auction") or 0)
             meta_agg["collections_used"] += int(ds_meta.get("collections_used") or 0)
+            meta_agg["lot_traits_cache_seeded"] += int(ds_meta.get("lot_traits_cache_seeded") or 0)
+            meta_agg["lot_traits_cache_hits"] += int(ds_meta.get("lot_traits_cache_hits") or 0)
+            meta_agg["lot_traits_fetched"] += int(ds_meta.get("lot_traits_fetched") or 0)
+            meta_agg["lot_traits_active_lots"] += int(ds_meta.get("lot_traits_active_lots") or 0)
+            meta_agg["lot_traits_covered_active"] += int(ds_meta.get("lot_traits_covered_active") or 0)
 
         partial_meta = {
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -205,6 +220,20 @@ def main() -> None:
             "total_for_sale": int(meta_agg.get("total_for_sale") or 0),
             "total_sold": int(meta_agg.get("total_sold") or 0),
             "total_auction": int(meta_agg.get("total_auction") or 0),
+            "lot_traits_cache_seeded": int(meta_agg.get("lot_traits_cache_seeded") or 0),
+            "lot_traits_cache_hits": int(meta_agg.get("lot_traits_cache_hits") or 0),
+            "lot_traits_fetched": int(meta_agg.get("lot_traits_fetched") or 0),
+            "lot_traits_active_lots": int(meta_agg.get("lot_traits_active_lots") or 0),
+            "lot_traits_covered_active": int(meta_agg.get("lot_traits_covered_active") or 0),
+            "lot_traits_coverage": (
+                round(
+                    float(meta_agg.get("lot_traits_covered_active") or 0)
+                    / float(meta_agg.get("lot_traits_active_lots") or 1),
+                    4,
+                )
+                if int(meta_agg.get("lot_traits_active_lots") or 0) > 0
+                else 0.0
+            ),
         }
         partial = {
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -254,6 +283,20 @@ def main() -> None:
         "total_for_sale": int(meta_agg.get("total_for_sale") or 0),
         "total_sold": int(meta_agg.get("total_sold") or 0),
         "total_auction": int(meta_agg.get("total_auction") or 0),
+        "lot_traits_cache_seeded": int(meta_agg.get("lot_traits_cache_seeded") or 0),
+        "lot_traits_cache_hits": int(meta_agg.get("lot_traits_cache_hits") or 0),
+        "lot_traits_fetched": int(meta_agg.get("lot_traits_fetched") or 0),
+        "lot_traits_active_lots": int(meta_agg.get("lot_traits_active_lots") or 0),
+        "lot_traits_covered_active": int(meta_agg.get("lot_traits_covered_active") or 0),
+        "lot_traits_coverage": (
+            round(
+                float(meta_agg.get("lot_traits_covered_active") or 0)
+                / float(meta_agg.get("lot_traits_active_lots") or 1),
+                4,
+            )
+            if int(meta_agg.get("lot_traits_active_lots") or 0) > 0
+            else 0.0
+        ),
     }
     final = {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

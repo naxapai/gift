@@ -443,21 +443,23 @@ def _fragment_extract_api_hash(html: str) -> str:
 
 
 def _fragment_parse_detail_profile(html: str) -> dict:
-    def _extract_attr(label: str) -> tuple[str, str | None]:
-        rx = re.compile(
-            rf'<div class="table-cell">{label}</div>.*?<div class="table-cell-value tm-value">.*?'
-            r'<a [^>]*class="table-cell-value-link">([^<]+)</a>.*?'
-            r'<span class="tm-rarity">\s*([^<]+)\s*</span>',
-            re.S | re.I,
-        )
-        m = rx.search(html)
-        if not m:
-            return ("N/A", None)
-        return (_clean_fragment_text(m.group(1)), _clean_fragment_text(m.group(2)))
+    def _extract_attr(labels: List[str]) -> tuple[str, str | None]:
+        for label in labels:
+            rx = re.compile(
+                rf'<div class="table-cell">{re.escape(label)}</div>.*?<div class="table-cell-value tm-value">.*?'
+                r'<a [^>]*class="table-cell-value-link">([^<]+)</a>.*?'
+                r'<span class="tm-rarity">\s*([^<]+)\s*</span>',
+                re.S | re.I,
+            )
+            m = rx.search(html)
+            if not m:
+                continue
+            return (_clean_fragment_text(m.group(1)), _clean_fragment_text(m.group(2)))
+        return ("N/A", None)
 
-    model, model_share = _extract_attr("Model")
-    pattern, pattern_share = _extract_attr("Symbol")
-    background, background_share = _extract_attr("Backdrop")
+    model, model_share = _extract_attr(["Model"])
+    pattern, pattern_share = _extract_attr(["Symbol", "Pattern"])
+    background, background_share = _extract_attr(["Backdrop", "Background"])
 
     issued = 0
     total_supply = 0
@@ -542,6 +544,61 @@ def _save_fragment_lot_traits_cache(cache: Dict[str, dict]) -> None:
         _atomic_write_json(FRAGMENT_LOT_TRAITS_CACHE_FILE, cache)
     except Exception:
         return
+
+
+def _seed_lot_traits_cache_from_verified_file(cache: Dict[str, dict], file_path: str | None = None) -> tuple[Dict[str, dict], int]:
+    # Warm lot-traits cache from last verified snapshot to keep lot-mode traits stable
+    # across partial/live cycles where Fragment may throttle detail pages.
+    if not isinstance(cache, dict):
+        cache = {}
+    path = Path(file_path or os.getenv("VERIFIED_DATA_FILE", "").strip() or VERIFIED_DATA_FILE)
+    if not path.exists():
+        return cache, 0
+    try:
+        payload = _load_json_with_retry(path)
+    except Exception:
+        return cache, 0
+    if not isinstance(payload, dict):
+        return cache, 0
+    gifts = payload.get("gifts")
+    if not isinstance(gifts, list) or not gifts:
+        return cache, 0
+
+    seeded = 0
+    for gift in gifts:
+        if not isinstance(gift, dict):
+            continue
+        lot_id = str(gift.get("last_lot_id") or "").strip()
+        if not lot_id or lot_id in cache:
+            continue
+        profile = gift.get("profile")
+        if not isinstance(profile, dict):
+            continue
+        model = str(profile.get("model") or "").strip()
+        background = str(profile.get("background") or "").strip()
+        pattern = str(profile.get("pattern") or "").strip()
+        if not model or not background or not pattern:
+            continue
+        cache[lot_id] = {
+            "profile": {
+                "model": model,
+                "model_share": profile.get("model_share"),
+                "pattern": pattern,
+                "pattern_share": profile.get("pattern_share"),
+                "background": background,
+                "background_share": profile.get("background_share"),
+                "issued": profile.get("issued"),
+                "total_supply": profile.get("total_supply"),
+                "value_ton_estimate": profile.get("value_ton_estimate"),
+                "value_rub_estimate": profile.get("value_rub_estimate"),
+                "value_score": profile.get("value_score"),
+                "source_note": profile.get("source_note") or "verified cache seed",
+            },
+            "preview_image_url": str(gift.get("preview_image_url") or "").strip(),
+            "detail_status": str(gift.get("latest_status") or "").strip().lower(),
+        }
+        seeded += 1
+    return cache, seeded
 
 
 def _fragment_parse_attribute_options(html: str, label: str) -> List[dict]:
@@ -708,7 +765,15 @@ def fetch_verified_dataset_from_fragment(
     # Reuse cached per-lot traits even in fast mode to avoid collapsing all lots
     # into one collection-level profile when detail enrichment is disabled.
     lot_traits_cache = _load_fragment_lot_traits_cache()
+    lot_traits_cache_seeded = 0
+    lot_traits_cache, lot_traits_cache_seeded = _seed_lot_traits_cache_from_verified_file(lot_traits_cache)
     lot_traits_cache_dirty = False
+    if lot_traits_cache_seeded:
+        lot_traits_cache_dirty = True
+    lot_traits_cache_hits_total = 0
+    lot_traits_fetched_total = 0
+    lot_traits_active_lots_total = 0
+    lot_traits_covered_active_total = 0
 
     requested_collections = len(collections)
     processed_collections = 0
@@ -832,9 +897,24 @@ def fetch_verified_dataset_from_fragment(
                         cached = lot_traits_cache.get(lot_id)
                         if isinstance(cached, dict):
                             lot_details[lot_id] = cached
+                            lot_traits_cache_hits_total += 1
+
+                lot_items_sorted = sorted(
+                    lot_latest.items(),
+                    key=lambda kv: str((kv[1] or {}).get("datetime") or ""),
+                    reverse=True,
+                )
+                active_lot_ids = [
+                    lot_id
+                    for lot_id, ev in lot_items_sorted
+                    if str((ev or {}).get("status") or "").strip().lower() != "sold"
+                ]
+                lot_traits_active_lots_total += len(active_lot_ids)
 
                 if enrich_lot_traits and lot_latest:
-                    missing_lot_ids = [lot_id for lot_id in lot_latest.keys() if lot_id not in lot_details]
+                    # Prioritize currently active lots for detail pages. Sold lots are skipped
+                    # below and should not consume the lot-detail budget.
+                    missing_lot_ids = [lot_id for lot_id in active_lot_ids if lot_id not in lot_details]
                     if max_detail_lots_per_collection > 0:
                         missing_lot_ids = missing_lot_ids[:max_detail_lots_per_collection]
 
@@ -862,8 +942,11 @@ def fetch_verified_dataset_from_fragment(
                                     payload = {}
                                 lot_details[lot_id] = payload
                                 if payload:
+                                    lot_traits_fetched_total += 1
                                     lot_traits_cache[lot_id] = payload
                                     lot_traits_cache_dirty = True
+
+                lot_traits_covered_active_total += sum(1 for lot_id in active_lot_ids if lot_id in lot_details)
 
                 for ev in lot_latest.values():
                     st = str(ev.get("status") or "").strip().lower()
@@ -994,6 +1077,16 @@ def fetch_verified_dataset_from_fragment(
         "total_for_sale": total_for_sale,
         "total_sold": total_sold,
         "total_auction": total_auction,
+        "lot_traits_cache_seeded": lot_traits_cache_seeded,
+        "lot_traits_cache_hits": lot_traits_cache_hits_total,
+        "lot_traits_fetched": lot_traits_fetched_total,
+        "lot_traits_active_lots": lot_traits_active_lots_total,
+        "lot_traits_covered_active": lot_traits_covered_active_total,
+        "lot_traits_coverage": (
+            round(lot_traits_covered_active_total / lot_traits_active_lots_total, 4)
+            if lot_traits_active_lots_total > 0
+            else 0.0
+        ),
         "incomplete": bool(budget_exhausted or processed_collections < requested_collections or failed_collections),
     }
     if meta["incomplete"]:
