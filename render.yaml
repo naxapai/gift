@@ -25,7 +25,7 @@ services:
       - key: VERIFIED_MIN_MODELS_RATIO
         value: "0.40"
       - key: TELEGRAM_GIFTS_API_URL
-        sync: false
+        value: "https://gift-api-bridge.onrender.com/api/gifts/verified"
       - key: TELEGRAM_GIFTS_API_TOKEN
         sync: false
       - key: BRIDGE_API_TOKEN
@@ -76,3 +76,55 @@ services:
         sync: false
       - key: TG_WEBHOOK_SECRET
         sync: false
+
+  - type: web
+    name: gift-api-bridge
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: "python3 bridge_api.py"
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: BRIDGE_HOST
+        value: 0.0.0.0
+      - key: BRIDGE_PORT
+        value: "10000"
+      - key: BRIDGE_REFRESH_SEC
+        value: "90"
+      - key: BRIDGE_API_TOKEN
+        sync: false
+      - key: BRIDGE_ADMIN_TOKEN
+        sync: false
+      - key: BRIDGE_UPSTREAM_URL
+        sync: false
+      - key: BRIDGE_UPSTREAM_TOKEN
+        sync: false
+      - key: BRIDGE_UPSTREAM_TOKEN_HEADER
+        value: "Authorization"
+      - key: BRIDGE_UPSTREAM_TOKEN_PREFIX
+        value: "Bearer "
+      - key: BRIDGE_UPSTREAM_TIMEOUT_SEC
+        value: "20"
+      - key: BRIDGE_FRAGMENT_RESERVE
+        value: "true"
+      - key: BRIDGE_FRAGMENT_TIMEOUT_SEC
+        value: "25"
+      - key: FRAGMENT_GIFTS_URL
+        value: "https://fragment.com/gifts"
+      - key: FRAGMENT_MAX_COLLECTIONS
+        value: "0"
+      - key: FRAGMENT_MAX_PAGES_PER_COLLECTION
+        value: "500"
+      - key: VERIFIED_DATA_FILE
+        value: "data/verified_gifts.json"
+      - key: VERIFIED_API_TIMEOUT_SEC
+        value: "25"
+      - key: VERIFIED_MIN_GIFTS_ABS
+        value: "200"
+      - key: VERIFIED_MIN_GIFTS_RATIO
+        value: "0.60"
+      - key: VERIFIED_MIN_COLLECTIONS_RATIO
+        value: "0.50"
+      - key: VERIFIED_MIN_MODELS_RATIO
+        value: "0.40"

@@ -76,6 +76,7 @@ class BridgeState:
         self.fragment_collection_start = int(os.getenv("FRAGMENT_COLLECTION_START", "0"))
         self.file_guard_path = os.getenv("VERIFIED_DATA_FILE", str(ROOT / "data" / "verified_gifts.json")).strip()
         self._stop = threading.Event()
+        self.schema_version = "bridge.v1"
 
     def _load_initial(self) -> None:
         # Warm-start from the bridge snapshot if available; never used as primary source.
@@ -180,12 +181,15 @@ class BridgeState:
         with self.lock:
             return {
                 "ok": True,
+                "schema": self.schema_version,
                 "updated_at": self.updated_at or None,
                 "ingest_running": self.ingest_running,
                 "ingest_started_at": self.ingest_started_at or None,
                 "last_source": self.last_source or None,
                 "last_error": self.last_error or "",
                 "refresh_sec": self.refresh_sec,
+                "reserve_enabled": self.fragment_reserve,
+                "upstream_configured": bool(self.upstream_url),
                 "counts": _counts(self.dataset or {}),
             }
 
@@ -236,6 +240,24 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         _json(self, {"ok": False, "error": "not_found"}, status=HTTPStatus.NOT_FOUND)
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path != "/api/bridge/ingest":
+            _json(self, {"ok": False, "error": "not_found"}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        token = os.getenv("BRIDGE_ADMIN_TOKEN", "").strip() or os.getenv("BRIDGE_API_TOKEN", "").strip()
+        if not token:
+            _json(self, {"ok": False, "error": "bridge_token_not_configured"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        if not _token_ok(self, token):
+            _json(self, {"ok": False, "error": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+            return
+
+        threading.Thread(target=STATE.ingest_once, daemon=True, name="bridge-manual-ingest").start()
+        _json(self, {"ok": True, "started": True, "mode": "manual_ingest", "at": _now_iso()})
 
 
 def run() -> None:

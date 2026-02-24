@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 from typing import Dict, List
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 DATA_FILE = Path(__file__).parent / "data" / "gifts_history.json"
 VERIFIED_DATA_FILE = Path(__file__).parent / "data" / "verified_gifts.json"
@@ -1531,8 +1531,12 @@ def load_verified_dataset_source() -> Dict:
         try:
             # Prevent loop/self-reference to local bridge snapshot unless explicitly allowed.
             allow_local_bridge = os.getenv("TELEGRAM_GIFTS_ALLOW_LOCAL_BRIDGE", "false").strip().lower() in {"1", "true", "yes", "on"}
-            if (not allow_local_bridge) and "/bridge/gifts/verified" in api_url:
-                raise ValueError("local bridge endpoint is disabled for telegram_api source")
+            parsed_api = urlparse(api_url)
+            host = (parsed_api.hostname or "").strip().lower()
+            path = (parsed_api.path or "").strip().lower()
+            local_hosts = {"127.0.0.1", "localhost", "telegram-gifts-market.onrender.com"}
+            if (not allow_local_bridge) and path.endswith("/bridge/gifts/verified") and host in local_hosts:
+                raise ValueError("local/self bridge endpoint is disabled for telegram_api source")
             fallback = _load_verified_fallback_snapshot(file_path)
             dataset = fetch_verified_dataset_from_telegram_api(
                 api_url=api_url,

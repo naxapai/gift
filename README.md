@@ -355,3 +355,39 @@ VERIFIED_SOURCE=telegram_api
 TELEGRAM_GIFTS_API_URL=https://<bridge-domain>/api/gifts/verified
 TELEGRAM_GIFTS_API_TOKEN=<BRIDGE_API_TOKEN>
 ```
+
+Этап 2 (реализован): основной backend получает verified-данные через отдельный bridge-сервис
+
+- Render blueprint теперь содержит 2 web-сервиса:
+  - `gift-api-bridge` (bridge ingestion API)
+  - `telegram-gifts-market` (основной продуктовый backend)
+- основной backend использует:
+  - `VERIFIED_SOURCE=telegram_api`
+  - `TELEGRAM_GIFTS_API_URL=https://gift-api-bridge.onrender.com/api/gifts/verified`
+
+Важные значения в Render:
+
+```bash
+# service: gift-api-bridge
+BRIDGE_API_TOKEN=<LONG_SECRET>
+BRIDGE_ADMIN_TOKEN=<LONG_SECRET_OR_SEPARATE>
+BRIDGE_UPSTREAM_URL=https://<external-api>/api/gifts/verified
+BRIDGE_UPSTREAM_TOKEN=<external_api_token>
+
+# service: telegram-gifts-market
+TELEGRAM_GIFTS_API_TOKEN=<same_as_BRIDGE_API_TOKEN>
+```
+
+Проверка этапа 2:
+
+```bash
+# bridge status
+curl -sS "https://gift-api-bridge.onrender.com/api/bridge/status"
+
+# manual bridge ingest
+curl -sS -X POST "https://gift-api-bridge.onrender.com/api/bridge/ingest" \
+  -H "Authorization: Bearer <BRIDGE_ADMIN_TOKEN>"
+
+# main backend runtime source
+curl -sS "https://telegram-gifts-market.onrender.com/api/market/overview" | jq '.runtime_source,.gifts_count,.base_count,.model_count'
+```
