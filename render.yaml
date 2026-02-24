@@ -115,7 +115,21 @@ services:
       - key: FRAGMENT_MAX_COLLECTIONS
         value: "0"
       - key: FRAGMENT_MAX_PAGES_PER_COLLECTION
-        value: "500"
+        value: "40"
+      - key: FRAGMENT_INCLUDE_SOLD
+        value: "false"
+      - key: FRAGMENT_ENRICH_LOT_TRAITS
+        value: "false"
+      - key: FRAGMENT_FETCH_BUDGET_SEC
+        value: "2200"
+      - key: FRAGMENT_MIN_REQUEST_INTERVAL_SEC
+        value: "0.28"
+      - key: FRAGMENT_REQUEST_JITTER_SEC
+        value: "0.10"
+      - key: FRAGMENT_MAX_FAILED_COLLECTIONS
+        value: "12"
+      - key: FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO
+        value: "0.88"
       - key: VERIFIED_DATA_FILE
         value: "data/verified_gifts.json"
       - key: VERIFIED_API_TIMEOUT_SEC
