@@ -198,6 +198,10 @@ class FragmentClient:
         stars_ratio_samples: List[float] = []
         seen_collections: set[str] = set()
         seen_backgrounds: set[str] = set()
+        hard_budget_sec = max(10, int(self.fetch_budget_sec))
+
+        def out_of_budget() -> bool:
+            return (time.monotonic() - started_at) > hard_budget_sec
 
         def targets_met() -> bool:
             if self.min_events > 0 and len(events) < self.min_events:
@@ -209,9 +213,10 @@ class FragmentClient:
             return True
 
         for c in collections:
+            if out_of_budget():
+                # Hard budget guard: never let one ingest cycle block for too long.
+                return events, bases
             if targets_met():
-                break
-            if time.monotonic() - started_at > self.fetch_budget_sec and targets_met():
                 break
             slug = c["slug"]
             base_name = c["name"] or slug
@@ -219,6 +224,8 @@ class FragmentClient:
             seen_collections.add(slug)
 
             for filter_value in ("sale", "auction"):
+                if out_of_budget():
+                    return events, bases
                 page_url = f"{root_url}/{slug}?sort=price&filter={filter_value}"
                 page_html = self._get_text(page_url)
                 api_hash = _extract_api_hash(page_html)
@@ -275,7 +282,7 @@ class FragmentClient:
                             traits_by_id[gid] = (None, "", None, None, "")
 
                 for card in cards:
-                    if time.monotonic() - started_at > self.fetch_budget_sec and targets_met():
+                    if out_of_budget():
                         return events, bases
                     traits, preview, detail_price_ton, detail_price_stars, detail_status = traits_by_id.get(
                         card["gift_id"], (None, "", None, None, "")
