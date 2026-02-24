@@ -1583,11 +1583,27 @@ function renderCatalogVariants(items) {
     .join("");
 }
 
+function renderCatalogVariantsPlaceholder(text = "Выберите фильтры, чтобы показать варианты") {
+  if (!el.catalogVariantsBody) return;
+  el.catalogVariantsBody.innerHTML = `<tr><td colspan="7"><div class="empty-state">${text}</div></td></tr>`;
+}
+
 async function loadCatalogFiltersAndVariants() {
   closeAllCustomSelects();
-  const baseId = state.catalogFilters.baseId || state.bases[0]?.base_id || "";
+  const baseId = state.catalogFilters.baseId || "";
+  const hasAnyFilter = Boolean(
+    state.catalogFilters.baseId
+    || state.catalogFilters.modelId
+    || (state.catalogFilters.backgroundIds || []).length
+    || (state.catalogFilters.patternIds || []).length
+  );
+  if (!hasAnyFilter) {
+    renderCatalogVariantsPlaceholder();
+  }
   if (!baseId) {
-    el.catalogVariantsBody.innerHTML = `<tr><td colspan="7"><div class="empty-state">Нет данных</div></td></tr>`;
+    fillSelect(el.catalogModelSelect, [], "id", "name", "Все модели");
+    fillMultiSelect(el.catalogBackgroundSelect, [], "id", "name");
+    fillMultiSelect(el.catalogPatternSelect, [], "id", "name");
     return;
   }
   state.catalogFilters.baseId = baseId;
@@ -2305,9 +2321,6 @@ async function loadCatalog() {
   const basesResp = await fetchJson("/api/bases", {}, true);
   state.bases = basesResp.items || [];
   fillSelect(el.catalogBaseSelect, state.bases, "base_id", "name", "Выберите коллекцию");
-  if (!state.catalogFilters.baseId && state.bases.length) {
-    state.catalogFilters.baseId = state.bases[0].base_id;
-  }
   renderBases();
   await loadCatalogFiltersAndVariants();
   state.pageLoaded.catalog = true;
