@@ -1545,7 +1545,7 @@ def load_verified_dataset_source() -> Dict:
             return _fetch_fragment_reserve_dataset(file_path, f"api_failed:{type(e).__name__}:{str(e)[:180]}")
     if source == "telegram_api":
         api_url = os.getenv("TELEGRAM_GIFTS_API_URL", "").strip()
-        api_token = os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip()
+        api_token = os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip() or os.getenv("BRIDGE_API_TOKEN", "").strip()
         token_header = os.getenv("TELEGRAM_GIFTS_API_TOKEN_HEADER", "Authorization").strip()
         token_prefix = os.getenv("TELEGRAM_GIFTS_API_TOKEN_PREFIX", "Bearer ").strip()
         timeout_sec = int(os.getenv("TELEGRAM_GIFTS_API_TIMEOUT_SEC", os.getenv("VERIFIED_API_TIMEOUT_SEC", "25")))
@@ -1579,7 +1579,7 @@ def load_verified_dataset_source() -> Dict:
         fallback = _load_verified_fallback_snapshot(file_path)
         # 1) Prefer telegram bridge for fastest, richer traited payload.
         api_url = os.getenv("TELEGRAM_GIFTS_API_URL", "").strip()
-        api_token = os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip()
+        api_token = os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip() or os.getenv("BRIDGE_API_TOKEN", "").strip()
         token_header = os.getenv("TELEGRAM_GIFTS_API_TOKEN_HEADER", "Authorization").strip()
         token_prefix = os.getenv("TELEGRAM_GIFTS_API_TOKEN_PREFIX", "Bearer ").strip()
         timeout_sec = int(os.getenv("TELEGRAM_GIFTS_API_TIMEOUT_SEC", os.getenv("VERIFIED_API_TIMEOUT_SEC", "25")))
