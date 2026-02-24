@@ -1420,16 +1420,28 @@ function initCustomSelect(selectEl) {
   const parent = selectEl.parentElement;
   if (!parent) return;
 
-  // Defensive dedupe: keep only one custom dropdown per native select.
-  const staleRoots = [...parent.children].filter((node) => node.classList?.contains("custom-select"));
-  if (staleRoots.length) {
-    if (customSelectRegistry.has(selectEl)) {
-      destroyCustomSelect(selectEl);
+  const existing = customSelectRegistry.get(selectEl);
+  if (existing?.root && document.body.contains(existing.root) && existing.root.parentElement === parent) {
+    // Keep a single stable custom-select instance per native select.
+    for (const node of [...parent.children]) {
+      if (!node.classList?.contains("custom-select")) continue;
+      if (node !== existing.root) node.remove();
     }
-    for (const root of staleRoots) {
-      root.remove();
+    syncCustomSelect(selectEl);
+    return;
+  }
+  if (existing) {
+    destroyCustomSelect(selectEl);
+  }
+
+  // Defensive dedupe: remove stale roots before creating the current one.
+  for (const node of [...parent.children]) {
+    if (node.classList?.contains("custom-select")) {
+      node.remove();
     }
-  } else if (customSelectRegistry.has(selectEl)) {
+  }
+
+  if (customSelectRegistry.has(selectEl)) {
     return;
   }
 
@@ -1452,7 +1464,9 @@ function initCustomSelect(selectEl) {
   selectEl.classList.add("native-select-hidden");
   selectEl.tabIndex = -1;
 
-  state.trigger.addEventListener("click", () => {
+  state.trigger.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
     const willOpen = !state.root.classList.contains("open");
     closeAllCustomSelects(selectEl);
     state.root.classList.toggle("open", willOpen);
@@ -1461,6 +1475,8 @@ function initCustomSelect(selectEl) {
   });
 
   state.menu.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
     const optionBtn = e.target.closest(".custom-select-option");
     if (!optionBtn) return;
     const value = optionBtn.dataset.value ?? "";
@@ -1478,12 +1494,13 @@ function initCustomSelect(selectEl) {
       syncCustomSelect(selectEl);
       return;
     }
+    // Close first to avoid visual flicker/secondary open while change listeners rerender options.
+    closeCustomSelect(state);
     if (selectEl.value !== value) {
       selectEl.value = value;
       selectEl.dispatchEvent(new Event("change", { bubbles: true }));
     }
     syncCustomSelect(selectEl);
-    closeCustomSelect(state);
   });
 
   syncCustomSelect(selectEl);
@@ -1532,6 +1549,7 @@ function renderCatalogVariants(items) {
 }
 
 async function loadCatalogFiltersAndVariants() {
+  closeAllCustomSelects();
   const baseId = state.catalogFilters.baseId || state.bases[0]?.base_id || "";
   if (!baseId) {
     el.catalogVariantsBody.innerHTML = `<tr><td colspan="7"><div class="empty-state">Нет данных</div></td></tr>`;
