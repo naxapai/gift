@@ -56,6 +56,8 @@ services:
         value: "60"
       - key: FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO
         value: "0.50"
+      - key: FRAGMENT_ALLOW_INCOMPLETE
+        value: "true"
       - key: FRAGMENT_BOOTSTRAP_CACHE
         value: "false"
       - key: FRAGMENT_SERIES_MAX_POINTS
@@ -140,6 +142,8 @@ services:
         value: "60"
       - key: FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO
         value: "0.50"
+      - key: FRAGMENT_ALLOW_INCOMPLETE
+        value: "true"
       - key: VERIFIED_DATA_FILE
         value: "data/verified_gifts.json"
       - key: VERIFIED_API_TIMEOUT_SEC
@@ -194,6 +198,8 @@ services:
         value: "60"
       - key: FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO
         value: "0.50"
+      - key: FRAGMENT_ALLOW_INCOMPLETE
+        value: "true"
       - key: VERIFIED_DATA_FILE
         value: "data/verified_gifts.json"
       - key: VERIFIED_API_TIMEOUT_SEC

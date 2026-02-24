@@ -1301,7 +1301,8 @@ def fetch_verified_dataset_from_fragment(
         ),
         "incomplete": incomplete,
     }
-    if meta["incomplete"]:
+    allow_incomplete = os.getenv("FRAGMENT_ALLOW_INCOMPLETE", "false").strip().lower() in {"1", "true", "yes", "on"}
+    if meta["incomplete"] and not allow_incomplete:
         sample_failed = ",".join(failed_collections[:6]) if failed_collections else "-"
         raise RuntimeError(
             "fragment fetch incomplete: "
@@ -1315,6 +1316,7 @@ def fetch_verified_dataset_from_fragment(
             f"budget_exhausted={budget_exhausted} "
             f"failed_sample={sample_failed}"
         )
+    meta["allow_incomplete"] = bool(allow_incomplete)
     dataset = {"generated_at": generated_at, "gifts": gifts, "filters": filter_index, "meta": meta}
     if enrich_lot_traits and lot_traits_cache_dirty:
         _save_fragment_lot_traits_cache(lot_traits_cache)
