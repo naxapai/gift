@@ -167,7 +167,7 @@ services:
       - key: UPSTREAM_PORT
         value: "10000"
       - key: UPSTREAM_REFRESH_SEC
-        value: "120"
+        value: "180"
       - key: UPSTREAM_API_TOKEN
         sync: false
       - key: UPSTREAM_ADMIN_TOKEN
@@ -177,15 +177,15 @@ services:
       - key: FRAGMENT_GIFTS_URL
         value: "https://fragment.com/gifts"
       - key: FRAGMENT_MAX_COLLECTIONS
-        value: "0"
+        value: "36"
       - key: FRAGMENT_MAX_PAGES_PER_COLLECTION
-        value: "40"
+        value: "12"
       - key: FRAGMENT_INCLUDE_SOLD
         value: "false"
       - key: FRAGMENT_ENRICH_LOT_TRAITS
         value: "false"
       - key: FRAGMENT_FETCH_BUDGET_SEC
-        value: "2200"
+        value: "900"
       - key: FRAGMENT_MIN_REQUEST_INTERVAL_SEC
         value: "0.28"
       - key: FRAGMENT_REQUEST_JITTER_SEC
