@@ -65,6 +65,8 @@ const state = {
   },
   ui: {
     catalogFiltersCollapsed: true,
+    catalogTouchStartY: null,
+    catalogAutoCollapsedOnTouch: false,
   },
   catalogFilters: {
     baseId: "",
@@ -437,6 +439,15 @@ function setCatalogFiltersCollapsed(collapsed) {
     el.catalogFiltersToggleBtn.setAttribute("aria-expanded", state.ui.catalogFiltersCollapsed ? "false" : "true");
     el.catalogFiltersToggleBtn.setAttribute("aria-label", state.ui.catalogFiltersCollapsed ? "Развернуть фильтры" : "Свернуть фильтры");
   }
+}
+
+function hasSelectedCatalogFilters() {
+  return Boolean(
+    state.catalogFilters.baseId
+    || state.catalogFilters.modelId
+    || (state.catalogFilters.backgroundIds || []).length
+    || (state.catalogFilters.patternIds || []).length
+  );
 }
 
 function detectTelegramMiniAppContext() {
@@ -2470,6 +2481,27 @@ function bindEvents() {
   el.backToCatalog.addEventListener("click", () => setPage("catalog"));
   el.backToCatalogFromBase.addEventListener("click", () => setPage("catalog"));
   el.baseSearch.addEventListener("input", renderBases);
+  document.addEventListener("touchstart", (e) => {
+    const activePage = document.querySelector(".page.active")?.id || "";
+    if (activePage !== "catalog") return;
+    state.ui.catalogTouchStartY = Number(e.touches?.[0]?.clientY || 0);
+    state.ui.catalogAutoCollapsedOnTouch = false;
+  }, { passive: true });
+  document.addEventListener("touchmove", (e) => {
+    const activePage = document.querySelector(".page.active")?.id || "";
+    if (activePage !== "catalog") return;
+    if (state.ui.catalogFiltersCollapsed) return;
+    if (state.ui.catalogAutoCollapsedOnTouch) return;
+    if (!hasSelectedCatalogFilters()) return;
+    if (e.target?.closest?.(".custom-select-menu")) return;
+    const startY = Number(state.ui.catalogTouchStartY || 0);
+    const currentY = Number(e.touches?.[0]?.clientY || 0);
+    // Finger moves up => user starts scrolling content down.
+    if (startY > 0 && (startY - currentY) > 12) {
+      state.ui.catalogAutoCollapsedOnTouch = true;
+      setCatalogFiltersCollapsed(true);
+    }
+  }, { passive: true });
   el.catalogBaseSelect.addEventListener("change", async () => {
     state.catalogFilters.baseId = el.catalogBaseSelect.value || "";
     syncCustomSelect(el.catalogBaseSelect);
