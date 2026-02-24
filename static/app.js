@@ -200,6 +200,24 @@ const customSelectRegistry = new Map();
 let eventsBound = false;
 let bootstrapped = false;
 
+function preselectInitialPage() {
+  const allowed = new Set(["overview", "catalog", "screeners", "signals", "watchlist", "alerts", "settings", "base-details", "variant-details"]);
+  const fromHash = window.location.hash.replace("#", "");
+  let pageId = fromHash || localStorage.getItem(STORAGE_PAGE_KEY) || "overview";
+  if (!allowed.has(pageId)) pageId = "overview";
+  if (pageId === "variant-details" && !localStorage.getItem(STORAGE_VARIANT_KEY) && !state.selectedVariantId) {
+    pageId = "overview";
+  }
+  if (pageId === "base-details" && !localStorage.getItem(STORAGE_BASE_KEY) && !state.selectedBaseId) {
+    pageId = "overview";
+  }
+
+  el.pages.forEach((p) => p.classList.toggle("active", p.id === pageId));
+  [...el.navBtns, ...el.mobileNavBtns].forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.page === pageId);
+  });
+}
+
 function formatTon(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   const n = Number(value);
@@ -2788,6 +2806,7 @@ function startAutoSync() {
 async function bootstrap() {
   if (bootstrapped) return;
   bootstrapped = true;
+  preselectInitialPage();
   bindEvents();
   state.auth.webappDetected = detectTelegramMiniAppContext();
   const tonInitPromise = initTonAuth();
