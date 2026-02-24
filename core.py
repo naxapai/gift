@@ -1152,7 +1152,7 @@ class GiftAnalyticsService:
             "ingest_in_progress": state_ingest_in_progress,
             "last_ingest_started_at": state_last_ingest_started_at,
             # Runtime diagnostics for Render env drift / stale deploy checks.
-            "runtime_source": os.getenv("VERIFIED_SOURCE", "hybrid"),
+            "runtime_source": os.getenv("VERIFIED_SOURCE", "telegram_api"),
             "runtime_gift_mode": os.getenv("FRAGMENT_GIFT_MODE", "lot"),
             "runtime_max_collections": int(os.getenv("FRAGMENT_MAX_COLLECTIONS", "0")),
             "runtime_max_pages_per_collection": int(os.getenv("FRAGMENT_MAX_PAGES_PER_COLLECTION", "500")),

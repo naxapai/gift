@@ -1461,7 +1461,7 @@ def _ensure_live_dataset_quality(dataset: Dict, fallback: Dict | None, source: s
 
 
 def load_verified_dataset_source() -> Dict:
-    source = os.getenv("VERIFIED_SOURCE", "hybrid").strip().lower()
+    source = os.getenv("VERIFIED_SOURCE", "telegram_api").strip().lower()
     file_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
 
     def _has_gifts(dataset: Dict) -> bool:
