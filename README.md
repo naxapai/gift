@@ -285,8 +285,8 @@ Bridge endpoint:
 Что поставить в Render -> `telegram-gifts-market` -> Environment:
 
 ```bash
-VERIFIED_SOURCE=hybrid
-TELEGRAM_GIFTS_API_URL=https://telegram-gifts-market.onrender.com/bridge/gifts/verified
+VERIFIED_SOURCE=telegram_api
+TELEGRAM_GIFTS_API_URL=https://<your-external-api>/api/gifts/verified
 TELEGRAM_GIFTS_API_TOKEN=<RANDOM_LONG_SECRET>
 BRIDGE_API_TOKEN=<тот_же_Random_Long_Secret>
 ```
@@ -297,6 +297,10 @@ BRIDGE_API_TOKEN=<тот_же_Random_Long_Secret>
 curl -sS "https://telegram-gifts-market.onrender.com/bridge/gifts/verified" \
   -H "Authorization: Bearer <RANDOM_LONG_SECRET>" | head -c 400
 ```
+
+Примечание:
+- для production `VERIFIED_SOURCE=telegram_api` должен указывать на внешний API, а не на локальный bridge.
+- если `telegram_api` временно недоступен, backend переключится на резервный канал Fragment (без fallback на file snapshot).
 
 ### Вариант 2: Docker (любой VPS/облако)
 

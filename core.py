@@ -338,8 +338,10 @@ class GiftAnalyticsService:
             "auction": 0,
         }
         self.fragment_bootstrap_cache = os.getenv("FRAGMENT_BOOTSTRAP_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
+        self.verified_source = os.getenv("VERIFIED_SOURCE", "telegram_api").strip().lower()
         self._restore_from_listing_state()
-        if self.fragment_bootstrap_cache and not self.variants:
+        allow_bootstrap_from_file = self.verified_source in {"file", "fragment", "hybrid"}
+        if self.fragment_bootstrap_cache and allow_bootstrap_from_file and not self.variants:
             self._bootstrap_from_verified_file()
         self._prune_ai_cache(force=True)
         self._start_ingest_loop()

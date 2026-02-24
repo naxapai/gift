@@ -25,7 +25,7 @@ services:
       - key: VERIFIED_MIN_MODELS_RATIO
         value: "0.40"
       - key: TELEGRAM_GIFTS_API_URL
-        value: "https://telegram-gifts-market.onrender.com/bridge/gifts/verified"
+        sync: false
       - key: TELEGRAM_GIFTS_API_TOKEN
         sync: false
       - key: BRIDGE_API_TOKEN
@@ -47,7 +47,7 @@ services:
       - key: FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO
         value: "0.88"
       - key: FRAGMENT_BOOTSTRAP_CACHE
-        value: "true"
+        value: "false"
       - key: FRAGMENT_SERIES_MAX_POINTS
         value: "8640"
       - key: VERIFIED_API_URL

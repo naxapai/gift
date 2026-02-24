@@ -1460,6 +1460,37 @@ def _ensure_live_dataset_quality(dataset: Dict, fallback: Dict | None, source: s
             raise ValueError(f"{source} models below baseline ratio: {models} < {min_models} (prev={prev_models})")
 
 
+def _fetch_fragment_reserve_dataset(file_path: str | None, reason: str) -> Dict:
+    root_url = os.getenv("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts").strip()
+    max_collections = int(os.getenv("FRAGMENT_MAX_COLLECTIONS", "0"))
+    max_pages_per_collection = int(os.getenv("FRAGMENT_MAX_PAGES_PER_COLLECTION", "500"))
+    collection_start = int(os.getenv("FRAGMENT_COLLECTION_START", "0"))
+    fallback = _load_verified_fallback_snapshot(file_path)
+    dataset = fetch_verified_dataset_from_fragment(
+        root_url=root_url,
+        timeout_sec=int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "25")),
+        max_collections=max_collections,
+        max_pages_per_collection=max_pages_per_collection,
+        collection_start=collection_start,
+    )
+    _ensure_live_dataset_quality(dataset, fallback, "fragment_reserve")
+    try:
+        meta = dict(dataset.get("meta") or {})
+        meta.update(
+            {
+                "source_fallback": "fragment",
+                "fallback_reason": reason[:240],
+                "failed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        )
+        dataset["meta"] = meta
+        _save_fragment_snapshot_meta(meta)
+    except Exception:
+        pass
+    save_verified_dataset(dataset, file_path)
+    return dataset
+
+
 def load_verified_dataset_source() -> Dict:
     source = os.getenv("VERIFIED_SOURCE", "telegram_api").strip().lower()
     file_path = os.getenv("VERIFIED_DATA_FILE", "").strip() or None
@@ -1487,12 +1518,10 @@ def load_verified_dataset_source() -> Dict:
                 token_prefix=token_prefix,
             )
             _ensure_live_dataset_quality(dataset, fallback, "verified_api")
-            # Cache last successful verified snapshot for audit and fallback debugging.
             save_verified_dataset(dataset, file_path)
             return dataset
-        except Exception:
-            # Never replace runtime dataset with empty/invalid API payload.
-            return load_verified_dataset(file_path)
+        except Exception as e:
+            return _fetch_fragment_reserve_dataset(file_path, f"api_failed:{type(e).__name__}:{str(e)[:180]}")
     if source == "telegram_api":
         api_url = os.getenv("TELEGRAM_GIFTS_API_URL", "").strip()
         api_token = os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip()
@@ -1500,6 +1529,10 @@ def load_verified_dataset_source() -> Dict:
         token_prefix = os.getenv("TELEGRAM_GIFTS_API_TOKEN_PREFIX", "Bearer ").strip()
         timeout_sec = int(os.getenv("TELEGRAM_GIFTS_API_TIMEOUT_SEC", os.getenv("VERIFIED_API_TIMEOUT_SEC", "25")))
         try:
+            # Prevent loop/self-reference to local bridge snapshot unless explicitly allowed.
+            allow_local_bridge = os.getenv("TELEGRAM_GIFTS_ALLOW_LOCAL_BRIDGE", "false").strip().lower() in {"1", "true", "yes", "on"}
+            if (not allow_local_bridge) and "/bridge/gifts/verified" in api_url:
+                raise ValueError("local bridge endpoint is disabled for telegram_api source")
             fallback = _load_verified_fallback_snapshot(file_path)
             dataset = fetch_verified_dataset_from_telegram_api(
                 api_url=api_url,
@@ -1512,23 +1545,7 @@ def load_verified_dataset_source() -> Dict:
             save_verified_dataset(dataset, file_path)
             return dataset
         except Exception as e:
-            fallback = load_verified_dataset(file_path)
-            err = f"telegram_api fetch failed: {type(e).__name__}: {str(e)[:240]}"
-            try:
-                if isinstance(fallback, dict):
-                    meta = dict(fallback.get("meta") or {})
-                    meta.update(
-                        {
-                            "source_fallback": "file",
-                            "error": err,
-                            "failed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                        }
-                    )
-                    fallback["meta"] = meta
-                    _save_fragment_snapshot_meta(meta)
-            except Exception:
-                pass
-            return fallback
+            return _fetch_fragment_reserve_dataset(file_path, f"telegram_api_failed:{type(e).__name__}:{str(e)[:180]}")
     if source == "hybrid":
         fallback = _load_verified_fallback_snapshot(file_path)
         # 1) Prefer telegram bridge for fastest, richer traited payload.
