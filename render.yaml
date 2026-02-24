@@ -53,9 +53,9 @@ services:
       - key: FRAGMENT_REQUEST_JITTER_SEC
         value: "0.10"
       - key: FRAGMENT_MAX_FAILED_COLLECTIONS
-        value: "12"
+        value: "60"
       - key: FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO
-        value: "0.88"
+        value: "0.50"
       - key: FRAGMENT_BOOTSTRAP_CACHE
         value: "false"
       - key: FRAGMENT_SERIES_MAX_POINTS
@@ -137,9 +137,9 @@ services:
       - key: FRAGMENT_REQUEST_JITTER_SEC
         value: "0.10"
       - key: FRAGMENT_MAX_FAILED_COLLECTIONS
-        value: "12"
+        value: "60"
       - key: FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO
-        value: "0.88"
+        value: "0.50"
       - key: VERIFIED_DATA_FILE
         value: "data/verified_gifts.json"
       - key: VERIFIED_API_TIMEOUT_SEC
@@ -191,9 +191,9 @@ services:
       - key: FRAGMENT_REQUEST_JITTER_SEC
         value: "0.10"
       - key: FRAGMENT_MAX_FAILED_COLLECTIONS
-        value: "12"
+        value: "60"
       - key: FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO
-        value: "0.88"
+        value: "0.50"
       - key: VERIFIED_DATA_FILE
         value: "data/verified_gifts.json"
       - key: VERIFIED_API_TIMEOUT_SEC
