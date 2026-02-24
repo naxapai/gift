@@ -97,7 +97,7 @@ services:
       - key: BRIDGE_ADMIN_TOKEN
         sync: false
       - key: BRIDGE_UPSTREAM_URL
-        sync: false
+        value: "https://gift-api-upstream.onrender.com/api/gifts/verified"
       - key: BRIDGE_UPSTREAM_TOKEN
         sync: false
       - key: BRIDGE_UPSTREAM_TOKEN_HEADER
@@ -109,6 +109,46 @@ services:
       - key: BRIDGE_FRAGMENT_RESERVE
         value: "true"
       - key: BRIDGE_FRAGMENT_TIMEOUT_SEC
+        value: "25"
+      - key: FRAGMENT_GIFTS_URL
+        value: "https://fragment.com/gifts"
+      - key: FRAGMENT_MAX_COLLECTIONS
+        value: "0"
+      - key: FRAGMENT_MAX_PAGES_PER_COLLECTION
+        value: "500"
+      - key: VERIFIED_DATA_FILE
+        value: "data/verified_gifts.json"
+      - key: VERIFIED_API_TIMEOUT_SEC
+        value: "25"
+      - key: VERIFIED_MIN_GIFTS_ABS
+        value: "200"
+      - key: VERIFIED_MIN_GIFTS_RATIO
+        value: "0.60"
+      - key: VERIFIED_MIN_COLLECTIONS_RATIO
+        value: "0.50"
+      - key: VERIFIED_MIN_MODELS_RATIO
+        value: "0.40"
+
+  - type: web
+    name: gift-api-upstream
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: "python3 upstream_api.py"
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: UPSTREAM_HOST
+        value: 0.0.0.0
+      - key: UPSTREAM_PORT
+        value: "10000"
+      - key: UPSTREAM_REFRESH_SEC
+        value: "120"
+      - key: UPSTREAM_API_TOKEN
+        sync: false
+      - key: UPSTREAM_ADMIN_TOKEN
+        sync: false
+      - key: UPSTREAM_FRAGMENT_TIMEOUT_SEC
         value: "25"
       - key: FRAGMENT_GIFTS_URL
         value: "https://fragment.com/gifts"

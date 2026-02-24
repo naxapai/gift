@@ -368,11 +368,15 @@ TELEGRAM_GIFTS_API_TOKEN=<BRIDGE_API_TOKEN>
 Важные значения в Render:
 
 ```bash
+# service: gift-api-upstream
+UPSTREAM_API_TOKEN=<UPSTREAM_SECRET>
+UPSTREAM_ADMIN_TOKEN=<UPSTREAM_SECRET_OR_SEPARATE>
+
 # service: gift-api-bridge
 BRIDGE_API_TOKEN=<LONG_SECRET>
 BRIDGE_ADMIN_TOKEN=<LONG_SECRET_OR_SEPARATE>
-BRIDGE_UPSTREAM_URL=https://<external-api>/api/gifts/verified
-BRIDGE_UPSTREAM_TOKEN=<external_api_token>
+BRIDGE_UPSTREAM_URL=https://gift-api-upstream.onrender.com/api/gifts/verified
+BRIDGE_UPSTREAM_TOKEN=<UPSTREAM_API_TOKEN>
 
 # service: telegram-gifts-market
 TELEGRAM_GIFTS_API_TOKEN=<same_as_BRIDGE_API_TOKEN>
