@@ -587,26 +587,30 @@ body.auth-locked #staleBanner {
 .overview-status-table {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  gap: 4px;
+  align-items: start;
 }
 
 .overview-status-col {
   display: grid;
-  gap: 4px;
+  grid-template-rows: auto auto;
+  gap: 1px;
   text-align: center;
-  align-items: start;
+  align-content: start;
+  justify-items: center;
   min-width: 0;
 }
 
 .overview-status-head {
-  font-size: clamp(0.68rem, 0.72vw, 0.8rem);
-  line-height: 1.15;
+  font-size: clamp(0.6rem, 0.64vw, 0.72rem);
+  line-height: 1.05;
   white-space: nowrap;
 }
 
 .overview-status-value {
-  font-size: clamp(0.92rem, 1vw, 1.02rem);
-  line-height: 1.1;
+  margin-top: -1px;
+  font-size: clamp(0.86rem, 0.9vw, 0.96rem);
+  line-height: 1.0;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
