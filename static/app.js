@@ -1504,9 +1504,6 @@ function renderSignals() {
   const allSignals = collectSignalItems();
   const buyCount = allSignals.filter((v) => String(v?.reco?.action || "").toUpperCase() === "BUY").length;
   const sellCount = allSignals.filter((v) => String(v?.reco?.action || "").toUpperCase() === "SELL").length;
-  const expectedBuy = Number(state.overview?.buy_signals ?? buyCount);
-  const expectedSell = Number(state.overview?.sell_signals ?? sellCount);
-  const expectedTotal = Math.max(0, expectedBuy) + Math.max(0, expectedSell);
   const activeFilter = state.signals.filter || "all";
   const filtered = allSignals.filter((v) => {
     const action = String(v?.reco?.action || "").toUpperCase();
@@ -1516,9 +1513,9 @@ function renderSignals() {
   });
 
   el.signalsStats.innerHTML = [
-    ["Сигналов", expectedTotal],
-    ["BUY", expectedBuy],
-    ["SELL", expectedSell],
+    ["Сигналов", buyCount + sellCount],
+    ["BUY", buyCount],
+    ["SELL", sellCount],
     ["Показано", filtered.length],
   ].map(([k, v]) => `<div class="kpi-item"><div class="kpi-key">${k}</div><div class="kpi-value">${v}</div></div>`).join("");
 
@@ -2563,11 +2560,7 @@ async function ensurePageData(pageId) {
     return;
   }
   if (pageId === "signals") {
-    if (!state.pageLoaded.signals) {
-      await loadSignalsPage();
-    } else {
-      renderSignals();
-    }
+    await loadSignalsPage();
     return;
   }
   if (pageId === "alerts") {
