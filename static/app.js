@@ -366,6 +366,20 @@ async function fetchJson(url, options = {}, useCache = false) {
   return data;
 }
 
+async function waitForManualRefreshDone(timeoutMs = 120000, pollMs = 2000) {
+  const startedAt = Date.now();
+  while ((Date.now() - startedAt) < timeoutMs) {
+    try {
+      const st = await fetchJson("/api/admin/refresh/status", { cache: "no-store" });
+      if (!st?.running) return st || {};
+    } catch (e) {
+      // ignore and continue polling
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return null;
+}
+
 function authDisplayName(user) {
   if (!user) return "";
   const first = String(user.first_name || "").trim();
@@ -928,6 +942,9 @@ function renderOverview(overview) {
 
   el.staleBanner.classList.toggle("hidden", !overview.data_stale);
 
+  const signalItems = collectSignalItems();
+  const signalBuy = signalItems.filter((v) => String(v?.reco?.action || "").toUpperCase() === "BUY").length;
+  const signalSell = signalItems.filter((v) => String(v?.reco?.action || "").toUpperCase() === "SELL").length;
   const kpis = [
     ["Кол-во коллекций", overview.base_count],
     ["Мин. цена", `${formatTon(overview.floor_ton_min)} TON`],
@@ -937,8 +954,8 @@ function renderOverview(overview) {
     ["Всего продано", overview.total_sold ?? 0],
     ["Среднее 7д", formatPct(overview.avg_change_7d || 0)],
     ["Среднее 30д", formatPct(overview.avg_change_30d || 0)],
-    ["Сигналы покупки", overview.buy_signals],
-    ["Сигналы продажи", overview.sell_signals],
+    ["Сигналы покупки", signalItems.length ? signalBuy : (overview.buy_signals ?? 0)],
+    ["Сигналы продажи", signalItems.length ? signalSell : (overview.sell_signals ?? 0)],
     ["Аномалии", overview.anomalies],
     ["Курс в ⭐", state.starsRate?.stars_per_ton ? `${Math.round(state.starsRate.stars_per_ton)}` : "н/д"],
   ];
@@ -2251,9 +2268,15 @@ async function loadVariantsForFilters(force = false) {
   if (!force && state.variants.length && (nowMs - state.variantsCache.loadedAtMs) < state.variantsCache.ttlMs) {
     return;
   }
-  if (!state.bases.length) {
-    const basesResp = await fetchJson("/api/bases", {}, true);
+  if (force || !state.bases.length) {
+    const basesResp = await fetchJson("/api/bases", {}, !force);
     state.bases = basesResp.items || [];
+    if (el.catalogBaseSelect) {
+      fillSelect(el.catalogBaseSelect, state.bases, "base_id", "name", "Выберите коллекцию");
+      if (state.catalogFilters.baseId && !state.bases.some((b) => b.base_id === state.catalogFilters.baseId)) {
+        state.catalogFilters.baseId = state.bases[0]?.base_id || "";
+      }
+    }
     if (!state.bases.length) {
       state.variants = [];
       state.variantsCache.loadedAtMs = nowMs;
@@ -2503,8 +2526,13 @@ function bindEvents() {
     el.refreshBtn.disabled = true;
     try {
       const refresh = await fetchJson("/api/admin/refresh", { method: "POST" });
+      if (refresh?.running) {
+        await waitForManualRefreshDone(120000, 2000);
+      }
       state.requestCache.clear();
+      state.variantsCache.loadedAtMs = 0;
       await loadAll();
+      await loadSignalsPage();
       if (refresh?.started === false) {
         showToast("Обновление уже выполняется");
       } else if (refresh?.mode === "full") {

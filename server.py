@@ -206,6 +206,20 @@ def _start_manual_refresh() -> dict:
     }
 
 
+def _refresh_status_snapshot() -> dict:
+    with _REFRESH_LOCK:
+        return {
+            "ok": True,
+            "running": bool(_REFRESH_STATUS.get("running")),
+            "mode": _REFRESH_STATUS.get("mode") or "",
+            "started_at": _REFRESH_STATUS.get("started_at"),
+            "last_mode": _REFRESH_STATUS.get("last_mode") or "",
+            "last_started_at": _REFRESH_STATUS.get("last_started_at"),
+            "last_finished_at": _REFRESH_STATUS.get("last_finished_at"),
+            "last_error": _REFRESH_STATUS.get("last_error") or "",
+        }
+
+
 class AuthStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -955,6 +969,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/market/overview":
             _json_response(self, _state().market_overview())
+            return
+
+        if path == "/api/admin/refresh/status":
+            _json_response(self, _refresh_status_snapshot(), cache_control="no-store")
             return
 
         if path == "/api/bases":
