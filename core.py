@@ -80,6 +80,21 @@ def _safe_pstdev(values: Iterable[float]) -> float:
     return float(pstdev(vals)) if len(vals) > 1 else 0.0
 
 
+def _signals_quality_degraded(variants_count: int, gifts_count: int, model_count: int) -> bool:
+    min_gifts = max(1, int(os.getenv("SIGNALS_QUALITY_MIN_GIFTS", "5000")))
+    min_variants_abs = max(1, int(os.getenv("SIGNALS_QUALITY_MIN_VARIANTS_ABS", "200")))
+    min_variants_ratio = max(0.0, min(1.0, float(os.getenv("SIGNALS_QUALITY_MIN_VARIANTS_RATIO", "0.02"))))
+    min_models = max(1, int(os.getenv("SIGNALS_QUALITY_MIN_MODELS", "120")))
+    if gifts_count < min_gifts:
+        return False
+    variants_floor = max(min_variants_abs, int(gifts_count * min_variants_ratio))
+    # If model diversity is sufficiently high, allow signal generation even when
+    # variant buckets are still being enriched asynchronously.
+    if model_count >= min_models:
+        return False
+    return variants_count <= variants_floor
+
+
 def _percentile(values: List[float], p: float) -> float:
     if not values:
         return 0.0
@@ -1127,9 +1142,10 @@ class GiftAnalyticsService:
         total_sold = source_sold if source_sold > 0 else trades_total
         variants_count = len(variants)
         gifts_count = active_total
-        signals_quality_degraded = (
-            gifts_count >= 5000
-            and variants_count <= max(200, int(gifts_count * 0.02))
+        signals_quality_degraded = _signals_quality_degraded(
+            variants_count=variants_count,
+            gifts_count=gifts_count,
+            model_count=len(models),
         )
         if signals_quality_degraded:
             buy_signals = 0
@@ -1894,9 +1910,17 @@ class GiftAnalyticsService:
             updated_at = self.state.get("updated_at")
         gifts_count = sum(int((v.get("metrics") or {}).get("active_listings", 0) or 0) for v in variants)
         variants_count = len(variants)
-        signals_quality_degraded = (
-            gifts_count >= 5000
-            and variants_count <= max(200, int(gifts_count * 0.02))
+        models_count = len(
+            {
+                (v.get("traits") or {}).get("model", {}).get("id")
+                for v in variants
+                if (v.get("traits") or {}).get("model", {}).get("id")
+            }
+        )
+        signals_quality_degraded = _signals_quality_degraded(
+            variants_count=variants_count,
+            gifts_count=gifts_count,
+            model_count=models_count,
         )
         if signals_quality_degraded:
             payload = {
