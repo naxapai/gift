@@ -2218,6 +2218,8 @@ class GiftAnalyticsService:
         score100 = round(score * 100.0, 1)
 
         confidence = _clamp(0.3 + 0.7 * min(1.0, sales24h / 30.0), 0.0, 1.0)
+        if sales24h < 12 and undervalue > 0.015 and score >= 0.22:
+            confidence = _clamp(confidence + min(0.06, 0.015 + (undervalue * 0.35)), 0.0, 1.0)
         conf_pct = round(confidence * 100.0, 1)
 
         # Use fair-based exit and apply fee as a floor cut, not as unconditional negative constant.
