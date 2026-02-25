@@ -2236,6 +2236,10 @@ class GiftAnalyticsService:
         forecast_min = _clamp(point_pred - spread, -0.80, 0.80)
         forecast_max = _clamp(point_pred + spread, -0.80, 0.80)
         forecast_conf = _clamp(confidence + (0.10 if abs(point_pred) > 0.12 else 0.0) - (0.10 if floor_type == "synthetic" else 0.0), 0.0, 1.0)
+        if sales24h < 10:
+            # Sparse datasets tend to produce over-wide intervals; keep sell-trigger stable.
+            forecast_min = _clamp(forecast_min, -0.40, 0.40)
+            forecast_max = _clamp(forecast_max, -0.40, 0.40)
 
         lots_ref = max(30.0, float(supply_s) / 150.0 if supply_s > 0 else 30.0)
         sell_pressure = _clamp((active_lots / lots_ref) - liquidity24h, 0.0, 1.0)
@@ -2250,13 +2254,20 @@ class GiftAnalyticsService:
         if score >= 0.62 and undervalue >= 0.22 and expected_profit_pct >= 0.18 and forecast_max > -0.05:
             action_hint = "BUY"
         else:
-            hard_sell = (
-                (undervalue < -0.10 and forecast_max < -0.04 and score < 0.35)
-                or (undervalue < -0.20 and forecast_max < 0.02 and score < 0.30)
-                or (forecast_max < -0.25 and score < 0.30)
-                or (score < 0.18 and forecast_max < 0 and sell_pressure > 0.65)
+            forecast_reliable = (confidence >= 0.55) or (sales24h >= 10)
+            forecast_neg_strong = forecast_reliable and (forecast_max < -0.04)
+            neutral_zone = (
+                undervalue > 0.02
+                and expected_profit_pct <= 0.0
+                and 0.20 <= score <= 0.40
             )
-            if hard_sell:
+            hard_sell = (
+                (undervalue < -0.10 and forecast_neg_strong and score < 0.35)
+                or (undervalue < -0.20 and (forecast_max < 0.02) and score < 0.30)
+                or (forecast_reliable and forecast_max < -0.25 and score < 0.30)
+                or (score < 0.18 and forecast_reliable and forecast_max < 0 and sell_pressure > 0.65)
+            )
+            if hard_sell and not neutral_zone:
                 action_hint = "SELL"
             # Soft BUY for strong profitable setups in sparse datasets.
             elif score >= 0.45 and undervalue >= 0.12 and expected_profit_pct >= 0.05 and forecast_max > -0.10:
