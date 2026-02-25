@@ -76,6 +76,8 @@ services:
         value: "Bearer "
       - key: REALTIME_INTERVAL_SEC
         value: "3"
+      - key: V1_SIGNAL_ENGINE_MODE
+        value: "tz"
       - key: AUTH_REQUIRED
         value: "false"
       - key: ADMIN_TELEGRAM_USER_ID
