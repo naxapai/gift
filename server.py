@@ -1358,7 +1358,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/overview":
-            _json_response(self, _state().overview_v1(), cache_control="no-store")
+            params = parse_qs(parsed.query)
+            mode = (params.get("mode") or [None])[0]
+            _json_response(self, _state().overview_v1(mode=mode), cache_control="no-store")
             return
 
         if path == "/v1/collections":
@@ -1374,6 +1376,8 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if path.startswith("/v1/collections/") and path.count("/") == 3:
             collection_id = unquote(path.split("/")[-1])
+            params = parse_qs(parsed.query)
+            mode = (params.get("mode") or [None])[0]
             data = _state().collection_details_v1(collection_id)
             if not data:
                 _safe_send_error(self, HTTPStatus.NOT_FOUND)
@@ -1394,6 +1398,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 min_score = None
             action = (params.get("action") or [None])[0]
             sort = (params.get("sort") or ["score_desc"])[0]
+            mode = (params.get("mode") or [None])[0]
             try:
                 limit = int((params.get("limit") or ["50"])[0])
             except Exception:
@@ -1409,13 +1414,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                 sort=sort,
                 limit=limit,
                 cursor=cursor,
+                mode=mode,
             )
             _json_response(self, data, cache_control="no-store")
             return
 
         if path.startswith("/v1/variants/") and path.count("/") == 3:
             variant_id = unquote(path.split("/")[-1])
-            data = _state().variant_details_v1(variant_id)
+            params = parse_qs(parsed.query)
+            mode = (params.get("mode") or [None])[0]
+            data = _state().variant_details_v1(variant_id, mode=mode)
             if not data:
                 _safe_send_error(self, HTTPStatus.NOT_FOUND)
                 return
@@ -1431,18 +1439,21 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 min_score = None
             since = (params.get("since") or [None])[0]
+            mode = (params.get("mode") or [None])[0]
             try:
                 limit = int((params.get("limit") or ["50"])[0])
             except Exception:
                 limit = 50
             cursor = (params.get("cursor") or [None])[0]
-            data = _state().signals_v1(signal_type=signal_type, min_score=min_score, since=since, limit=limit, cursor=cursor)
+            data = _state().signals_v1(signal_type=signal_type, min_score=min_score, since=since, limit=limit, cursor=cursor, mode=mode)
             _json_response(self, data, cache_control="no-store")
             return
 
         if path.startswith("/v1/signals/") and path.count("/") == 3:
             signal_id = unquote(path.split("/")[-1])
-            data = _state().signal_by_id_v1(signal_id)
+            params = parse_qs(parsed.query)
+            mode = (params.get("mode") or [None])[0]
+            data = _state().signal_by_id_v1(signal_id, mode=mode)
             if not data:
                 _safe_send_error(self, HTTPStatus.NOT_FOUND)
                 return

@@ -2252,10 +2252,17 @@ class GiftAnalyticsService:
             "vol30m": round(vol30m, 6),
         }
 
-    def _v1_variant_summary(self, v: dict) -> dict:
+    def _effective_v1_mode(self, mode: str | None = None) -> str:
+        raw = str(mode or self.v1_signal_engine_mode or "legacy").strip().lower()
+        if raw in {"tz", "v1"}:
+            return "tz"
+        return "legacy"
+
+    def _v1_variant_summary(self, v: dict, mode: str | None = None) -> dict:
         traits = v.get("traits") or {}
         mm = self._tz_signal_math(v)
         reco = v.get("reco") or {}
+        eff_mode = self._effective_v1_mode(mode)
         base_id = str(v.get("base_id") or "")
         base_name = self.bases.get(base_id).name if base_id in self.bases else base_id
         action_hint = mm["action_hint"]
@@ -2263,7 +2270,7 @@ class GiftAnalyticsService:
         conf_pct = mm["conf_pct"]
         reasons = mm["reasons"]
         risk_flags = mm["risk_flags"]
-        if self.v1_signal_engine_mode != "tz":
+        if eff_mode != "tz":
             action_hint = self._legacy_action_norm(reco.get("action"))
             try:
                 score100 = round(float(reco.get("reco_score") or score100), 1)
@@ -2309,11 +2316,34 @@ class GiftAnalyticsService:
             "updated_at": v.get("updated_at") or self.state.get("updated_at") or _iso(_now()),
         }
 
-    def _v1_signal(self, v: dict) -> dict:
-        variant = self._v1_variant_summary(v)
+    def _v1_signal(self, v: dict, mode: str | None = None) -> dict:
+        eff_mode = self._effective_v1_mode(mode)
+        variant = self._v1_variant_summary(v, mode=eff_mode)
         mm = self._tz_signal_math(v)
+        reco = v.get("reco") or {}
         signal_ts = variant.get("updated_at") or self.state.get("updated_at") or _iso(_now())
         signal_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{signal_ts}|{variant.get('variant_id')}|{variant.get('action_hint')}"))
+        price_ton = variant.get("price_ton")
+        floor_ton = variant.get("floor_ton")
+        fair_ton = variant.get("fair_ton")
+        undervalue = variant.get("undervalue")
+        expected_profit_pct = variant.get("expected_profit_pct")
+        forecast_min = mm.get("forecast24h_pct_min")
+        forecast_max = mm.get("forecast24h_pct_max")
+        if eff_mode != "tz":
+            forecast = reco.get("forecast") if isinstance(reco, dict) else {}
+            rng = (forecast or {}).get("range_pct") if isinstance(forecast, dict) else None
+            if isinstance(rng, list) and len(rng) >= 2:
+                try:
+                    forecast_min = float(rng[0])
+                    forecast_max = float(rng[1])
+                except Exception:
+                    pass
+            # Legacy mode doesn't have stable Fair/Undervalue/ExpectedProfit contract.
+            # Keep nullable fields null to avoid mixed-engine contradictions in one signal.
+            fair_ton = None
+            undervalue = None
+            expected_profit_pct = None
         return {
             "signal_id": signal_id,
             "ts": signal_ts,
@@ -2326,17 +2356,18 @@ class GiftAnalyticsService:
             "pattern": variant.get("pattern"),
             "score100": variant.get("score100"),
             "conf_pct": variant.get("conf_pct"),
-            "price_ton": variant.get("price_ton"),
-            "floor_ton": variant.get("floor_ton"),
-            "fair_ton": variant.get("fair_ton"),
-            "undervalue": variant.get("undervalue"),
-            "expected_profit_pct": variant.get("expected_profit_pct"),
-            "forecast24h_pct_min": mm.get("forecast24h_pct_min"),
-            "forecast24h_pct_max": mm.get("forecast24h_pct_max"),
+            "price_ton": price_ton,
+            "floor_ton": floor_ton,
+            "fair_ton": fair_ton,
+            "undervalue": undervalue,
+            "expected_profit_pct": expected_profit_pct,
+            "forecast24h_pct_min": forecast_min,
+            "forecast24h_pct_max": forecast_max,
             "active_lots": mm.get("active_lots"),
             "liquidity24h": mm.get("liquidity24h"),
             "reasons": variant.get("reasons") or [],
             "risk_flags": variant.get("risk_flags") or [],
+            "engine_mode": eff_mode,
         }
 
     def _cursor_offset(self, cursor: str | None) -> int:
@@ -2347,8 +2378,9 @@ class GiftAnalyticsService:
         except Exception:
             return 0
 
-    def overview_v1(self) -> dict:
-        variants = [self._v1_variant_summary(v) for v in self.variants.values()]
+    def overview_v1(self, mode: str | None = None) -> dict:
+        eff_mode = self._effective_v1_mode(mode)
+        variants = [self._v1_variant_summary(v, mode=eff_mode) for v in self.variants.values()]
         scores = [float(v.get("score100") or 0.0) for v in variants]
         market_index = round(_safe_mean(scores), 2) if scores else 0.0
         market_state = "флет"
@@ -2356,7 +2388,7 @@ class GiftAnalyticsService:
             market_state = "рост"
         elif market_index <= 40:
             market_state = "падение"
-        top_signals = self.signals_v1(limit=8).get("items") or []
+        top_signals = self.signals_v1(limit=8, mode=eff_mode).get("items") or []
         recommendation = top_signals[0] if top_signals else None
         volume24h = round(sum(float((v.get("metrics") or {}).get("volume_ton_24h", 0) or 0) for v in self.variants.values()), 6)
         avg_liq = round(_safe_mean(float((v.get("metrics") or {}).get("liquidity_score_24h", 0) or 0) for v in self.variants.values()), 6)
@@ -2385,6 +2417,7 @@ class GiftAnalyticsService:
                 }
             ],
             "stale": self.is_stale(),
+            "engine_mode": eff_mode,
         }
 
     def collections_v1(self, q: str = "", limit: int = 50, cursor: str | None = None) -> dict:
@@ -2454,10 +2487,12 @@ class GiftAnalyticsService:
         sort: str = "score_desc",
         limit: int = 50,
         cursor: str | None = None,
+        mode: str | None = None,
     ) -> dict:
+        eff_mode = self._effective_v1_mode(mode)
         rows = []
         for v in self.variants.values():
-            summary = self._v1_variant_summary(v)
+            summary = self._v1_variant_summary(v, mode=eff_mode)
             if collection_id and summary["collection_id"] != collection_id:
                 continue
             if model and summary["model"].lower() != str(model).lower():
@@ -2497,7 +2532,8 @@ class GiftAnalyticsService:
         next_cursor = str(off + lim) if (off + lim) < len(rows) else None
         return {"items": chunk, "next_cursor": next_cursor}
 
-    def variant_details_v1(self, variant_id: str) -> dict | None:
+    def variant_details_v1(self, variant_id: str, mode: str | None = None) -> dict | None:
+        eff_mode = self._effective_v1_mode(mode)
         v = self.variants.get(variant_id)
         if not v:
             mapped = self._listing_to_variant(variant_id)
@@ -2505,7 +2541,7 @@ class GiftAnalyticsService:
                 v = self.variants.get(mapped)
         if not v:
             return None
-        summary = self._v1_variant_summary(v)
+        summary = self._v1_variant_summary(v, mode=eff_mode)
         listings = []
         for lid, row in self.listing_state.items():
             if str((row or {}).get("variant_id") or "") != str(v.get("variant_id") or ""):
@@ -2520,7 +2556,8 @@ class GiftAnalyticsService:
                 }
             )
         listings.sort(key=lambda x: float(x.get("price_ton") or 0.0))
-        return {"variant": summary, "listings": listings, "breakdown": self._tz_signal_math(v)}
+        breakdown = self._tz_signal_math(v) if eff_mode == "tz" else {"engine_mode": "legacy"}
+        return {"variant": summary, "listings": listings, "breakdown": breakdown}
 
     def signals_v1(
         self,
@@ -2529,11 +2566,13 @@ class GiftAnalyticsService:
         since: str | None = None,
         limit: int = 50,
         cursor: str | None = None,
+        mode: str | None = None,
     ) -> dict:
+        eff_mode = self._effective_v1_mode(mode)
         since_dt = _parse_ts(since) if since else None
         items = []
         for v in self.variants.values():
-            sig = self._v1_signal(v)
+            sig = self._v1_signal(v, mode=eff_mode)
             if signal_type and sig.get("type") != signal_type:
                 continue
             if min_score is not None and (float(sig.get("score100") or 0.0) / 100.0) < float(min_score):
@@ -2548,10 +2587,10 @@ class GiftAnalyticsService:
         lim = max(1, min(int(limit or 50), 200))
         chunk = items[off : off + lim]
         next_cursor = str(off + lim) if (off + lim) < len(items) else None
-        return {"items": chunk, "next_cursor": next_cursor}
+        return {"items": chunk, "next_cursor": next_cursor, "engine_mode": eff_mode}
 
-    def signal_by_id_v1(self, signal_id: str) -> dict | None:
-        for item in self.signals_v1(limit=5000).get("items") or []:
+    def signal_by_id_v1(self, signal_id: str, mode: str | None = None) -> dict | None:
+        for item in self.signals_v1(limit=5000, mode=mode).get("items") or []:
             if str(item.get("signal_id") or "") == str(signal_id or ""):
                 return item
         return None
