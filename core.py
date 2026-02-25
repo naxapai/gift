@@ -2294,7 +2294,6 @@ class GiftAnalyticsService:
                 or (undervalue > 0.015 and score >= 0.22 and forecast_max > -0.14 and confidence >= 0.34)
                 or (confidence < 0.50 and undervalue > 0.025 and score >= 0.235)
                 or (confidence < 0.50 and undervalue >= 0.008 and score >= 0.215 and forecast_max > -0.45)
-                or (confidence < 0.52 and score >= 0.225 and forecast_max > -0.40 and expected_profit_pct >= 0.0)
             ):
                 action_hint = "WATCH"
             else:
