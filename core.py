@@ -2273,9 +2273,9 @@ class GiftAnalyticsService:
                 and 0.20 <= score <= 0.40
             )
             hard_sell = (
-                (undervalue < -0.10 and forecast_neg_strong and score < 0.35)
-                or (undervalue < -0.20 and (forecast_max < 0.02) and score < 0.30)
-                or (forecast_reliable and forecast_max < -0.25 and score < 0.30)
+                (undervalue < -0.12 and forecast_neg_strong and score < 0.30 and sell_pressure > 0.45)
+                or (undervalue < -0.24 and (forecast_max < 0.02) and score < 0.28 and sell_pressure > 0.45)
+                or (forecast_reliable and forecast_max < -0.30 and score < 0.27 and sell_pressure > 0.55)
                 or (score < 0.18 and forecast_reliable and forecast_max < 0 and sell_pressure > 0.65)
             )
             if hard_sell and not neutral_zone:
@@ -2284,6 +2284,8 @@ class GiftAnalyticsService:
             elif score >= 0.45 and undervalue >= 0.12 and expected_profit_pct >= 0.05 and forecast_max > -0.10:
                 action_hint = "BUY"
             elif score >= 0.24 and undervalue >= 0.055 and expected_profit_pct >= 0.018 and forecast_max > -0.09 and confidence >= 0.38:
+                action_hint = "BUY"
+            elif score >= 0.22 and undervalue >= 0.06 and forecast_max > -0.18 and confidence >= 0.32 and expected_profit_pct >= 0.0:
                 action_hint = "BUY"
             elif (
                 score >= 0.30
@@ -2298,7 +2300,6 @@ class GiftAnalyticsService:
                 or (confidence < 0.50 and undervalue > 0.025 and score >= 0.235)
                 or (confidence < 0.50 and undervalue >= 0.006 and score >= 0.21 and forecast_max >= -0.42)
                 or (confidence < 0.50 and undervalue >= 0.015 and score >= 0.22 and forecast_max >= -0.42)
-                or (confidence < 0.50 and undervalue >= -0.03 and score >= 0.20 and forecast_max >= -0.42)
             ):
                 action_hint = "WATCH"
             else:
