@@ -2198,10 +2198,10 @@ class GiftAnalyticsService:
             risk_pen += 0.15
             risk_flags.append("SYNTH_FLOOR")
         if sales24h < 5:
-            risk_pen += 0.10
+            risk_pen += 0.06
             risk_flags.append("THIN_LIQUIDITY")
         if self.state.get("last_error"):
-            risk_pen += 0.10
+            risk_pen += 0.06
             risk_flags.append("PROVIDER_DEGRADED")
         if float(metrics.get("pump_risk_24h") or 0.0) > 0.8:
             risk_pen += 0.25
@@ -2246,6 +2246,7 @@ class GiftAnalyticsService:
         reasons.append(f"Активных лотов: {active_lots}.")
         reasons.append(f"Ликвидность 24h: {round(liquidity24h, 2)}.")
 
+        # Strong BUY: strict threshold from spec.
         if score >= 0.62 and undervalue >= 0.22 and expected_profit_pct >= 0.18 and forecast_max > -0.05:
             action_hint = "BUY"
         else:
@@ -2255,11 +2256,15 @@ class GiftAnalyticsService:
             )
             if hard_sell:
                 action_hint = "SELL"
+            # Soft BUY for strong profitable setups in sparse datasets.
+            elif score >= 0.45 and undervalue >= 0.12 and expected_profit_pct >= 0.05 and forecast_max > -0.10:
+                action_hint = "BUY"
             elif (
-                score >= 0.35
-                or confidence >= 0.50
-                or undervalue > 0.06
+                score >= 0.30
+                or confidence >= 0.45
+                or undervalue > 0.03
                 or (expected_profit_pct > 0.0 and forecast_max > -0.10)
+                or (undervalue > 0 and forecast_max > -0.20 and confidence >= 0.35)
             ):
                 action_hint = "WATCH"
             else:
