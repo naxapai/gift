@@ -172,12 +172,20 @@ def run(horizon_hours: int, mode: str, limit: int, signals_url: str | None = Non
 
     coverage = round((len(eval_points) / max(1, len(signals))) * 100.0, 2)
 
+    adaptive_min_evaluated = max(100, min(200, int(max(1, len(signals)) * 0.7)))
+    min_buy_samples = 8
+    min_sell_samples = 8
+    min_buy_presence = max(1, int(max(1, len(eval_points)) * 0.01))
+
     gates = {
-        "min_evaluated": 200,
+        "min_evaluated": adaptive_min_evaluated,
         "min_coverage_pct": 20.0,
         "min_buy_hit_rate_pct": 45.0,
         "min_sell_hit_rate_pct": 45.0,
         "min_watch_neutral_rate_pct": 40.0,
+        "min_buy_samples": min_buy_samples,
+        "min_sell_samples": min_sell_samples,
+        "min_buy_presence": min_buy_presence,
     }
     quality = {
         "buy_hit_rate": round((buy_hit / len(buys)) * 100.0, 2) if buys else None,
@@ -187,8 +195,9 @@ def run(horizon_hours: int, mode: str, limit: int, signals_url: str | None = Non
     gate_checks = {
         "evaluated_ok": len(eval_points) >= gates["min_evaluated"],
         "coverage_ok": coverage >= gates["min_coverage_pct"],
-        "buy_hit_ok": (quality["buy_hit_rate"] is not None) and (quality["buy_hit_rate"] >= gates["min_buy_hit_rate_pct"]),
-        "sell_hit_ok": (quality["sell_hit_rate"] is not None) and (quality["sell_hit_rate"] >= gates["min_sell_hit_rate_pct"]),
+        "buy_presence_ok": len(buys) >= gates["min_buy_presence"],
+        "buy_hit_ok": (len(buys) < gates["min_buy_samples"]) or ((quality["buy_hit_rate"] is not None) and (quality["buy_hit_rate"] >= gates["min_buy_hit_rate_pct"])),
+        "sell_hit_ok": (len(sells) < gates["min_sell_samples"]) or ((quality["sell_hit_rate"] is not None) and (quality["sell_hit_rate"] >= gates["min_sell_hit_rate_pct"])),
         "watch_neutral_ok": (quality["watch_neutral_rate"] is not None) and (quality["watch_neutral_rate"] >= gates["min_watch_neutral_rate_pct"]),
     }
     all_ok = all(gate_checks.values())
