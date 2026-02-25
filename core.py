@@ -363,6 +363,7 @@ class GiftAnalyticsService:
         }
         self.fragment_bootstrap_cache = os.getenv("FRAGMENT_BOOTSTRAP_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
         self.verified_source = os.getenv("VERIFIED_SOURCE", "telegram_api").strip().lower()
+        self.v1_signal_engine_mode = os.getenv("V1_SIGNAL_ENGINE_MODE", "legacy").strip().lower()
         self._restore_from_listing_state()
         allow_bootstrap_from_file = self.verified_source in {"file", "fragment", "hybrid"}
         if self.fragment_bootstrap_cache and allow_bootstrap_from_file and not self.variants:
@@ -2096,6 +2097,35 @@ class GiftAnalyticsService:
         _save_json(FAVORITES_FILE, data)
         return {"ok": True}
 
+    def _legacy_action_norm(self, action: str | None) -> str:
+        raw = str(action or "").upper()
+        if raw == "BUY":
+            return "BUY"
+        if raw == "SELL":
+            return "SELL"
+        if raw in {"WATCH", "HOLD"}:
+            return "WATCH"
+        return "SKIP"
+
+    def _legacy_reasons_and_risks(self, reco: dict) -> tuple[list[str], list[str]]:
+        reasons_out: list[str] = []
+        for row in (reco.get("reasons") or []):
+            if isinstance(row, dict):
+                txt = str(row.get("text") or row.get("title") or "").strip()
+            else:
+                txt = str(row or "").strip()
+            if txt:
+                reasons_out.append(txt)
+        risks_out: list[str] = []
+        for row in (reco.get("risks") or []):
+            if isinstance(row, dict):
+                code = str(row.get("code") or row.get("title") or "").strip()
+            else:
+                code = str(row or "").strip()
+            if code:
+                risks_out.append(code)
+        return reasons_out[:4], risks_out[:4]
+
     def _tz_signal_math(self, v: dict) -> dict:
         metrics = v.get("metrics") or {}
         active_lots = int(metrics.get("active_listings") or 0)
@@ -2225,8 +2255,31 @@ class GiftAnalyticsService:
     def _v1_variant_summary(self, v: dict) -> dict:
         traits = v.get("traits") or {}
         mm = self._tz_signal_math(v)
+        reco = v.get("reco") or {}
         base_id = str(v.get("base_id") or "")
         base_name = self.bases.get(base_id).name if base_id in self.bases else base_id
+        action_hint = mm["action_hint"]
+        score100 = mm["score100"]
+        conf_pct = mm["conf_pct"]
+        reasons = mm["reasons"]
+        risk_flags = mm["risk_flags"]
+        if self.v1_signal_engine_mode != "tz":
+            action_hint = self._legacy_action_norm(reco.get("action"))
+            try:
+                score100 = round(float(reco.get("reco_score") or score100), 1)
+            except Exception:
+                score100 = mm["score100"]
+            try:
+                conf_pct = round(float(reco.get("confidence") or conf_pct), 1)
+            except Exception:
+                conf_pct = mm["conf_pct"]
+            reasons_legacy, risks_legacy = self._legacy_reasons_and_risks(reco)
+            if reasons_legacy:
+                reasons = reasons_legacy
+            if risks_legacy:
+                risk_flags = risks_legacy
+        score = _clamp(float(score100) / 100.0, 0.0, 1.0)
+        confidence = _clamp(float(conf_pct) / 100.0, 0.0, 1.0)
         return {
             "variant_id": str(v.get("variant_id") or ""),
             "collection_id": base_id,
@@ -2244,14 +2297,14 @@ class GiftAnalyticsService:
             "trend_t": mm["trend_t"],
             "liq_score": mm["liq_score"],
             "risk_pen": mm["risk_pen"],
-            "score": mm["score"],
-            "score100": mm["score100"],
-            "confidence": mm["confidence"],
-            "conf_pct": mm["conf_pct"],
+            "score": round(score, 6),
+            "score100": score100,
+            "confidence": round(confidence, 6),
+            "conf_pct": conf_pct,
             "expected_profit_pct": mm["expected_profit_pct"],
-            "action_hint": mm["action_hint"],
-            "reasons": mm["reasons"],
-            "risk_flags": mm["risk_flags"],
+            "action_hint": action_hint,
+            "reasons": reasons,
+            "risk_flags": risk_flags,
             "stale": self.is_stale(),
             "updated_at": v.get("updated_at") or self.state.get("updated_at") or _iso(_now()),
         }
