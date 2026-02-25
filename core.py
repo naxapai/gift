@@ -2241,8 +2241,10 @@ class GiftAnalyticsService:
         sparse_factor = _clamp((10.0 - float(sales24h)) / 10.0, 0.0, 1.0)
         point_pred = (point_pred * (1.0 - 0.55 * sparse_factor)) + (d_f_24h * 0.25 * sparse_factor)
         spread = spread * (1.0 - 0.35 * sparse_factor)
-        lo_bound = -0.80 + 0.35 * sparse_factor
-        hi_bound = 0.80 - 0.35 * sparse_factor
+        # Adaptive forecast bounds: keep sparse/low-confidence variants from extreme ranges.
+        volatility_cap = _clamp(0.22 + (0.28 * confidence) + (0.10 * (1.0 - sparse_factor)), 0.24, 0.55)
+        lo_bound = -volatility_cap
+        hi_bound = volatility_cap
         forecast_min = _clamp(point_pred - spread, lo_bound, hi_bound)
         forecast_max = _clamp(point_pred + spread, lo_bound, hi_bound)
         forecast_conf = _clamp(confidence + (0.10 if abs(point_pred) > 0.12 else 0.0) - (0.10 if floor_type == "synthetic" else 0.0), 0.0, 1.0)
