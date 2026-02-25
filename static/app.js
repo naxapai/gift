@@ -1090,6 +1090,36 @@ function normalizeOverviewError(raw) {
   return text;
 }
 
+function normalizeOverviewFromV1(v1) {
+  const counts = v1?.counts || {};
+  const providerHealth = Array.isArray(v1?.provider_health) ? v1.provider_health : [];
+  const topSignals = Array.isArray(v1?.top_signals) ? v1.top_signals : [];
+  return {
+    updated_at: providerHealth[0]?.ts || new Date().toISOString(),
+    market_state: v1?.market_state || "неизвестно",
+    gifts_count: Number(counts.gifts || 0),
+    base_count: Number(counts.collections || 0),
+    model_count: Number(counts.models || 0),
+    floor_ton_min: null,
+    floor_ton_median: null,
+    active_listings: Number(counts.gifts || 0),
+    total_for_sale: Number(counts.gifts || 0),
+    total_sold: 0,
+    key_metrics: v1?.key_metrics || {},
+    provider_health: providerHealth,
+    avg_change_7d: 0,
+    avg_change_30d: 0,
+    buy_signals: topSignals.filter((x) => String(x?.type || "").toUpperCase() === "BUY").length,
+    sell_signals: topSignals.filter((x) => String(x?.type || "").toUpperCase() === "SELL").length,
+    anomalies: 0,
+    data_stale: Boolean(v1?.stale),
+    ingestion_lag_seconds: 0,
+    last_error: "",
+    signals_quality_degraded: false,
+    signals_quality_reason: "",
+  };
+}
+
 function renderOverview(overview) {
   state.overview = overview;
   startMskClock();
@@ -1802,7 +1832,7 @@ function renderScreeners(items) {
 
 function collectSignalItems() {
   const items = Array.isArray(state.signals.items) ? state.signals.items : [];
-  return items.slice().sort((a, b) => Number(b?.reco?.reco_score || 0) - Number(a?.reco?.reco_score || 0));
+  return items.slice().sort((a, b) => Number(b?.score100 ?? b?.reco?.reco_score ?? 0) - Number(a?.score100 ?? a?.reco?.reco_score ?? 0));
 }
 
 function renderSignals() {
@@ -1822,7 +1852,7 @@ function renderSignals() {
   const sellCount = Number(state.signals.sellTotal || 0);
   const activeFilter = state.signals.filter || "all";
   const filtered = allSignals.filter((v) => {
-    const action = String(v?.reco?.action || "").toUpperCase();
+    const action = String(v?.type || v?.reco?.action || "").toUpperCase();
     if (activeFilter === "buy") return action === "BUY";
     if (activeFilter === "sell") return action === "SELL";
     return true;
@@ -1843,15 +1873,17 @@ function renderSignals() {
 
   el.signalsBody.innerHTML = filtered
     .map((v) => {
-      const action = String(v?.reco?.action || "HOLD").toUpperCase();
-      const floor = Number(v?.metrics?.floor_ton || 0);
+      const action = String(v?.type || v?.reco?.action || "HOLD").toUpperCase();
+      const floor = Number(v?.floor_ton ?? v?.metrics?.floor_ton ?? 0);
       const stars = Number(v?.metrics?.floor_stars_est || starsFromTon(floor) || 0);
-      const delta1h = metricDelta(v?.metrics, "1h");
-      const delta12h = metricDelta(v?.metrics, "12h");
-      const delta24h = metricDelta(v?.metrics, "24h");
-      const variantLabel = v?.traits?.model?.name && v?.traits?.background?.name && v?.traits?.pattern?.name
-        ? `${v.traits.model.name} • ${v.traits.background.name} • ${v.traits.pattern.name}`
-        : (v.title || v.variant_id);
+      const delta1h = v?.metrics ? metricDelta(v?.metrics, "1h") : null;
+      const delta12h = v?.metrics ? metricDelta(v?.metrics, "12h") : null;
+      const delta24h = v?.metrics ? metricDelta(v?.metrics, "24h") : null;
+      const variantLabel = (v?.model && v?.background && v?.pattern)
+        ? `${v.model} • ${v.background} • ${v.pattern}`
+        : (v?.traits?.model?.name && v?.traits?.background?.name && v?.traits?.pattern?.name
+          ? `${v.traits.model.name} • ${v.traits.background.name} • ${v.traits.pattern.name}`
+          : (v.title || v.variant_id));
       const icon = renderGiftIcon(v.preview_url, variantLabel, "gift-icon-sm");
       return `<tr>
         <td><button class="btn ghost open-variant gift-cell" data-variant="${v.variant_id}">${icon}<span>${variantLabel}</span></button></td>
@@ -2433,12 +2465,15 @@ function renderVariantDetails(variant, listings, series) {
 }
 
 async function loadOverviewAndScreeners() {
-  const [overview, top, shock, overheat] = await Promise.all([
-    fetchJson("/api/market/overview"),
+  const [overviewRaw, top, shock, overheat] = await Promise.all([
+    fetchJson("/v1/overview?mode=tz").catch(() => fetchJson("/api/market/overview")),
     fetchJson("/api/screeners/top-movers?entity=variant&period=24h&type=price"),
     fetchJson("/api/screeners/supply-shock?entity=variant&period=24h&type=price"),
     fetchJson("/api/screeners/overheat?entity=variant&period=24h&type=price"),
   ]);
+  const overview = (overviewRaw && Object.prototype.hasOwnProperty.call(overviewRaw, "counts"))
+    ? normalizeOverviewFromV1(overviewRaw)
+    : overviewRaw;
   renderOverview(overview);
   const topItems = top.items || [];
   renderShortList(el.topMoversList, topItems, "Нет данных по росту", "price");
@@ -2532,13 +2567,23 @@ async function loadScreenersPage() {
 }
 
 async function loadSignalsPage() {
-  const filter = state.signals.filter || "all";
-  const resp = await fetchJson(`/api/signals/latest?filter=${encodeURIComponent(filter)}&limit=5000`, { cache: "no-store" });
-  state.signals.items = resp.items || [];
-  state.signals.buyTotal = Number(resp.buy_total || 0);
-  state.signals.sellTotal = Number(resp.sell_total || 0);
-  state.signals.qualityDegraded = Boolean(resp.signals_quality_degraded);
-  state.signals.qualityReason = String(resp.signals_quality_reason || "");
+  const v1 = await fetchJson("/v1/signals?mode=tz&limit=5000", { cache: "no-store" }).catch(() => null);
+  if (v1 && Array.isArray(v1.items)) {
+    const all = v1.items || [];
+    state.signals.items = all;
+    state.signals.buyTotal = all.filter((x) => String(x?.type || "").toUpperCase() === "BUY").length;
+    state.signals.sellTotal = all.filter((x) => String(x?.type || "").toUpperCase() === "SELL").length;
+    state.signals.qualityDegraded = false;
+    state.signals.qualityReason = "";
+  } else {
+    const filter = state.signals.filter || "all";
+    const resp = await fetchJson(`/api/signals/latest?filter=${encodeURIComponent(filter)}&limit=5000`, { cache: "no-store" });
+    state.signals.items = resp.items || [];
+    state.signals.buyTotal = Number(resp.buy_total || 0);
+    state.signals.sellTotal = Number(resp.sell_total || 0);
+    state.signals.qualityDegraded = Boolean(resp.signals_quality_degraded);
+    state.signals.qualityReason = String(resp.signals_quality_reason || "");
+  }
   renderSignals();
   state.pageLoaded.signals = true;
 }
