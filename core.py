@@ -2425,10 +2425,21 @@ class GiftAnalyticsService:
             fair_ton = None
             undervalue = None
             expected_profit_pct = None
+        sig_type = variant.get("action_hint")
+        if eff_mode == "tz" and sig_type == "SKIP":
+            try:
+                if (
+                    float(variant.get("score100") or 0.0) >= 20.0
+                    and float(undervalue if undervalue is not None else -1.0) >= -0.03
+                    and float(forecast_max if forecast_max is not None else -999.0) >= -42.0
+                ):
+                    sig_type = "WATCH"
+            except Exception:
+                pass
         return {
             "signal_id": signal_id,
             "ts": signal_ts,
-            "type": variant.get("action_hint"),
+            "type": sig_type,
             "variant_id": variant.get("variant_id"),
             "collection_id": variant.get("collection_id"),
             "collection": variant.get("collection_name"),
