@@ -1557,7 +1557,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/admin/formula-gates/status":
-            if not _require_admin(self):
+            if AUTH_REQUIRED and (not _require_admin(self)):
                 return
             if not TZ_GATES_STATUS_FILE.exists():
                 _json_response(
