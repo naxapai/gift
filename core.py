@@ -363,7 +363,8 @@ class GiftAnalyticsService:
         }
         self.fragment_bootstrap_cache = os.getenv("FRAGMENT_BOOTSTRAP_CACHE", "true").strip().lower() in {"1", "true", "yes", "on"}
         self.verified_source = os.getenv("VERIFIED_SOURCE", "telegram_api").strip().lower()
-        self.v1_signal_engine_mode = os.getenv("V1_SIGNAL_ENGINE_MODE", "legacy").strip().lower()
+        # Production default is TZ; legacy remains available via mode=legacy or env override.
+        self.v1_signal_engine_mode = os.getenv("V1_SIGNAL_ENGINE_MODE", "tz").strip().lower()
         self._restore_from_listing_state()
         allow_bootstrap_from_file = self.verified_source in {"file", "fragment", "hybrid"}
         if self.fragment_bootstrap_cache and allow_bootstrap_from_file and not self.variants:
@@ -2298,7 +2299,7 @@ class GiftAnalyticsService:
                 or (confidence < 0.50 and undervalue >= 0.006 and score >= 0.21 and forecast_max >= -0.42)
                 or (confidence < 0.50 and undervalue >= 0.015 and score >= 0.22 and forecast_max >= -0.42)
                 or (confidence < 0.50 and undervalue > 0.0 and score >= 0.19)
-                or (confidence < 0.50 and undervalue >= -0.03 and score >= 0.20 and forecast_max >= -0.42)
+                or (confidence < 0.50 and undervalue >= -0.065 and score >= 0.20 and forecast_max >= -0.42)
             ):
                 action_hint = "WATCH"
             else:
@@ -2425,21 +2426,10 @@ class GiftAnalyticsService:
             fair_ton = None
             undervalue = None
             expected_profit_pct = None
-        sig_type = variant.get("action_hint")
-        if eff_mode == "tz" and sig_type == "SKIP":
-            try:
-                if (
-                    float(variant.get("score100") or 0.0) >= 20.0
-                    and float(undervalue if undervalue is not None else -1.0) >= -0.065
-                    and float(forecast_max if forecast_max is not None else -999.0) >= -42.0
-                ):
-                    sig_type = "WATCH"
-            except Exception:
-                pass
         return {
             "signal_id": signal_id,
             "ts": signal_ts,
-            "type": sig_type,
+            "type": variant.get("action_hint"),
             "variant_id": variant.get("variant_id"),
             "collection_id": variant.get("collection_id"),
             "collection": variant.get("collection_name"),
