@@ -2291,7 +2291,6 @@ class GiftAnalyticsService:
                 action_hint = "BUY"
             elif (
                 score >= 0.30
-                or confidence >= 0.50
                 or (expected_profit_pct > 0.0 and forecast_max > -0.12)
                 or (undervalue > 0.05 and forecast_max > -0.18 and confidence >= 0.38)
                 or (undervalue > 0.02 and expected_profit_pct >= 0.02 and forecast_max > -0.25)
