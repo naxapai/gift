@@ -1283,18 +1283,43 @@ def fetch_verified_dataset_from_fragment(
         finally:
             processed_collections += 1
 
-    if not filter_index["models"] or not filter_index["backdrops"] or not filter_index["symbols"]:
-        for gift in gifts:
-            profile = gift.get("profile") or {}
-            model = str(profile.get("model") or "").strip()
-            backdrop = str(profile.get("background") or "").strip()
-            symbol = str(profile.get("pattern") or "").strip()
-            if model:
-                filter_index["models"][model] = int(filter_index["models"].get(model, 0)) + 1
-            if backdrop:
-                filter_index["backdrops"][backdrop] = int(filter_index["backdrops"].get(backdrop, 0)) + 1
-            if symbol:
-                filter_index["symbols"][symbol] = int(filter_index["symbols"].get(symbol, 0)) + 1
+    # Build filter buckets only from active lots to avoid showing stale/inactive
+    # combinations that are no longer present in the market.
+    existing_collections = {
+        str((c or {}).get("slug") or "").strip().lower(): c
+        for c in (filter_index.get("collections") or [])
+        if isinstance(c, dict) and str((c or {}).get("slug") or "").strip()
+    }
+    active_collections_seen: dict[str, dict] = {}
+    filter_index["models"] = {}
+    filter_index["backdrops"] = {}
+    filter_index["symbols"] = {}
+    for gift in gifts:
+        status = str((gift or {}).get("latest_status") or "").strip().lower()
+        if status == "sold":
+            continue
+        profile = gift.get("profile") or {}
+        model = str(profile.get("model") or "").strip()
+        backdrop = str(profile.get("background") or "").strip()
+        symbol = str(profile.get("pattern") or "").strip()
+        slug = str((gift or {}).get("collection_slug") or "").strip().lower()
+        if slug and slug not in active_collections_seen:
+            known = existing_collections.get(slug) or {}
+            active_collections_seen[slug] = {
+                "slug": slug,
+                "name": str(known.get("name") or slug).strip(),
+                "total_supply": int(known.get("total_supply") or 0),
+            }
+        if model:
+            filter_index["models"][model] = int(filter_index["models"].get(model, 0)) + 1
+        if backdrop:
+            filter_index["backdrops"][backdrop] = int(filter_index["backdrops"].get(backdrop, 0)) + 1
+        if symbol:
+            filter_index["symbols"][symbol] = int(filter_index["symbols"].get(symbol, 0)) + 1
+    filter_index["collections"] = sorted(
+        active_collections_seen.values(),
+        key=lambda x: str(x.get("name") or ""),
+    )
 
     max_failed_collections = max(0, int(os.getenv("FRAGMENT_MAX_FAILED_COLLECTIONS", "2")))
     min_success_ratio = min(1.0, max(0.0, float(os.getenv("FRAGMENT_MIN_COLLECTION_SUCCESS_RATIO", "0.9"))))
