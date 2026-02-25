@@ -2260,7 +2260,7 @@ class GiftAnalyticsService:
         if score >= 0.62 and undervalue >= 0.22 and expected_profit_pct >= 0.18 and forecast_max > -0.05:
             action_hint = "BUY"
         else:
-            forecast_reliable = (confidence >= 0.55) or (sales24h >= 10)
+            forecast_reliable = (confidence >= 0.60) or (sales24h >= 14)
             forecast_neg_strong = forecast_reliable and (forecast_max < -0.04)
             neutral_zone = (
                 undervalue > 0.02
@@ -2278,14 +2278,15 @@ class GiftAnalyticsService:
             # Soft BUY for strong profitable setups in sparse datasets.
             elif score >= 0.45 and undervalue >= 0.12 and expected_profit_pct >= 0.05 and forecast_max > -0.10:
                 action_hint = "BUY"
-            elif score >= 0.28 and undervalue >= 0.07 and expected_profit_pct >= 0.02 and forecast_max > -0.06 and confidence >= 0.40:
+            elif score >= 0.26 and undervalue >= 0.06 and expected_profit_pct >= 0.02 and forecast_max > -0.08 and confidence >= 0.40:
                 action_hint = "BUY"
             elif (
-                score >= 0.35
-                or confidence >= 0.55
+                score >= 0.30
+                or confidence >= 0.50
                 or (expected_profit_pct > 0.0 and forecast_max > -0.12)
-                or (undervalue > 0.06 and forecast_max > -0.15 and confidence >= 0.40)
+                or (undervalue > 0.05 and forecast_max > -0.18 and confidence >= 0.38)
                 or (undervalue > 0.02 and expected_profit_pct >= 0.02 and forecast_max > -0.25)
+                or (undervalue > 0.0 and score >= 0.24 and forecast_max > -0.10)
             ):
                 action_hint = "WATCH"
             else:
