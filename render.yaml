@@ -240,3 +240,35 @@ services:
         value: "0.50"
       - key: VERIFIED_MIN_MODELS_RATIO
         value: "0.40"
+
+  - type: cron
+    name: tz-formula-gates-check
+    env: python
+    schedule: "*/30 * * * *"
+    buildCommand: ""
+    startCommand: "python3 scripts/check_tz_gates.py"
+    envVars:
+      - key: TZ_GATES_HORIZON_HOURS
+        value: "24"
+      - key: TZ_GATES_LIMIT
+        value: "1000"
+      - key: TZ_GATES_SIGNALS_URL
+        value: "https://telegram-gifts-market.onrender.com/v1/signals"
+      - key: TZ_GATES_STATUS_FILE
+        value: "data/tz_gates_status.json"
+      - key: TZ_GATES_BUY_MIN
+        value: "3"
+      - key: TZ_GATES_BUY_MAX
+        value: "15"
+      - key: TZ_GATES_WATCH_MIN
+        value: "15"
+      - key: TZ_GATES_WATCH_MAX
+        value: "45"
+      - key: TZ_GATES_SKIP_MIN
+        value: "40"
+      - key: TZ_GATES_SKIP_MAX
+        value: "85"
+      - key: TZ_GATES_SELL_MIN
+        value: "0"
+      - key: TZ_GATES_SELL_MAX
+        value: "12"

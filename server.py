@@ -71,6 +71,7 @@ MANUAL_FULL_SYNC_COOLDOWN_SEC = max(300, int(os.getenv("MANUAL_FULL_SYNC_COOLDOW
 MANUAL_FULL_SYNC_TIMEOUT_SEC = max(120, int(os.getenv("MANUAL_FULL_SYNC_TIMEOUT_SEC", "1800")))
 LAST_FULL_SYNC_TS_FILE = Path(os.getenv("FRAGMENT_LAST_FULL_TS_FILE", "/tmp/fragment_sync_last_full.ts"))
 SNAPSHOT_META_FILE = ROOT / "data" / "fragment_snapshot_meta.json"
+TZ_GATES_STATUS_FILE = ROOT / "data" / "tz_gates_status.json"
 
 _BOT_STATUS = {
     "enabled": False,
@@ -1553,6 +1554,30 @@ class RequestHandler(BaseHTTPRequestHandler):
             limit = max(1, min(limit, 500))
             _, _, effective = _signal_engine_effective_config()
             _json_response(self, _signal_engine_signal_preview(limit=limit, cfg=effective), cache_control="no-store")
+            return
+
+        if path == "/api/admin/formula-gates/status":
+            if not _require_admin(self):
+                return
+            if not TZ_GATES_STATUS_FILE.exists():
+                _json_response(
+                    self,
+                    {"ok": False, "error": "tz_gates_status_not_found"},
+                    status=HTTPStatus.NOT_FOUND,
+                    cache_control="no-store",
+                )
+                return
+            try:
+                payload = json.loads(TZ_GATES_STATUS_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                _json_response(
+                    self,
+                    {"ok": False, "error": "tz_gates_status_invalid"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    cache_control="no-store",
+                )
+                return
+            _json_response(self, payload, cache_control="no-store")
             return
 
         if path == "/api/rates/stars":

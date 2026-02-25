@@ -129,6 +129,13 @@ All formula changes must be made by explicit PR with calibration notes.
 4. Default mode switch to TZ: done (`V1_SIGNAL_ENGINE_MODE=tz`)
 5. Contract/invariant tests: done
 
+## Production Monitoring
+
+1. Script: `scripts/check_tz_gates.py`
+2. Status file: `data/tz_gates_status.json`
+3. Admin endpoint: `GET /api/admin/formula-gates/status`
+4. Render cron: `tz-formula-gates-check` (every 30 minutes)
+
 ## Backtest Workflow
 
 1. Run:
