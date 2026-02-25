@@ -2430,7 +2430,7 @@ class GiftAnalyticsService:
             try:
                 if (
                     float(variant.get("score100") or 0.0) >= 20.0
-                    and float(undervalue if undervalue is not None else -1.0) >= -0.055
+                    and float(undervalue if undervalue is not None else -1.0) >= -0.06
                     and float(forecast_max if forecast_max is not None else -999.0) >= -42.0
                 ):
                     sig_type = "WATCH"
