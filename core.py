@@ -2251,8 +2251,10 @@ class GiftAnalyticsService:
             action_hint = "BUY"
         else:
             hard_sell = (
-                (undervalue < -0.12 and forecast_max < -0.08 and score < 0.35)
-                or (score < 0.18 and forecast_max < 0 and sell_pressure > 0.70)
+                (undervalue < -0.10 and forecast_max < -0.04 and score < 0.35)
+                or (undervalue < -0.20 and forecast_max < 0.02 and score < 0.30)
+                or (forecast_max < -0.25 and score < 0.30)
+                or (score < 0.18 and forecast_max < 0 and sell_pressure > 0.65)
             )
             if hard_sell:
                 action_hint = "SELL"
