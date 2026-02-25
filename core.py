@@ -2445,6 +2445,7 @@ class GiftAnalyticsService:
             return 0
 
     def overview_v1(self, mode: str | None = None) -> dict:
+        self._ensure_recos()
         eff_mode = self._effective_v1_mode(mode)
         variants = [self._v1_variant_summary(v, mode=eff_mode) for v in self.variants.values()]
         scores = [float(v.get("score100") or 0.0) for v in variants]
@@ -2458,14 +2459,35 @@ class GiftAnalyticsService:
         recommendation = top_signals[0] if top_signals else None
         volume24h = round(sum(float((v.get("metrics") or {}).get("volume_ton_24h", 0) or 0) for v in self.variants.values()), 6)
         avg_liq = round(_safe_mean(float((v.get("metrics") or {}).get("liquidity_score_24h", 0) or 0) for v in self.variants.values()), 6)
-        return {
-            "market_index": market_index,
-            "market_state": market_state,
-            "counts": {
+
+        # Render instances can briefly warm up with empty in-memory variants while
+        # market_overview already has persisted snapshot-derived totals.
+        fallback_counts = None
+        if not variants:
+            mo = self.market_overview()
+            fallback_counts = {
+                "gifts": int(mo.get("gifts_count") or 0),
+                "collections": int(mo.get("base_count") or 0),
+                "models": int(mo.get("model_count") or 0),
+            }
+            if market_state == "флет":
+                ms = str(mo.get("market_state") or "").strip().lower()
+                if ms in {"рост", "флет", "падение", "неизвестно"}:
+                    market_state = ms
+
+        counts_payload = (
+            fallback_counts
+            if fallback_counts is not None
+            else {
                 "gifts": sum(int((v.get("metrics") or {}).get("active_listings", 0) or 0) for v in self.variants.values()),
                 "collections": len({v.get("base_id") for v in self.variants.values() if v.get("base_id")}),
                 "models": len({((v.get("traits") or {}).get("model") or {}).get("id") for v in self.variants.values() if ((v.get("traits") or {}).get("model") or {}).get("id")}),
-            },
+            }
+        )
+        return {
+            "market_index": market_index,
+            "market_state": market_state,
+            "counts": counts_payload,
             "top_signals": top_signals,
             "recommendation": recommendation,
             "key_metrics": {
