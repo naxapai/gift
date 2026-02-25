@@ -2278,6 +2278,8 @@ class GiftAnalyticsService:
             # Soft BUY for strong profitable setups in sparse datasets.
             elif score >= 0.45 and undervalue >= 0.12 and expected_profit_pct >= 0.05 and forecast_max > -0.10:
                 action_hint = "BUY"
+            elif score >= 0.28 and undervalue >= 0.07 and expected_profit_pct >= 0.02 and forecast_max > -0.06 and confidence >= 0.40:
+                action_hint = "BUY"
             elif (
                 score >= 0.35
                 or confidence >= 0.55
