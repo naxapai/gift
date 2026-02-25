@@ -2129,23 +2129,49 @@ class GiftAnalyticsService:
     def _tz_signal_math(self, v: dict) -> dict:
         metrics = v.get("metrics") or {}
         active_lots = int(metrics.get("active_listings") or 0)
-        price_ton = float(metrics.get("floor_ton") or 0.0)
         floor_ton = float(metrics.get("floor_ton") or 0.0)
+        price_ton = float(metrics.get("floor_ton") or 0.0)
+        vwap_24h = float(metrics.get("vwap_ton_24h") or metrics.get("vwap_ton") or 0.0)
+        median_24h_raw = float(metrics.get("median_ton") or 0.0)
+        base_id = str(v.get("base_id") or "")
+        base_obj = self.get_base(base_id) or {}
+        base_metrics = (base_obj.get("metrics") or {}) if isinstance(base_obj, dict) else {}
+        supply_s = int(base_metrics.get("active_listings") or 0)
         floor_type = "real"
         sales24h = int(metrics.get("trades_count_24h") or 0)
+        vol24h = float(metrics.get("volume_ton_24h") or 0.0)
+        liquidity24h = _clamp(float(metrics.get("liquidity_score_24h") or 0.0), 0.0, 1.0)
+        if sales24h <= 0 and vol24h > 0 and floor_ton > 0:
+            sales24h = max(1, int(round(vol24h / max(floor_ton, 1e-6))))
+        if sales24h <= 0 and liquidity24h > 0:
+            sales24h = max(1, int(round(liquidity24h * 12)))
         liq6h = sales24h / 6.0
-        vol30m = max(0.0, float(metrics.get("volume_ton_1h") or 0.0) * 0.5)
+        trades_1h = float(metrics.get("trades_count_1h") or 0.0)
+        if trades_1h > 0:
+            vol30m = max(0.0, trades_1h * 0.5)
+        else:
+            vol30m = max(0.0, sales24h / 48.0)
 
-        median24h = float(metrics.get("median_ton") or 0.0)
+        median24h = median_24h_raw
         median7d = float(metrics.get("median_ton_7d") or 0.0)
         if sales24h >= 10 and median24h > 0:
             m = median24h
+        elif sales24h >= 10 and vwap_24h > 0:
+            m = vwap_24h
         elif median7d > 0:
             m = median7d
         else:
             m = floor_ton
 
+        # Fallback rarity proxy for sparse snapshots (serial metadata is not always present).
         prem_rarity = 0.0
+        if active_lots <= 1:
+            prem_rarity += 0.08
+        elif active_lots <= 3:
+            prem_rarity += 0.05
+        elif active_lots <= 10:
+            prem_rarity += 0.03
+        prem_rarity = _clamp(prem_rarity, 0.0, 0.20)
         target_liq = 0.5
         pen_liq = _clamp((target_liq - liq6h) / target_liq, 0.0, 0.25)
         alpha = 0.7
@@ -2161,9 +2187,8 @@ class GiftAnalyticsService:
         trend_raw = _clamp(trend_raw, -1.0, 1.0)
         trend_t = (trend_raw + 1.0) / 2.0
 
-        lots_scale = max(1.0, active_lots / 1000.0)
+        lots_scale = max(1.0, (supply_s if supply_s > 0 else active_lots) / 1000.0)
         liq_score = _clamp(sales24h / lots_scale, 0.0, 1.0)
-        liquidity24h = _clamp(float(metrics.get("liquidity_score_24h") or 0.0), 0.0, 1.0)
 
         risk_flags: List[str] = []
         risk_pen = 0.0
@@ -2194,7 +2219,7 @@ class GiftAnalyticsService:
             expected_profit_pct = max(0.0, (target_sell - price_ton) / price_ton) - 0.03
 
         lots_ma_7d = max(1.0, active_lots * (1.0 - (float(metrics.get("supply_change_pct_24h") or 0.0) / 100.0)))
-        sales_ma_7d = max(1.0, float(metrics.get("trades_count_7d") or sales24h))
+        sales_ma_7d = max(1.0, float(metrics.get("trades_count_7d") or (sales24h * 5)))
         d_f_6h = _clamp((float(metrics.get("floor_change_pct_12h") or 0.0) / 2.0) / 100.0, -0.5, 0.5)
         d_f_24h = _clamp(float(metrics.get("floor_change_pct_24h") or 0.0) / 100.0, -0.8, 0.8)
         x1 = _clamp((active_lots - lots_ma_7d) / max(1.0, lots_ma_7d), -1.0, 2.0)
@@ -2205,7 +2230,7 @@ class GiftAnalyticsService:
         forecast_max = _clamp(point_pred + spread, -0.80, 0.80)
         forecast_conf = _clamp(confidence + (0.10 if abs(point_pred) > 0.12 else 0.0) - (0.10 if floor_type == "synthetic" else 0.0), 0.0, 1.0)
 
-        lots_ref = 30.0
+        lots_ref = max(30.0, float(supply_s) / 150.0 if supply_s > 0 else 30.0)
         sell_pressure = _clamp((active_lots / lots_ref) - liquidity24h, 0.0, 1.0)
 
         reasons: List[str] = []
@@ -2216,12 +2241,20 @@ class GiftAnalyticsService:
 
         if score >= 0.62 and undervalue >= 0.22 and expected_profit_pct >= 0.18:
             action_hint = "BUY"
-        elif score < 0.45 or forecast_max < 0 or sell_pressure > 0.6:
-            action_hint = "SELL"
-        elif score >= 0.50:
-            action_hint = "WATCH"
         else:
-            action_hint = "SKIP"
+            sell_flags = 0
+            if score < 0.45:
+                sell_flags += 1
+            if forecast_max < 0:
+                sell_flags += 1
+            if sell_pressure > 0.6:
+                sell_flags += 1
+            if sell_flags >= 2:
+                action_hint = "SELL"
+            elif score >= 0.50 or confidence >= 0.55:
+                action_hint = "WATCH"
+            else:
+                action_hint = "SKIP"
 
         return {
             "active_lots": active_lots,
