@@ -121,3 +121,19 @@ All formula changes must be made by explicit PR with calibration notes.
 - `WATCH`: 25-40
 - `SKIP`: 45-60
 
+## Phase Status (1-5)
+
+1. Formula lock: done
+2. Remove output post-layer and keep logic in TZ math: done
+3. Backtest harness and gates: done (script-based; requires remote data availability for prod-grade calibration)
+4. Default mode switch to TZ: done (`V1_SIGNAL_ENGINE_MODE=tz`)
+5. Contract/invariant tests: done
+
+## Backtest Workflow
+
+1. Run:
+`python3 scripts/backtest_tz_signals.py --horizon-hours 24 --mode tz --limit 2000`
+2. Ensure `"source": "remote"` (if `local_fallback`, treat result as diagnostic only).
+3. Accept formula changes only if:
+- `gates_passed == true`
+- and distribution remains within target corridor.
