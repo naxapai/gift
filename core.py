@@ -2209,7 +2209,12 @@ class GiftAnalyticsService:
 
         u = _clamp(undervalue / 0.6, 0.0, 1.0)
         r = _clamp(prem_rarity / 0.8, 0.0, 1.0)
-        score = _clamp(0.45 * u + 0.25 * r + 0.20 * trend_t + 0.10 * liq_score - risk_pen, 0.0, 1.0)
+        risk_pen_eff = risk_pen
+        if sales24h < 10 and undervalue > 0:
+            risk_pen_eff *= 0.65
+        score = _clamp(0.45 * u + 0.25 * r + 0.20 * trend_t + 0.10 * liq_score - risk_pen_eff, 0.0, 1.0)
+        if sales24h < 10 and undervalue > 0:
+            score = _clamp(score + min(0.10, undervalue * 0.25), 0.0, 1.0)
         score100 = round(score * 100.0, 1)
 
         confidence = _clamp(0.3 + 0.7 * min(1.0, sales24h / 30.0), 0.0, 1.0)
@@ -2233,13 +2238,14 @@ class GiftAnalyticsService:
         x2 = _clamp((sales24h - sales_ma_7d) / max(1.0, sales_ma_7d), -1.0, 2.0)
         point_pred = -0.18 * x1 + 0.22 * x2 + 0.55 * d_f_6h + 0.35 * d_f_24h
         spread = 0.12 + 0.25 * _clamp(1.0 - liq_score, 0.0, 1.0) + (0.10 if floor_type == "synthetic" else 0.0)
-        forecast_min = _clamp(point_pred - spread, -0.80, 0.80)
-        forecast_max = _clamp(point_pred + spread, -0.80, 0.80)
+        sparse_factor = _clamp((10.0 - float(sales24h)) / 10.0, 0.0, 1.0)
+        point_pred = (point_pred * (1.0 - 0.55 * sparse_factor)) + (d_f_24h * 0.25 * sparse_factor)
+        spread = spread * (1.0 - 0.35 * sparse_factor)
+        lo_bound = -0.80 + 0.35 * sparse_factor
+        hi_bound = 0.80 - 0.35 * sparse_factor
+        forecast_min = _clamp(point_pred - spread, lo_bound, hi_bound)
+        forecast_max = _clamp(point_pred + spread, lo_bound, hi_bound)
         forecast_conf = _clamp(confidence + (0.10 if abs(point_pred) > 0.12 else 0.0) - (0.10 if floor_type == "synthetic" else 0.0), 0.0, 1.0)
-        if sales24h < 10:
-            # Sparse datasets tend to produce over-wide intervals; keep sell-trigger stable.
-            forecast_min = _clamp(forecast_min, -0.40, 0.40)
-            forecast_max = _clamp(forecast_max, -0.40, 0.40)
 
         lots_ref = max(30.0, float(supply_s) / 150.0 if supply_s > 0 else 30.0)
         sell_pressure = _clamp((active_lots / lots_ref) - liquidity24h, 0.0, 1.0)
@@ -2277,6 +2283,7 @@ class GiftAnalyticsService:
                 or confidence >= 0.55
                 or (expected_profit_pct > 0.0 and forecast_max > -0.12)
                 or (undervalue > 0.06 and forecast_max > -0.15 and confidence >= 0.40)
+                or (undervalue > 0.02 and expected_profit_pct >= 0.02 and forecast_max > -0.25)
             ):
                 action_hint = "WATCH"
             else:
