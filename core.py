@@ -6,6 +6,7 @@ import os
 import ssl
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1223,6 +1224,26 @@ class GiftAnalyticsService:
             "runtime_max_collections": int(os.getenv("FRAGMENT_MAX_COLLECTIONS", "0")),
             "runtime_max_pages_per_collection": int(os.getenv("FRAGMENT_MAX_PAGES_PER_COLLECTION", "500")),
             "runtime_verified_data_file": os.getenv("VERIFIED_DATA_FILE", "data/verified_gifts.json"),
+            "key_metrics": {
+                "volume24h_ton": round(
+                    sum(float((v.get("metrics") or {}).get("volume_ton_24h", 0) or 0) for v in variants),
+                    6,
+                ),
+                "avg_liquidity24h": round(
+                    _safe_mean(float((v.get("metrics") or {}).get("liquidity_score_24h", 0) or 0) for v in variants),
+                    4,
+                ),
+                "synth_floor_share": 0.0,
+            },
+            "provider_health": [
+                {
+                    "provider": os.getenv("VERIFIED_SOURCE", "telegram_api"),
+                    "p95_ms": 0,
+                    "err_pct": 0.0 if not state_last_error else 100.0,
+                    "degraded": bool(state_last_error),
+                    "ts": state_updated_at,
+                }
+            ],
         }
         self._cache_set(cache_key, payload)
         return payload
@@ -2024,6 +2045,463 @@ class GiftAnalyticsService:
         self.alert_rules = [r for r in self.alert_rules if r.get("id") != alert_id]
         self._save_alerts()
         return len(self.alert_rules) < before
+
+    def favorites_list(self, user_key: str = "default") -> List[dict]:
+        data = _load_json(FAVORITES_FILE, {})
+        rows = data.get(user_key) or []
+        if not isinstance(rows, list):
+            return []
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            variant_id = str(row.get("variant_id") or "").strip()
+            if not variant_id:
+                continue
+            out.append(
+                {
+                    "variant_id": variant_id,
+                    "note": row.get("note"),
+                    "created_at": row.get("created_at") or _iso(_now()),
+                }
+            )
+        return out
+
+    def favorite_upsert(self, user_key: str, variant_id: str, note: str | None = None) -> dict:
+        data = _load_json(FAVORITES_FILE, {})
+        rows = data.get(user_key) or []
+        if not isinstance(rows, list):
+            rows = []
+        now_iso = _iso(_now())
+        found = False
+        for row in rows:
+            if str(row.get("variant_id") or "") == variant_id:
+                row["note"] = note
+                row["created_at"] = row.get("created_at") or now_iso
+                found = True
+                break
+        if not found:
+            rows.append({"variant_id": variant_id, "note": note, "created_at": now_iso})
+        data[user_key] = rows
+        _save_json(FAVORITES_FILE, data)
+        return {"ok": True}
+
+    def favorite_delete(self, user_key: str, variant_id: str) -> dict:
+        data = _load_json(FAVORITES_FILE, {})
+        rows = data.get(user_key) or []
+        if not isinstance(rows, list):
+            rows = []
+        rows = [x for x in rows if str((x or {}).get("variant_id") or "") != variant_id]
+        data[user_key] = rows
+        _save_json(FAVORITES_FILE, data)
+        return {"ok": True}
+
+    def _tz_signal_math(self, v: dict) -> dict:
+        metrics = v.get("metrics") or {}
+        active_lots = int(metrics.get("active_listings") or 0)
+        price_ton = float(metrics.get("floor_ton") or 0.0)
+        floor_ton = float(metrics.get("floor_ton") or 0.0)
+        floor_type = "real"
+        sales24h = int(metrics.get("trades_count_24h") or 0)
+        liq6h = sales24h / 6.0
+        vol30m = max(0.0, float(metrics.get("volume_ton_1h") or 0.0) * 0.5)
+
+        median24h = float(metrics.get("median_ton") or 0.0)
+        median7d = float(metrics.get("median_ton_7d") or 0.0)
+        if sales24h >= 10 and median24h > 0:
+            m = median24h
+        elif median7d > 0:
+            m = median7d
+        else:
+            m = floor_ton
+
+        prem_rarity = 0.0
+        target_liq = 0.5
+        pen_liq = _clamp((target_liq - liq6h) / target_liq, 0.0, 0.25)
+        alpha = 0.7
+        base = alpha * m + (1 - alpha) * floor_ton
+        fair_ton = base * (1 + prem_rarity) * (1 - pen_liq)
+
+        undervalue = 0.0
+        if fair_ton > 0:
+            undervalue = (fair_ton - price_ton) / fair_ton
+
+        d_f = float(metrics.get("floor_change_pct_1h") or 0.0) / 200.0
+        trend_raw = 0.6 * d_f + 0.4 * (math.log1p(max(0.0, vol30m)) / max(1e-6, math.log1p(20.0)))
+        trend_raw = _clamp(trend_raw, -1.0, 1.0)
+        trend_t = (trend_raw + 1.0) / 2.0
+
+        lots_scale = max(1.0, active_lots / 1000.0)
+        liq_score = _clamp(sales24h / lots_scale, 0.0, 1.0)
+        liquidity24h = _clamp(float(metrics.get("liquidity_score_24h") or 0.0), 0.0, 1.0)
+
+        risk_flags: List[str] = []
+        risk_pen = 0.0
+        if floor_type == "synthetic":
+            risk_pen += 0.15
+            risk_flags.append("SYNTH_FLOOR")
+        if sales24h < 5:
+            risk_pen += 0.10
+            risk_flags.append("THIN_LIQUIDITY")
+        if self.state.get("last_error"):
+            risk_pen += 0.10
+            risk_flags.append("PROVIDER_DEGRADED")
+        if float(metrics.get("pump_risk_24h") or 0.0) > 0.8:
+            risk_pen += 0.25
+            risk_flags.append("EXEC_FAIL_SPIKE")
+
+        u = _clamp(undervalue / 0.6, 0.0, 1.0)
+        r = _clamp(prem_rarity / 0.8, 0.0, 1.0)
+        score = _clamp(0.45 * u + 0.25 * r + 0.20 * trend_t + 0.10 * liq_score - risk_pen, 0.0, 1.0)
+        score100 = round(score * 100.0, 1)
+
+        confidence = _clamp(0.3 + 0.7 * min(1.0, sales24h / 30.0), 0.0, 1.0)
+        conf_pct = round(confidence * 100.0, 1)
+
+        target_sell = min(floor_ton, fair_ton * 0.98 if fair_ton > 0 else floor_ton)
+        expected_profit_pct = 0.0
+        if price_ton > 0:
+            expected_profit_pct = max(0.0, (target_sell - price_ton) / price_ton) - 0.03
+
+        lots_ma_7d = max(1.0, active_lots * (1.0 - (float(metrics.get("supply_change_pct_24h") or 0.0) / 100.0)))
+        sales_ma_7d = max(1.0, float(metrics.get("trades_count_7d") or sales24h))
+        d_f_6h = _clamp((float(metrics.get("floor_change_pct_12h") or 0.0) / 2.0) / 100.0, -0.5, 0.5)
+        d_f_24h = _clamp(float(metrics.get("floor_change_pct_24h") or 0.0) / 100.0, -0.8, 0.8)
+        x1 = _clamp((active_lots - lots_ma_7d) / max(1.0, lots_ma_7d), -1.0, 2.0)
+        x2 = _clamp((sales24h - sales_ma_7d) / max(1.0, sales_ma_7d), -1.0, 2.0)
+        point_pred = -0.18 * x1 + 0.22 * x2 + 0.55 * d_f_6h + 0.35 * d_f_24h
+        spread = 0.12 + 0.25 * _clamp(1.0 - liq_score, 0.0, 1.0) + (0.10 if floor_type == "synthetic" else 0.0)
+        forecast_min = _clamp(point_pred - spread, -0.80, 0.80)
+        forecast_max = _clamp(point_pred + spread, -0.80, 0.80)
+        forecast_conf = _clamp(confidence + (0.10 if abs(point_pred) > 0.12 else 0.0) - (0.10 if floor_type == "synthetic" else 0.0), 0.0, 1.0)
+
+        lots_ref = 30.0
+        sell_pressure = _clamp((active_lots / lots_ref) - liquidity24h, 0.0, 1.0)
+
+        reasons: List[str] = []
+        if sales24h > 0:
+            reasons.append(f"Сделок за 24h: {sales24h}, объем: {round(float(metrics.get('volume_ton_24h') or 0.0), 2)} TON.")
+        reasons.append(f"Активных лотов: {active_lots}.")
+        reasons.append(f"Ликвидность 24h: {round(liquidity24h, 2)}.")
+
+        if score >= 0.62 and undervalue >= 0.22 and expected_profit_pct >= 0.18:
+            action_hint = "BUY"
+        elif score < 0.45 or forecast_max < 0 or sell_pressure > 0.6:
+            action_hint = "SELL"
+        elif score >= 0.50:
+            action_hint = "WATCH"
+        else:
+            action_hint = "SKIP"
+
+        return {
+            "active_lots": active_lots,
+            "price_ton": round(price_ton, 6),
+            "floor_ton": round(floor_ton, 6),
+            "floor_type": floor_type,
+            "median_ton": round(m, 6),
+            "fair_ton": round(fair_ton, 6),
+            "undervalue": round(undervalue, 6),
+            "trend_t": round(trend_t, 6),
+            "liq_score": round(liq_score, 6),
+            "risk_pen": round(risk_pen, 6),
+            "score": round(score, 6),
+            "score100": score100,
+            "confidence": round(confidence, 6),
+            "conf_pct": conf_pct,
+            "expected_profit_pct": round(expected_profit_pct, 6),
+            "forecast24h_pct_min": round(forecast_min * 100.0, 1),
+            "forecast24h_pct_max": round(forecast_max * 100.0, 1),
+            "liquidity24h": round(liquidity24h, 6),
+            "reasons": reasons[:3],
+            "risk_flags": risk_flags,
+            "action_hint": action_hint,
+            "forecast_confidence": round(forecast_conf, 6),
+            "sell_pressure": round(sell_pressure, 6),
+            "sales24h": sales24h,
+            "liq6h": round(liq6h, 6),
+            "vol30m": round(vol30m, 6),
+        }
+
+    def _v1_variant_summary(self, v: dict) -> dict:
+        traits = v.get("traits") or {}
+        mm = self._tz_signal_math(v)
+        base_id = str(v.get("base_id") or "")
+        base_name = self.bases.get(base_id).name if base_id in self.bases else base_id
+        return {
+            "variant_id": str(v.get("variant_id") or ""),
+            "collection_id": base_id,
+            "collection_name": base_name,
+            "model": str((traits.get("model") or {}).get("name") or ""),
+            "background": str((traits.get("background") or {}).get("name") or ""),
+            "pattern": str((traits.get("pattern") or {}).get("name") or ""),
+            "active_lots": mm["active_lots"],
+            "price_ton": mm["price_ton"],
+            "floor_ton": mm["floor_ton"],
+            "floor_type": mm["floor_type"],
+            "median_ton": mm["median_ton"],
+            "fair_ton": mm["fair_ton"],
+            "undervalue": mm["undervalue"],
+            "trend_t": mm["trend_t"],
+            "liq_score": mm["liq_score"],
+            "risk_pen": mm["risk_pen"],
+            "score": mm["score"],
+            "score100": mm["score100"],
+            "confidence": mm["confidence"],
+            "conf_pct": mm["conf_pct"],
+            "expected_profit_pct": mm["expected_profit_pct"],
+            "action_hint": mm["action_hint"],
+            "reasons": mm["reasons"],
+            "risk_flags": mm["risk_flags"],
+            "stale": self.is_stale(),
+            "updated_at": v.get("updated_at") or self.state.get("updated_at") or _iso(_now()),
+        }
+
+    def _v1_signal(self, v: dict) -> dict:
+        variant = self._v1_variant_summary(v)
+        mm = self._tz_signal_math(v)
+        signal_ts = variant.get("updated_at") or self.state.get("updated_at") or _iso(_now())
+        signal_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{signal_ts}|{variant.get('variant_id')}|{variant.get('action_hint')}"))
+        return {
+            "signal_id": signal_id,
+            "ts": signal_ts,
+            "type": variant.get("action_hint"),
+            "variant_id": variant.get("variant_id"),
+            "collection_id": variant.get("collection_id"),
+            "collection": variant.get("collection_name"),
+            "model": variant.get("model"),
+            "background": variant.get("background"),
+            "pattern": variant.get("pattern"),
+            "score100": variant.get("score100"),
+            "conf_pct": variant.get("conf_pct"),
+            "price_ton": variant.get("price_ton"),
+            "floor_ton": variant.get("floor_ton"),
+            "fair_ton": variant.get("fair_ton"),
+            "undervalue": variant.get("undervalue"),
+            "expected_profit_pct": variant.get("expected_profit_pct"),
+            "forecast24h_pct_min": mm.get("forecast24h_pct_min"),
+            "forecast24h_pct_max": mm.get("forecast24h_pct_max"),
+            "active_lots": mm.get("active_lots"),
+            "liquidity24h": mm.get("liquidity24h"),
+            "reasons": variant.get("reasons") or [],
+            "risk_flags": variant.get("risk_flags") or [],
+        }
+
+    def _cursor_offset(self, cursor: str | None) -> int:
+        if not cursor:
+            return 0
+        try:
+            return max(0, int(str(cursor)))
+        except Exception:
+            return 0
+
+    def overview_v1(self) -> dict:
+        variants = [self._v1_variant_summary(v) for v in self.variants.values()]
+        scores = [float(v.get("score100") or 0.0) for v in variants]
+        market_index = round(_safe_mean(scores), 2) if scores else 0.0
+        market_state = "флет"
+        if market_index >= 60:
+            market_state = "рост"
+        elif market_index <= 40:
+            market_state = "падение"
+        top_signals = self.signals_v1(limit=8).get("items") or []
+        recommendation = top_signals[0] if top_signals else None
+        volume24h = round(sum(float((v.get("metrics") or {}).get("volume_ton_24h", 0) or 0) for v in self.variants.values()), 6)
+        avg_liq = round(_safe_mean(float((v.get("metrics") or {}).get("liquidity_score_24h", 0) or 0) for v in self.variants.values()), 6)
+        return {
+            "market_index": market_index,
+            "market_state": market_state,
+            "counts": {
+                "gifts": sum(int((v.get("metrics") or {}).get("active_listings", 0) or 0) for v in self.variants.values()),
+                "collections": len({v.get("base_id") for v in self.variants.values() if v.get("base_id")}),
+                "models": len({((v.get("traits") or {}).get("model") or {}).get("id") for v in self.variants.values() if ((v.get("traits") or {}).get("model") or {}).get("id")}),
+            },
+            "top_signals": top_signals,
+            "recommendation": recommendation,
+            "key_metrics": {
+                "volume24h_ton": volume24h,
+                "avg_liquidity24h": avg_liq,
+                "synth_floor_share": 0.0,
+            },
+            "provider_health": [
+                {
+                    "provider": os.getenv("VERIFIED_SOURCE", "telegram_api"),
+                    "p95_ms": 0,
+                    "err_pct": 0.0 if not self.state.get("last_error") else 100.0,
+                    "degraded": bool(self.state.get("last_error")),
+                    "ts": self.state.get("updated_at") or _iso(_now()),
+                }
+            ],
+            "stale": self.is_stale(),
+        }
+
+    def collections_v1(self, q: str = "", limit: int = 50, cursor: str | None = None) -> dict:
+        query = str(q or "").strip().lower()
+        rows = []
+        for base in self.list_bases():
+            base_id = str(base.get("base_id") or "")
+            name = str(base.get("name") or base_id)
+            if query and query not in base_id.lower() and query not in name.lower():
+                continue
+            m = base.get("metrics") or {}
+            rows.append(
+                {
+                    "collection_id": base_id,
+                    "name": name,
+                    "floor_ton": float(m.get("floor_ton") or 0.0),
+                    "floor_type": "real",
+                    "delta_1h": float(m.get("floor_change_pct_1h") or 0.0) / 100.0,
+                    "delta_12h": float(m.get("floor_change_pct_12h") or 0.0) / 100.0,
+                    "delta_24h": float(m.get("floor_change_pct_24h") or 0.0) / 100.0,
+                    "active_lots_total": int(m.get("active_listings") or 0),
+                    "sales24h": int(m.get("trades_count_24h") or 0),
+                    "liq6h": float(m.get("trades_count_24h") or 0.0) / 6.0,
+                    "trend_t": _clamp((float(m.get("floor_change_pct_24h") or 0.0) / 100.0 + 1.0) / 2.0, 0.0, 1.0),
+                    "liq_score": _clamp(float(m.get("liquidity_score_24h") or 0.0), 0.0, 1.0),
+                    "updated_at": base.get("updated_at") or self.state.get("updated_at") or _iso(_now()),
+                }
+            )
+        rows.sort(key=lambda x: x["name"])
+        off = self._cursor_offset(cursor)
+        lim = max(1, min(int(limit or 50), 200))
+        chunk = rows[off : off + lim]
+        next_cursor = str(off + lim) if (off + lim) < len(rows) else None
+        return {"items": chunk, "next_cursor": next_cursor}
+
+    def collection_details_v1(self, collection_id: str) -> dict | None:
+        col = None
+        for item in self.collections_v1(limit=5000).get("items") or []:
+            if str(item.get("collection_id") or "") == collection_id:
+                col = item
+                break
+        if not col:
+            return None
+        top = self.variants_v1(collection_id=collection_id, sort="score_desc", limit=20).get("items") or []
+        floor_series = []
+        for v in self.variants.values():
+            if str(v.get("base_id") or "") != collection_id:
+                continue
+            hist = self.variant_history.get(v.get("variant_id"), [])
+            for h in hist[-24:]:
+                if h.get("floor_ton") is None:
+                    continue
+                floor_series.append({"ts": h.get("ts"), "floor_ton": float(h.get("floor_ton") or 0.0)})
+        floor_series = sorted(floor_series, key=lambda x: str(x.get("ts")))[:200]
+        if not floor_series:
+            floor_series = [{"ts": self.state.get("updated_at") or _iso(_now()), "floor_ton": float(col.get("floor_ton") or 0.0)}]
+        return {"collection": col, "top_variants": top, "floor_series": floor_series}
+
+    def variants_v1(
+        self,
+        collection_id: str | None = None,
+        model: str | None = None,
+        background: str | None = None,
+        pattern: str | None = None,
+        min_score: float | None = None,
+        action: str | None = None,
+        sort: str = "score_desc",
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict:
+        rows = []
+        for v in self.variants.values():
+            summary = self._v1_variant_summary(v)
+            if collection_id and summary["collection_id"] != collection_id:
+                continue
+            if model and summary["model"].lower() != str(model).lower():
+                continue
+            if background and summary["background"].lower() != str(background).lower():
+                continue
+            if pattern and summary["pattern"].lower() != str(pattern).lower():
+                continue
+            if min_score is not None and float(summary.get("score") or 0.0) < float(min_score):
+                continue
+            if action and summary.get("action_hint") != action:
+                continue
+            rows.append(summary)
+
+        if sort == "undervalue_desc":
+            rows.sort(key=lambda x: float(x.get("undervalue") or 0.0), reverse=True)
+        elif sort == "trend_desc":
+            rows.sort(key=lambda x: float(x.get("trend_t") or 0.0), reverse=True)
+        elif sort == "lots_desc":
+            rows.sort(key=lambda x: int(x.get("active_lots") or 0), reverse=True)
+        elif sort == "floor_change_24h_desc":
+            rows.sort(
+                key=lambda x: float(
+                    (
+                        (self.variants.get(x.get("variant_id")) or {}).get("metrics") or {}
+                    ).get("floor_change_pct_24h", 0)
+                    or 0
+                ),
+                reverse=True,
+            )
+        else:
+            rows.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+
+        off = self._cursor_offset(cursor)
+        lim = max(1, min(int(limit or 50), 200))
+        chunk = rows[off : off + lim]
+        next_cursor = str(off + lim) if (off + lim) < len(rows) else None
+        return {"items": chunk, "next_cursor": next_cursor}
+
+    def variant_details_v1(self, variant_id: str) -> dict | None:
+        v = self.variants.get(variant_id)
+        if not v:
+            mapped = self._listing_to_variant(variant_id)
+            if mapped:
+                v = self.variants.get(mapped)
+        if not v:
+            return None
+        summary = self._v1_variant_summary(v)
+        listings = []
+        for lid, row in self.listing_state.items():
+            if str((row or {}).get("variant_id") or "") != str(v.get("variant_id") or ""):
+                continue
+            listings.append(
+                {
+                    "listing_id": lid,
+                    "price_ton": float(row.get("price_ton") or 0.0),
+                    "price_stars": None,
+                    "status": str(row.get("status") or "ACTIVE"),
+                    "observed_at": row.get("last_seen") or self.state.get("updated_at") or _iso(_now()),
+                }
+            )
+        listings.sort(key=lambda x: float(x.get("price_ton") or 0.0))
+        return {"variant": summary, "listings": listings, "breakdown": self._tz_signal_math(v)}
+
+    def signals_v1(
+        self,
+        signal_type: str | None = None,
+        min_score: float | None = None,
+        since: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict:
+        since_dt = _parse_ts(since) if since else None
+        items = []
+        for v in self.variants.values():
+            sig = self._v1_signal(v)
+            if signal_type and sig.get("type") != signal_type:
+                continue
+            if min_score is not None and (float(sig.get("score100") or 0.0) / 100.0) < float(min_score):
+                continue
+            if since_dt and _parse_ts(sig.get("ts")) < since_dt:
+                continue
+            if sig.get("type") not in {"BUY", "SELL", "WATCH", "SKIP"}:
+                continue
+            items.append(sig)
+        items.sort(key=lambda x: (str(x.get("ts") or ""), float(x.get("score100") or 0.0)), reverse=True)
+        off = self._cursor_offset(cursor)
+        lim = max(1, min(int(limit or 50), 200))
+        chunk = items[off : off + lim]
+        next_cursor = str(off + lim) if (off + lim) < len(items) else None
+        return {"items": chunk, "next_cursor": next_cursor}
+
+    def signal_by_id_v1(self, signal_id: str) -> dict | None:
+        for item in self.signals_v1(limit=5000).get("items") or []:
+            if str(item.get("signal_id") or "") == str(signal_id or ""):
+                return item
+        return None
 
     def _evaluate_alerts(self, now: datetime) -> None:
         if self.is_stale() and os.getenv("ALERTS_SUSPEND_ON_STALE", "true").lower() in {"1", "true", "yes", "on"}:

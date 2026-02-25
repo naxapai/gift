@@ -1024,6 +1024,13 @@ def _require_admin(handler: BaseHTTPRequestHandler) -> dict | None:
     return None
 
 
+def _user_storage_key(user: dict | None) -> str:
+    if not isinstance(user, dict):
+        return "default"
+    user_id = str(user.get("id", "")).strip()
+    return user_id or "default"
+
+
 def _bridge_token_ok(handler: BaseHTTPRequestHandler) -> bool:
     expected = BRIDGE_API_TOKEN
     if not expected:
@@ -1350,6 +1357,160 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, {"ok": True, "service": "telegram-gifts-analytics"})
             return
 
+        if path == "/v1/overview":
+            _json_response(self, _state().overview_v1(), cache_control="no-store")
+            return
+
+        if path == "/v1/collections":
+            params = parse_qs(parsed.query)
+            q = (params.get("q") or [""])[0]
+            try:
+                limit = int((params.get("limit") or ["50"])[0])
+            except Exception:
+                limit = 50
+            cursor = (params.get("cursor") or [None])[0]
+            _json_response(self, _state().collections_v1(q=q, limit=limit, cursor=cursor), cache_control="no-store")
+            return
+
+        if path.startswith("/v1/collections/") and path.count("/") == 3:
+            collection_id = unquote(path.split("/")[-1])
+            data = _state().collection_details_v1(collection_id)
+            if not data:
+                _safe_send_error(self, HTTPStatus.NOT_FOUND)
+                return
+            _json_response(self, data, cache_control="no-store")
+            return
+
+        if path == "/v1/variants":
+            params = parse_qs(parsed.query)
+            collection_id = (params.get("collection_id") or [None])[0]
+            model = (params.get("model") or [None])[0]
+            background = (params.get("background") or [None])[0]
+            pattern = (params.get("pattern") or [None])[0]
+            min_score_raw = (params.get("min_score") or [None])[0]
+            try:
+                min_score = float(min_score_raw) if min_score_raw not in (None, "") else None
+            except Exception:
+                min_score = None
+            action = (params.get("action") or [None])[0]
+            sort = (params.get("sort") or ["score_desc"])[0]
+            try:
+                limit = int((params.get("limit") or ["50"])[0])
+            except Exception:
+                limit = 50
+            cursor = (params.get("cursor") or [None])[0]
+            data = _state().variants_v1(
+                collection_id=collection_id,
+                model=model,
+                background=background,
+                pattern=pattern,
+                min_score=min_score,
+                action=action,
+                sort=sort,
+                limit=limit,
+                cursor=cursor,
+            )
+            _json_response(self, data, cache_control="no-store")
+            return
+
+        if path.startswith("/v1/variants/") and path.count("/") == 3:
+            variant_id = unquote(path.split("/")[-1])
+            data = _state().variant_details_v1(variant_id)
+            if not data:
+                _safe_send_error(self, HTTPStatus.NOT_FOUND)
+                return
+            _json_response(self, data, cache_control="no-store")
+            return
+
+        if path == "/v1/signals":
+            params = parse_qs(parsed.query)
+            signal_type = (params.get("type") or [None])[0]
+            min_score_raw = (params.get("min_score") or [None])[0]
+            try:
+                min_score = float(min_score_raw) if min_score_raw not in (None, "") else None
+            except Exception:
+                min_score = None
+            since = (params.get("since") or [None])[0]
+            try:
+                limit = int((params.get("limit") or ["50"])[0])
+            except Exception:
+                limit = 50
+            cursor = (params.get("cursor") or [None])[0]
+            data = _state().signals_v1(signal_type=signal_type, min_score=min_score, since=since, limit=limit, cursor=cursor)
+            _json_response(self, data, cache_control="no-store")
+            return
+
+        if path.startswith("/v1/signals/") and path.count("/") == 3:
+            signal_id = unquote(path.split("/")[-1])
+            data = _state().signal_by_id_v1(signal_id)
+            if not data:
+                _safe_send_error(self, HTTPStatus.NOT_FOUND)
+                return
+            _json_response(self, data, cache_control="no-store")
+            return
+
+        if path == "/v1/favorites":
+            user = _require_auth(self)
+            if not user:
+                return
+            key = _user_storage_key(user)
+            _json_response(self, {"items": _state().favorites_list(key)}, cache_control="no-store")
+            return
+
+        if path == "/v1/alerts":
+            user = _require_auth(self)
+            if not user:
+                return
+            items = []
+            for row in _state().alerts_list():
+                rid = str(row.get("id") or "")
+                rule_json = row.get("rule_json") or {}
+                items.append(
+                    {
+                        "rule_id": rid,
+                        "name": str(rule_json.get("name") or rid or "alert"),
+                        "rule_json": rule_json,
+                        "enabled": True,
+                        "created_at": row.get("last_fired_at") or _state().state.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+            _json_response(self, {"items": items}, cache_control="no-store")
+            return
+
+        if path == "/v1/stream":
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            last_updated = ""
+            deadline = time.time() + 25
+            while time.time() < deadline:
+                overview = _state().overview_v1()
+                updated = str((_state().state or {}).get("updated_at") or "")
+                if updated != last_updated:
+                    last_updated = updated
+                    payload = {
+                        "updated_at": updated,
+                        "market_state": overview.get("market_state"),
+                        "stale": overview.get("stale"),
+                    }
+                    self.wfile.write(b"event: provider.health\n")
+                    self.wfile.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+                    top = (overview.get("top_signals") or [])[:1]
+                    if top:
+                        self.wfile.write(b"event: signal.created\n")
+                        self.wfile.write(f"data: {json.dumps(top[0], ensure_ascii=False)}\n\n".encode("utf-8"))
+                    self.wfile.write(b"event: collection.updated\n")
+                    self.wfile.write(f"data: {json.dumps({'updated_at': updated}, ensure_ascii=False)}\n\n".encode('utf-8'))
+                    self.wfile.write(b"event: variant.updated\n")
+                    self.wfile.write(f"data: {json.dumps({'updated_at': updated}, ensure_ascii=False)}\n\n".encode('utf-8'))
+                else:
+                    self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+                time.sleep(3)
+            return
+
         if path.startswith("/api/") and not path.startswith("/api/auth/"):
             if not _require_auth(self):
                 return
@@ -1523,6 +1684,55 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/v1/favorites":
+            user = _require_auth(self)
+            if not user:
+                return
+            payload = _read_json_body(self)
+            variant_id = str(payload.get("variant_id") or "").strip()
+            if not variant_id:
+                _json_response(self, {"ok": False, "error": "variant_id_required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            note = payload.get("note")
+            _json_response(self, _state().favorite_upsert(_user_storage_key(user), variant_id, note))
+            return
+
+        if parsed.path == "/v1/alerts":
+            user = _require_auth(self)
+            if not user:
+                return
+            payload = _read_json_body(self)
+            rule_id = payload.get("rule_id")
+            name = str(payload.get("name") or "").strip() or "alert"
+            rule_json = payload.get("rule_json") if isinstance(payload.get("rule_json"), dict) else {}
+            enabled = bool(payload.get("enabled", True))
+            rule_payload = {"id": rule_id, "name": name, "enabled": enabled, **rule_json}
+            if rule_id:
+                updated = _state().alerts_update(str(rule_id), rule_payload)
+                if updated:
+                    _json_response(self, {"ok": True})
+                    return
+            _state().alerts_create(rule_payload)
+            _json_response(self, {"ok": True})
+            return
+
+        if parsed.path == "/v1/alerts/test":
+            user = _require_auth(self)
+            if not user:
+                return
+            payload = _read_json_body(self)
+            rule_id = str(payload.get("rule_id") or "").strip()
+            if not rule_id:
+                _json_response(self, {"ok": False, "error": "rule_id_required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                if signal_bot.BOT_TOKEN and signal_bot.CHAT_ID:
+                    signal_bot.send_message(f"Тестовый алерт: rule_id={rule_id}")
+            except Exception:
+                pass
+            _json_response(self, {"ok": True})
+            return
+
         if parsed.path == "/api/auth/telegram/verify":
             payload = _read_json_body(self)
             ok, reason, user = AUTH.verify_telegram_payload(payload)
@@ -1691,6 +1901,18 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/v1/favorites":
+            user = _require_auth(self)
+            if not user:
+                return
+            params = parse_qs(parsed.query)
+            variant_id = str((params.get("variant_id") or [""])[0]).strip()
+            if not variant_id:
+                _json_response(self, {"ok": False, "error": "variant_id_required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            _json_response(self, _state().favorite_delete(_user_storage_key(user), variant_id))
+            return
+
         if parsed.path.startswith("/api/") and not parsed.path.startswith("/api/auth/"):
             if not _require_auth(self):
                 return
