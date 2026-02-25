@@ -2215,10 +2215,15 @@ class GiftAnalyticsService:
         confidence = _clamp(0.3 + 0.7 * min(1.0, sales24h / 30.0), 0.0, 1.0)
         conf_pct = round(confidence * 100.0, 1)
 
-        target_sell = min(floor_ton, fair_ton * 0.98 if fair_ton > 0 else floor_ton)
+        # Use fair-based exit and apply fee as a floor cut, not as unconditional negative constant.
+        target_sell = fair_ton * 0.98 if fair_ton > 0 else floor_ton
+        if floor_ton > 0:
+            # Do not bias target below observable market floor.
+            target_sell = max(target_sell, floor_ton)
         expected_profit_pct = 0.0
         if price_ton > 0:
-            expected_profit_pct = max(0.0, (target_sell - price_ton) / price_ton) - 0.03
+            gross_profit = (target_sell - price_ton) / price_ton
+            expected_profit_pct = max(0.0, gross_profit - 0.03)
 
         lots_ma_7d = max(1.0, active_lots * (1.0 - (float(metrics.get("supply_change_pct_24h") or 0.0) / 100.0)))
         sales_ma_7d = max(1.0, float(metrics.get("trades_count_7d") or (sales24h * 5)))
@@ -2241,16 +2246,21 @@ class GiftAnalyticsService:
         reasons.append(f"Активных лотов: {active_lots}.")
         reasons.append(f"Ликвидность 24h: {round(liquidity24h, 2)}.")
 
-        if score >= 0.62 and undervalue >= 0.22 and expected_profit_pct >= 0.18:
+        if score >= 0.62 and undervalue >= 0.22 and expected_profit_pct >= 0.18 and forecast_max > -0.05:
             action_hint = "BUY"
         else:
             hard_sell = (
-                (undervalue < -0.08 and forecast_max < -0.05)
-                or (score < 0.20 and forecast_max < 0 and sell_pressure > 0.55)
+                (undervalue < -0.12 and forecast_max < -0.08 and score < 0.35)
+                or (score < 0.18 and forecast_max < 0 and sell_pressure > 0.70)
             )
             if hard_sell:
                 action_hint = "SELL"
-            elif score >= 0.50 or confidence >= 0.55 or (undervalue > 0.12 and confidence >= 0.4):
+            elif (
+                score >= 0.35
+                or confidence >= 0.50
+                or undervalue > 0.06
+                or (expected_profit_pct > 0.0 and forecast_max > -0.10)
+            ):
                 action_hint = "WATCH"
             else:
                 action_hint = "SKIP"
