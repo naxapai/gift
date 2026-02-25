@@ -2129,13 +2129,15 @@ class GiftAnalyticsService:
     def _tz_signal_math(self, v: dict) -> dict:
         metrics = v.get("metrics") or {}
         active_lots = int(metrics.get("active_listings") or 0)
-        floor_ton = float(metrics.get("floor_ton") or 0.0)
-        price_ton = float(metrics.get("floor_ton") or 0.0)
+        variant_floor_ton = float(metrics.get("floor_ton") or 0.0)
         vwap_24h = float(metrics.get("vwap_ton_24h") or metrics.get("vwap_ton") or 0.0)
         median_24h_raw = float(metrics.get("median_ton") or 0.0)
         base_id = str(v.get("base_id") or "")
         base_obj = self.get_base(base_id) or {}
         base_metrics = (base_obj.get("metrics") or {}) if isinstance(base_obj, dict) else {}
+        collection_floor_ton = float(base_metrics.get("floor_ton") or 0.0)
+        floor_ton = collection_floor_ton if collection_floor_ton > 0 else variant_floor_ton
+        price_ton = variant_floor_ton if variant_floor_ton > 0 else floor_ton
         supply_s = int(base_metrics.get("active_listings") or 0)
         floor_type = "real"
         sales24h = int(metrics.get("trades_count_24h") or 0)
@@ -2242,16 +2244,13 @@ class GiftAnalyticsService:
         if score >= 0.62 and undervalue >= 0.22 and expected_profit_pct >= 0.18:
             action_hint = "BUY"
         else:
-            sell_flags = 0
-            if score < 0.45:
-                sell_flags += 1
-            if forecast_max < 0:
-                sell_flags += 1
-            if sell_pressure > 0.6:
-                sell_flags += 1
-            if sell_flags >= 2:
+            hard_sell = (
+                (undervalue < -0.08 and forecast_max < -0.05)
+                or (score < 0.20 and forecast_max < 0 and sell_pressure > 0.55)
+            )
+            if hard_sell:
                 action_hint = "SELL"
-            elif score >= 0.50 or confidence >= 0.55:
+            elif score >= 0.50 or confidence >= 0.55 or (undervalue > 0.12 and confidence >= 0.4):
                 action_hint = "WATCH"
             else:
                 action_hint = "SKIP"
