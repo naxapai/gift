@@ -1645,38 +1645,36 @@ class RequestHandler(BaseHTTPRequestHandler):
             if AUTH_REQUIRED and (not _require_admin(self)):
                 return
             if not TZ_GATES_STATUS_FILE.exists():
-                _json_response(
-                    self,
-                    {
-                        "status_ok": False,
-                        "checked_at": None,
-                        "source_ok": False,
-                        "gates_ok": False,
-                        "corridor_checks": {},
-                        "report_source": "missing",
-                        "error": "tz_gates_status_not_found",
-                    },
-                    cache_control="no-store",
-                )
+                try:
+                    payload = _build_tz_gates_payload_runtime()
+                    TZ_GATES_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    TZ_GATES_STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    _json_response(self, payload, cache_control="no-store")
+                except Exception as exc:
+                    payload = _normalize_tz_gates_payload(
+                        payload=None,
+                        report_source="runtime_failed",
+                        error=f"tz_gates_status_not_found:{exc.__class__.__name__}",
+                    )
+                    _json_response(self, payload, cache_control="no-store")
                 return
             try:
                 payload = json.loads(TZ_GATES_STATUS_FILE.read_text(encoding="utf-8"))
             except Exception:
-                _json_response(
-                    self,
-                    {
-                        "status_ok": False,
-                        "checked_at": None,
-                        "source_ok": False,
-                        "gates_ok": False,
-                        "corridor_checks": {},
-                        "report_source": "invalid",
-                        "error": "tz_gates_status_invalid",
-                    },
-                    cache_control="no-store",
-                )
+                try:
+                    payload = _build_tz_gates_payload_runtime()
+                    TZ_GATES_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    TZ_GATES_STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    _json_response(self, payload, cache_control="no-store")
+                except Exception as exc:
+                    payload = _normalize_tz_gates_payload(
+                        payload=None,
+                        report_source="runtime_failed",
+                        error=f"tz_gates_status_invalid:{exc.__class__.__name__}",
+                    )
+                    _json_response(self, payload, cache_control="no-store")
                 return
-            _json_response(self, payload, cache_control="no-store")
+            _json_response(self, _normalize_tz_gates_payload(payload, report_source="file"), cache_control="no-store")
             return
 
         if path == "/api/rates/stars":
