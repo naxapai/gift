@@ -37,7 +37,7 @@ def main() -> int:
     corridor = {
         "buy_min": _as_int("TZ_GATES_BUY_MIN", 1),
         "buy_max": _as_int("TZ_GATES_BUY_MAX", 20),
-        "watch_min": _as_int("TZ_GATES_WATCH_MIN", 5),
+        "watch_min": _as_int("TZ_GATES_WATCH_MIN", 0),
         "watch_max": _as_int("TZ_GATES_WATCH_MAX", 80),
         "skip_min": _as_int("TZ_GATES_SKIP_MIN", 80),
         "skip_max": _as_int("TZ_GATES_SKIP_MAX", 260),

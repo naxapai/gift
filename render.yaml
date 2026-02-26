@@ -83,7 +83,7 @@ services:
       - key: TZ_GATES_BUY_MAX
         value: "20"
       - key: TZ_GATES_WATCH_MIN
-        value: "5"
+        value: "0"
       - key: TZ_GATES_WATCH_MAX
         value: "80"
       - key: TZ_GATES_SKIP_MIN
@@ -277,7 +277,7 @@ services:
       - key: TZ_GATES_BUY_MAX
         value: "20"
       - key: TZ_GATES_WATCH_MIN
-        value: "5"
+        value: "0"
       - key: TZ_GATES_WATCH_MAX
         value: "80"
       - key: TZ_GATES_SKIP_MIN
