@@ -1961,8 +1961,12 @@ function renderListingTable() {
       const chipClass = row.is_new ? "buy" : "hold";
       const chipLabel = row.is_new ? "NEW" : "ACTIVE";
       const icon = renderGiftIcon(row.preview_url, label, "gift-icon-sm");
+      const variantId = String(row.variant_id || "").trim();
+      const giftCell = variantId
+        ? `<button class="btn ghost open-variant gift-cell" data-variant="${variantId}">${icon}<span>${label}</span></button>`
+        : `<span class="gift-cell">${icon}<span>${label}</span></span>`;
       return `<tr>
-        <td><button class="btn ghost open-variant gift-cell" data-variant="${row.variant_id || ""}">${icon}<span>${label}</span></button></td>
+        <td>${giftCell}</td>
         <td>${formatTon(row.resell_amount_ton)}</td>
         <td>${formatStars(row.resell_amount_stars_est)}</td>
         <td>${formatDateTime(row.first_seen_at)}</td>

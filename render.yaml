@@ -81,7 +81,7 @@ services:
       - key: LISTING_PRIMARY_SOURCE
         value: "auto"
       - key: LISTING_MT_API_URL
-        sync: false
+        value: "https://gift-listing-mtproto-bridge.onrender.com/api/listings/new"
       - key: LISTING_MT_API_TOKEN
         sync: false
       - key: LISTING_MT_API_TOKEN_HEADER
@@ -276,6 +276,58 @@ services:
         value: "0.50"
       - key: VERIFIED_MIN_MODELS_RATIO
         value: "0.40"
+
+  - type: web
+    name: gift-listing-mtproto-bridge
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: "python3 listing_mtproto_bridge.py"
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: MT_BRIDGE_HOST
+        value: 0.0.0.0
+      - key: MT_BRIDGE_PORT
+        value: "10000"
+      - key: MT_BRIDGE_REFRESH_SEC
+        value: "2"
+      - key: MT_BRIDGE_GIFT_TYPES_REFRESH_SEC
+        value: "900"
+      - key: MT_BRIDGE_MAX_GIFT_TYPES
+        value: "120"
+      - key: MT_BRIDGE_PER_GIFT_LIMIT
+        value: "80"
+      - key: MT_BRIDGE_PER_REQUEST_DELAY_SEC
+        value: "0.08"
+      - key: MT_BRIDGE_TIMEOUT_SEC
+        value: "20"
+      - key: MT_BRIDGE_NEW_WINDOW_SEC
+        value: "120"
+      - key: MT_BRIDGE_RETENTION_SEC
+        value: "1209600"
+      - key: MT_BRIDGE_API_TOKEN
+        sync: false
+      - key: MT_BRIDGE_ADMIN_TOKEN
+        sync: false
+      - key: MT_BRIDGE_API_ID
+        sync: false
+      - key: MT_BRIDGE_API_HASH
+        sync: false
+      - key: MT_BRIDGE_STRING_SESSION
+        sync: false
+      - key: MT_BRIDGE_PHONE
+        sync: false
+      - key: MT_BRIDGE_UPSTREAM_LISTINGS_URL
+        sync: false
+      - key: MT_BRIDGE_UPSTREAM_LISTINGS_TOKEN
+        sync: false
+      - key: MT_BRIDGE_UPSTREAM_LISTINGS_TOKEN_HEADER
+        value: "Authorization"
+      - key: MT_BRIDGE_UPSTREAM_LISTINGS_TOKEN_PREFIX
+        value: "Bearer "
+      - key: MT_BRIDGE_UPSTREAM_TIMEOUT_SEC
+        value: "10"
 
   - type: cron
     name: tz-formula-gates-check

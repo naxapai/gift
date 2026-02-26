@@ -165,6 +165,39 @@ python3 server.py
 - сервер нормализует payload в production-формат автоматически и кеширует последний валидный snapshot;
 - при ошибке bridge используется fallback на локальный `VERIFIED_DATA_FILE` без обнуления аналитики.
 
+## New Listings Tracker (MTProto bridge)
+
+Для realtime-трекинга новых листингов реализован отдельный сервис:
+
+- `listing_mtproto_bridge.py`
+- `GET /api/listings/new` — feed новых/активных листингов (token-protected)
+- `GET /api/listing-bridge/status` — статус ingestion
+- `POST /api/listing-bridge/ingest` — ручной запуск цикла
+
+Ключевые env для bridge-сервиса:
+
+```bash
+MT_BRIDGE_API_TOKEN=...
+MT_BRIDGE_ADMIN_TOKEN=...
+MT_BRIDGE_API_ID=...            # Telegram API ID (my.telegram.org)
+MT_BRIDGE_API_HASH=...          # Telegram API Hash
+MT_BRIDGE_STRING_SESSION=...    # Telethon StringSession user-аккаунта
+```
+
+Подключение основного web-сервиса к listing-bridge:
+
+```bash
+LISTING_PRIMARY_SOURCE=auto
+LISTING_MT_API_URL="https://<listing-bridge>/api/listings/new"
+LISTING_MT_API_TOKEN="<MT_BRIDGE_API_TOKEN>"
+LISTING_MT_API_TOKEN_HEADER="Authorization"
+LISTING_MT_API_TOKEN_PREFIX="Bearer "
+```
+
+Важно:
+- Bot API недостаточен для `payments.getResaleStarGifts`, нужен user auth (StringSession).
+- При недоступности MTProto bridge основной сервис автоматически откатывается на runtime fallback (данные не обнуляются).
+
 ### Hybrid режим (рекомендуется для максимальной устойчивости)
 
 ```bash
