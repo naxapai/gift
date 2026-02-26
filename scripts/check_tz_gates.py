@@ -50,16 +50,19 @@ def main() -> int:
         "skip_ok": corridor["skip_min"] <= int(dist.get("SKIP", 0)) <= corridor["skip_max"],
         "sell_ok": corridor["sell_min"] <= int(dist.get("SELL", 0)) <= corridor["sell_max"],
     }
+    corridor_ok = all(corridor_checks.values())
 
     source_ok = str(report.get("source") or "") == "remote"
     gates_ok = bool(report.get("gates_passed"))
-    final_ok = source_ok and gates_ok and all(corridor_checks.values())
+    # Corridor drift is tracked as warning for calibration and should not fail cron health.
+    final_ok = source_ok and gates_ok
 
     payload = {
         "ok": final_ok,
         "checked_at": _now_iso(),
         "source_ok": source_ok,
         "gates_ok": gates_ok,
+        "corridor_ok": corridor_ok,
         "corridor_checks": corridor_checks,
         "corridor": corridor,
         "report": report,
@@ -73,4 +76,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -136,6 +136,7 @@ def _normalize_tz_gates_payload(payload: dict | None, report_source: str = "file
         dist = payload.get("distribution") or {}
     corridor = payload.get("corridor") if isinstance(payload.get("corridor"), dict) else _tz_gates_corridor()
     corridor_checks = payload.get("corridor_checks") if isinstance(payload.get("corridor_checks"), dict) else _tz_gates_corridor_checks(dist, corridor)
+    corridor_ok = all(bool(v) for v in corridor_checks.values())
     source_raw = str((report.get("source") if isinstance(report, dict) else "") or payload.get("source") or "")
     source_ok = payload.get("source_ok")
     if source_ok is None:
@@ -145,12 +146,14 @@ def _normalize_tz_gates_payload(payload: dict | None, report_source: str = "file
         gates_ok = bool(report.get("gates_passed")) if isinstance(report, dict) else bool(payload.get("ok"))
     status_ok = payload.get("status_ok")
     if status_ok is None:
-        status_ok = bool(source_ok) and bool(gates_ok) and all(bool(v) for v in corridor_checks.values())
+        # Corridor drift is a warning signal for calibration, not service health.
+        status_ok = bool(source_ok) and bool(gates_ok)
     return {
         "status_ok": bool(status_ok),
         "checked_at": payload.get("checked_at") or _tz_now_iso(),
         "source_ok": bool(source_ok),
         "gates_ok": bool(gates_ok),
+        "corridor_ok": bool(corridor_ok),
         "corridor_checks": corridor_checks,
         "report_source": payload.get("report_source") or report_source,
         "error": str(payload.get("error") or error or ""),
