@@ -296,12 +296,28 @@ services:
         value: "900"
       - key: MT_BRIDGE_MAX_GIFT_TYPES
         value: "120"
+      - key: MT_BRIDGE_MAX_GIFT_TYPES_PER_CYCLE
+        value: "22"
+      - key: MT_BRIDGE_BOOTSTRAP_GIFT_TYPES_PER_CYCLE
+        value: "36"
       - key: MT_BRIDGE_PER_GIFT_LIMIT
         value: "80"
       - key: MT_BRIDGE_PER_REQUEST_DELAY_SEC
         value: "0.08"
+      - key: MT_BRIDGE_MAX_PARALLEL_REQUESTS
+        value: "4"
       - key: MT_BRIDGE_TIMEOUT_SEC
         value: "20"
+      - key: MT_BRIDGE_HOT_INTERVAL_SEC
+        value: "1.2"
+      - key: MT_BRIDGE_WARM_INTERVAL_SEC
+        value: "6.0"
+      - key: MT_BRIDGE_COLD_INTERVAL_SEC
+        value: "20.0"
+      - key: MT_BRIDGE_HOT_COUNT_THRESHOLD
+        value: "80"
+      - key: MT_BRIDGE_WARM_COUNT_THRESHOLD
+        value: "18"
       - key: MT_BRIDGE_NEW_WINDOW_SEC
         value: "120"
       - key: MT_BRIDGE_RETENTION_SEC
