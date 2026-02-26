@@ -191,6 +191,7 @@ const el = {
   signalFilterSell: document.getElementById("signalFilterSell"),
   listingBody: document.getElementById("listingBody"),
   listingStats: document.getElementById("listingStats"),
+  listingSourceNote: document.getElementById("listingSourceNote"),
   listingCollectionQuery: document.getElementById("listingCollectionQuery"),
   listingModelQuery: document.getElementById("listingModelQuery"),
   listingOnlyNew: document.getElementById("listingOnlyNew"),
@@ -1939,6 +1940,11 @@ function renderListingStats() {
   ]
     .map(([k, v]) => `<div class="kpi-item"><div class="kpi-key">${k}</div><div class="kpi-value">${v}</div></div>`)
     .join("");
+  if (el.listingSourceNote) {
+    const src = String(s.source || "fragment.verified_snapshot");
+    const err = String(s.source_error || "");
+    el.listingSourceNote.textContent = err ? `Источник: ${src} (fallback, err: ${err})` : `Источник: ${src}`;
+  }
 }
 
 function renderListingTable() {
@@ -2647,7 +2653,10 @@ async function loadListingPage() {
     fetchJson(`/v1/listings/summary?new_window_sec=${encodeURIComponent(String(Number(f.windowSec || 120)))}`, { cache: "no-store" }),
     fetchJson(`/v1/listings?${params.toString()}`, { cache: "no-store" }),
   ]);
-  state.listingFeed.summary = summary || {};
+  const mergedSummary = { ...(summary || {}) };
+  if (!mergedSummary.source && rows?.source) mergedSummary.source = rows.source;
+  if (!mergedSummary.source_error && rows?.source_error) mergedSummary.source_error = rows.source_error;
+  state.listingFeed.summary = mergedSummary;
   state.listingFeed.items = Array.isArray(rows?.items) ? rows.items : [];
   renderListingStats();
   renderListingTable();

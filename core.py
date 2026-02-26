@@ -30,6 +30,7 @@ INGEST_LOG_FILE = DATA_DIR / "ingest.log"
 AI_RECO_CACHE_FILE = DATA_DIR / "ai_reco_cache.json"
 STARS_RATE_CACHE_FILE = DATA_DIR / "stars_rate_cache.json"
 LISTING_TRACKER_STATE_FILE = DATA_DIR / "listing_tracker_state.json"
+MT_LISTINGS_SNAPSHOT_FILE = DATA_DIR / "mt_listings_snapshot.json"
 
 WINDOWS = {
     "1h": 60 * 60,
@@ -324,6 +325,7 @@ class GiftAnalyticsService:
         self.variant_history: Dict[str, List[dict]] = _load_json(VARIANT_HISTORY_FILE, {})
         self.listing_state: Dict[str, dict] = _load_json(LISTING_STATE_FILE, {})
         self.listing_tracker_state: Dict[str, dict] = _load_json(LISTING_TRACKER_STATE_FILE, {})
+        self.mt_listings_snapshot: Dict[str, object] = _load_json(MT_LISTINGS_SNAPSHOT_FILE, {})
         self.trade_events: List[dict] = _load_json(TRADE_EVENTS_FILE, [])
         self.alert_rules: List[dict] = _load_json(ALERTS_FILE, [])
         self.alert_events: List[dict] = _load_json(ALERT_EVENTS_FILE, [])
@@ -369,6 +371,20 @@ class GiftAnalyticsService:
         self.v1_signal_engine_mode = os.getenv("V1_SIGNAL_ENGINE_MODE", "tz").strip().lower()
         self.listing_new_window_sec = max(30, int(os.getenv("LISTING_NEW_WINDOW_SEC", "120")))
         self.listing_tracker_retention_sec = max(3600, int(os.getenv("LISTING_TRACKER_RETENTION_SEC", "1209600")))
+        self.listing_primary_source = str(os.getenv("LISTING_PRIMARY_SOURCE", "auto") or "auto").strip().lower()
+        self.listing_mt_api_url = str(os.getenv("LISTING_MT_API_URL", "") or "").strip()
+        self.listing_mt_api_token = str(os.getenv("LISTING_MT_API_TOKEN", "") or "").strip()
+        self.listing_mt_api_token_header = str(os.getenv("LISTING_MT_API_TOKEN_HEADER", "Authorization") or "Authorization").strip()
+        self.listing_mt_api_token_prefix = str(os.getenv("LISTING_MT_API_TOKEN_PREFIX", "Bearer ") or "")
+        self.listing_mt_api_timeout_sec = max(3.0, float(os.getenv("LISTING_MT_API_TIMEOUT_SEC", "8")))
+        self.listing_mt_cache_ttl_sec = max(1.0, float(os.getenv("LISTING_MT_CACHE_TTL_SEC", "2")))
+        self._listing_mt_runtime_cache: dict = {
+            "fetched_mono": 0.0,
+            "rows": [],
+            "source": "disabled",
+            "error": "",
+            "updated_at": None,
+        }
         self._restore_from_listing_state()
         self._sync_listing_tracker_state(_now(), persist=True)
         allow_bootstrap_from_file = self.verified_source in {"file", "fragment", "hybrid"}
@@ -471,6 +487,9 @@ class GiftAnalyticsService:
 
     def _save_listing_tracker_state(self) -> None:
         _save_json(LISTING_TRACKER_STATE_FILE, self.listing_tracker_state)
+
+    def _save_mt_listings_snapshot(self) -> None:
+        _save_json(MT_LISTINGS_SNAPSHOT_FILE, self.mt_listings_snapshot)
 
     def _save_trade_events(self) -> None:
         _save_json(TRADE_EVENTS_FILE, self.trade_events)
@@ -2930,6 +2949,246 @@ class GiftAnalyticsService:
                 return item
         return None
 
+    def _is_listing_new(self, now: datetime, first_seen_at: str, relisted_at: str | None, window_sec: int) -> bool:
+        first_seen_dt = _parse_ts(first_seen_at)
+        relisted_dt = _parse_ts(relisted_at) if relisted_at else None
+        return ((now - first_seen_dt).total_seconds() <= window_sec) or (
+            relisted_dt is not None and (now - relisted_dt).total_seconds() <= window_sec
+        )
+
+    def _build_runtime_listing_rows(self, now: datetime, window_sec: int) -> List[dict]:
+        rows: List[dict] = []
+        for row in self.listing_state.values():
+            if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
+                continue
+            key = self._listing_tracker_key(row)
+            if not key:
+                continue
+            entry = self.listing_tracker_state.get(key) or {}
+            variant_id = str((row or {}).get("variant_id") or "")
+            model_name, background_name, pattern_name = self._variant_attrs_from_id(variant_id)
+            v = self.variants.get(variant_id) or {}
+            traits = v.get("traits") or {}
+            model_name = str(((traits.get("model") or {}).get("name")) or model_name)
+            background_name = str(((traits.get("background") or {}).get("name")) or background_name)
+            pattern_name = str(((traits.get("pattern") or {}).get("name")) or pattern_name)
+            collection_id = str((row or {}).get("base_id") or "").strip().lower()
+            collection_name = self.bases.get(collection_id).name if collection_id in self.bases else _slug_to_name(collection_id)
+            first_seen_at = str(entry.get("first_seen_at") or (row or {}).get("last_seen") or _iso(now))
+            last_seen_at = str(entry.get("last_seen_at") or (row or {}).get("last_seen") or _iso(now))
+            relisted_at = str(entry.get("last_relisted_at") or "")
+            is_new = self._is_listing_new(now, first_seen_at, relisted_at, window_sec)
+            price_ton = float((row or {}).get("price_ton") or 0.0)
+            rows.append(
+                {
+                    "listing_key": key,
+                    "gift_id": collection_id,
+                    "unique_id": str((row or {}).get("listing_id") or ""),
+                    "variant_id": variant_id,
+                    "num": None,
+                    "slug": collection_id,
+                    "title": collection_name,
+                    "collection": collection_name,
+                    "collection_id": collection_id,
+                    "resell_currency": "TON",
+                    "currency_mode": "TON_ONLY",
+                    "resell_amount_ton": round(price_ton, 6),
+                    "resell_amount_stars_est": self._stars_est(price_ton),
+                    "attributes": {
+                        "model": model_name,
+                        "background": background_name,
+                        "pattern": pattern_name,
+                    },
+                    "status": str((row or {}).get("status") or "ACTIVE"),
+                    "sale_type": str((row or {}).get("sale_type") or "FIXED"),
+                    "preview_url": str((row or {}).get("preview_url") or ""),
+                    "ts_detected": first_seen_at,
+                    "first_seen_at": first_seen_at,
+                    "last_seen_at": last_seen_at,
+                    "relist_count": int(entry.get("relist_count") or 0),
+                    "last_relisted_at": relisted_at or None,
+                    "is_new": bool(is_new),
+                    "source": "fragment.verified_snapshot",
+                }
+            )
+        return rows
+
+    def _extract_mt_listing_items(self, payload: dict) -> list:
+        if not isinstance(payload, dict):
+            return []
+        if isinstance(payload.get("items"), list):
+            return payload.get("items") or []
+        data = payload.get("data")
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            return data.get("items") or []
+        return []
+
+    def _normalize_mt_listing_item(self, raw: dict, now: datetime, window_sec: int) -> dict | None:
+        if not isinstance(raw, dict):
+            return None
+        gift_id = str(raw.get("gift_id") or raw.get("collection_id") or raw.get("slug") or "").strip().lower()
+        unique_id = str(raw.get("unique_id") or raw.get("id") or raw.get("listing_id") or "").strip()
+        if not gift_id or not unique_id:
+            return None
+        attrs = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
+        model = str(attrs.get("model") or raw.get("model") or "").strip() or "Unknown"
+        background = str(attrs.get("background") or raw.get("background") or "").strip() or "Unknown"
+        pattern = str(attrs.get("pattern") or raw.get("pattern") or "").strip() or "Unknown"
+        collection = str(raw.get("collection") or raw.get("title") or _slug_to_name(gift_id))
+        first_seen_at = str(raw.get("first_seen_at") or raw.get("ts_detected") or raw.get("ts") or _iso(now))
+        last_seen_at = str(raw.get("last_seen_at") or raw.get("ts") or first_seen_at)
+        relisted_at = str(raw.get("last_relisted_at") or "")
+        try:
+            ton = float(raw.get("resell_amount_ton") or raw.get("price_ton") or 0.0)
+        except Exception:
+            ton = 0.0
+        stars_est_raw = raw.get("resell_amount_stars_est")
+        if stars_est_raw in (None, ""):
+            stars_est = self._stars_est(ton)
+        else:
+            try:
+                stars_est = int(stars_est_raw)
+            except Exception:
+                stars_est = self._stars_est(ton)
+        listing_key = str(raw.get("listing_key") or f"{gift_id}:{unique_id}")
+        return {
+            "listing_key": listing_key,
+            "gift_id": gift_id,
+            "unique_id": unique_id,
+            "variant_id": str(raw.get("variant_id") or f"{gift_id}|unknown|unknown|unknown"),
+            "num": raw.get("num"),
+            "slug": str(raw.get("slug") or gift_id),
+            "title": collection,
+            "collection": collection,
+            "collection_id": gift_id,
+            "resell_currency": str(raw.get("resell_currency") or ("TON" if ton > 0 else "STARS")),
+            "currency_mode": str(raw.get("currency_mode") or ("TON_ONLY" if ton > 0 else "STARS")),
+            "resell_amount_ton": round(ton, 6) if ton > 0 else None,
+            "resell_amount_stars_est": stars_est,
+            "attributes": {"model": model, "background": background, "pattern": pattern},
+            "status": str(raw.get("status") or "ACTIVE"),
+            "sale_type": str(raw.get("sale_type") or "FIXED"),
+            "preview_url": str(raw.get("preview_url") or ""),
+            "ts_detected": first_seen_at,
+            "first_seen_at": first_seen_at,
+            "last_seen_at": last_seen_at,
+            "relist_count": int(raw.get("relist_count") or 0),
+            "last_relisted_at": relisted_at or None,
+            "is_new": bool(raw.get("is_new")) or self._is_listing_new(now, first_seen_at, relisted_at, window_sec),
+            "source": "mtproto_api",
+        }
+
+    def _refresh_mt_listing_source(self, force: bool = False, window_sec: int | None = None) -> tuple[list, dict]:
+        now = _now()
+        wsec = max(30, min(int(window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
+        cache = self._listing_mt_runtime_cache
+        if (not force) and cache.get("rows") and (time.monotonic() - float(cache.get("fetched_mono") or 0.0)) < self.listing_mt_cache_ttl_sec:
+            return list(cache.get("rows") or []), {
+                "source": str(cache.get("source") or "runtime_cache"),
+                "error": str(cache.get("error") or ""),
+                "updated_at": cache.get("updated_at"),
+                "url_configured": bool(self.listing_mt_api_url),
+            }
+
+        rows: list = []
+        source = "disabled"
+        error = ""
+        updated_at = None
+        if self.listing_mt_api_url:
+            source = "mtproto_api"
+            try:
+                req = urllib.request.Request(self.listing_mt_api_url, method="GET")
+                if self.listing_mt_api_token:
+                    req.add_header(self.listing_mt_api_token_header, f"{self.listing_mt_api_token_prefix}{self.listing_mt_api_token}")
+                with urllib.request.urlopen(req, timeout=self.listing_mt_api_timeout_sec) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                updated_at = payload.get("updated_at") if isinstance(payload, dict) else None
+                for item in self._extract_mt_listing_items(payload):
+                    norm = self._normalize_mt_listing_item(item, now=now, window_sec=wsec)
+                    if norm:
+                        rows.append(norm)
+                if rows:
+                    self.mt_listings_snapshot = {"updated_at": updated_at or _iso(now), "items": rows}
+                    self._save_mt_listings_snapshot()
+            except Exception as exc:
+                error = f"{exc.__class__.__name__}: {exc}"
+
+        if not rows:
+            snap_items = self.mt_listings_snapshot.get("items") if isinstance(self.mt_listings_snapshot, dict) else []
+            if isinstance(snap_items, list):
+                for item in snap_items:
+                    norm = self._normalize_mt_listing_item(item, now=now, window_sec=wsec)
+                    if norm:
+                        rows.append(norm)
+            if rows:
+                source = "mtproto_snapshot"
+                updated_at = self.mt_listings_snapshot.get("updated_at") if isinstance(self.mt_listings_snapshot, dict) else None
+
+        cache.update(
+            {
+                "fetched_mono": time.monotonic(),
+                "rows": rows,
+                "source": source,
+                "error": error,
+                "updated_at": updated_at or _iso(now),
+            }
+        )
+        return rows, {
+            "source": source,
+            "error": error,
+            "updated_at": updated_at or _iso(now),
+            "url_configured": bool(self.listing_mt_api_url),
+        }
+
+    def _apply_listing_filters(
+        self,
+        rows: List[dict],
+        only_new: bool,
+        collection_q: str,
+        model_q: str,
+        background_q: str,
+        pattern_q: str,
+    ) -> List[dict]:
+        c_q = str(collection_q or "").strip().lower()
+        m_q = str(model_q or "").strip().lower()
+        b_q = str(background_q or "").strip().lower()
+        p_q = str(pattern_q or "").strip().lower()
+        out = []
+        for row in rows:
+            attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+            collection_name = str(row.get("collection") or row.get("title") or row.get("collection_id") or "")
+            collection_id = str(row.get("collection_id") or row.get("gift_id") or "").lower()
+            model_name = str(attrs.get("model") or "")
+            background_name = str(attrs.get("background") or "")
+            pattern_name = str(attrs.get("pattern") or "")
+            if c_q and c_q not in collection_name.lower() and c_q not in collection_id:
+                continue
+            if m_q and m_q not in model_name.lower():
+                continue
+            if b_q and b_q not in background_name.lower():
+                continue
+            if p_q and p_q not in pattern_name.lower():
+                continue
+            if only_new and not bool(row.get("is_new")):
+                continue
+            out.append(row)
+        out.sort(
+            key=lambda x: (str(x.get("last_seen_at") or ""), float(x.get("resell_amount_ton") or 0.0)),
+            reverse=True,
+        )
+        return out
+
+    def listing_source_status_v1(self) -> dict:
+        _, status = self._refresh_mt_listing_source(force=False)
+        return {
+            "primary_mode": self.listing_primary_source,
+            "url_configured": bool(self.listing_mt_api_url),
+            "source": status.get("source"),
+            "error": status.get("error"),
+            "updated_at": status.get("updated_at"),
+            "cache_ttl_sec": self.listing_mt_cache_ttl_sec,
+        }
+
     def listings_v1(
         self,
         limit: int = 100,
@@ -2944,124 +3203,69 @@ class GiftAnalyticsService:
         now = _now()
         self._sync_listing_tracker_state(now, persist=False)
         window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
-        c_q = str(collection_q or "").strip().lower()
-        m_q = str(model_q or "").strip().lower()
-        b_q = str(background_q or "").strip().lower()
-        p_q = str(pattern_q or "").strip().lower()
-        rows_key = ("listings_v1_rows", bool(only_new), window_sec, c_q, m_q, b_q, p_q)
-        rows = self._cache_get(rows_key)
-        if rows is None:
-            rows = []
-            for row in self.listing_state.values():
-                if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
-                    continue
-                key = self._listing_tracker_key(row)
-                if not key:
-                    continue
-                entry = self.listing_tracker_state.get(key) or {}
-                variant_id = str((row or {}).get("variant_id") or "")
-                model_name, background_name, pattern_name = self._variant_attrs_from_id(variant_id)
-                v = self.variants.get(variant_id) or {}
-                traits = v.get("traits") or {}
-                model_name = str(((traits.get("model") or {}).get("name")) or model_name)
-                background_name = str(((traits.get("background") or {}).get("name")) or background_name)
-                pattern_name = str(((traits.get("pattern") or {}).get("name")) or pattern_name)
-                collection_id = str((row or {}).get("base_id") or "").strip().lower()
-                collection_name = self.bases.get(collection_id).name if collection_id in self.bases else _slug_to_name(collection_id)
-                if c_q and c_q not in collection_name.lower() and c_q not in collection_id:
-                    continue
-                if m_q and m_q not in model_name.lower():
-                    continue
-                if b_q and b_q not in background_name.lower():
-                    continue
-                if p_q and p_q not in pattern_name.lower():
-                    continue
-
-                first_seen_at = str(entry.get("first_seen_at") or (row or {}).get("last_seen") or _iso(now))
-                last_seen_at = str(entry.get("last_seen_at") or (row or {}).get("last_seen") or _iso(now))
-                relisted_at = str(entry.get("last_relisted_at") or "")
-                first_seen_dt = _parse_ts(first_seen_at)
-                relisted_dt = _parse_ts(relisted_at) if relisted_at else None
-                is_new = ((now - first_seen_dt).total_seconds() <= window_sec) or (
-                    relisted_dt is not None and (now - relisted_dt).total_seconds() <= window_sec
-                )
-                if only_new and not is_new:
-                    continue
-
-                price_ton = float((row or {}).get("price_ton") or 0.0)
-                rows.append(
-                    {
-                        "listing_key": key,
-                        "gift_id": collection_id,
-                        "unique_id": str((row or {}).get("listing_id") or ""),
-                        "variant_id": variant_id,
-                        "num": None,
-                        "slug": collection_id,
-                        "title": collection_name,
-                        "collection": collection_name,
-                        "collection_id": collection_id,
-                        "resell_currency": "TON",
-                        "currency_mode": "TON_ONLY",
-                        "resell_amount_ton": round(price_ton, 6),
-                        "resell_amount_stars_est": self._stars_est(price_ton),
-                        "attributes": {
-                            "model": model_name,
-                            "background": background_name,
-                            "pattern": pattern_name,
-                        },
-                        "status": str((row or {}).get("status") or "ACTIVE"),
-                        "sale_type": str((row or {}).get("sale_type") or "FIXED"),
-                        "preview_url": str((row or {}).get("preview_url") or ""),
-                        "ts_detected": first_seen_at,
-                        "first_seen_at": first_seen_at,
-                        "last_seen_at": last_seen_at,
-                        "relist_count": int(entry.get("relist_count") or 0),
-                        "last_relisted_at": relisted_at or None,
-                        "is_new": bool(is_new),
-                        "source": "fragment.verified_snapshot",
-                    }
-                )
-            rows.sort(
-                key=lambda x: (str(x.get("last_seen_at") or ""), float(x.get("resell_amount_ton") or 0.0)),
-                reverse=True,
-            )
-            self._cache_set(rows_key, rows)
+        source_status = {"source": "fragment.verified_snapshot", "error": "", "updated_at": self.state.get("updated_at")}
+        rows = []
+        primary_mode = self.listing_primary_source
+        if primary_mode in {"auto", "mtproto", "mtproto_api"}:
+            mt_rows, mt_status = self._refresh_mt_listing_source(force=False, window_sec=window_sec)
+            source_status = mt_status
+            if mt_rows:
+                rows = mt_rows
+        if not rows:
+            rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
+            if not str(source_status.get("source") or "").startswith("mtproto"):
+                source_status = {"source": "fragment.verified_snapshot", "error": "", "updated_at": self.state.get("updated_at")}
+        rows = self._apply_listing_filters(
+            rows,
+            only_new=only_new,
+            collection_q=collection_q,
+            model_q=model_q,
+            background_q=background_q,
+            pattern_q=pattern_q,
+        )
         off = self._cursor_offset(cursor)
         lim = max(1, min(int(limit or 100), 500))
         chunk = rows[off : off + lim]
         next_cursor = str(off + lim) if (off + lim) < len(rows) else None
-        return {"items": chunk, "next_cursor": next_cursor, "window_sec": window_sec}
+        return {
+            "items": chunk,
+            "next_cursor": next_cursor,
+            "window_sec": window_sec,
+            "source": source_status.get("source") or "fragment.verified_snapshot",
+            "source_error": source_status.get("error") or "",
+        }
 
     def listings_summary_v1(self, new_window_sec: int | None = None) -> dict:
         now = _now()
         self._sync_listing_tracker_state(now, persist=False)
         window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
+        source = "fragment.verified_snapshot"
+        source_error = ""
+        rows = []
+        if self.listing_primary_source in {"auto", "mtproto", "mtproto_api"}:
+            mt_rows, mt_status = self._refresh_mt_listing_source(force=False, window_sec=window_sec)
+            if mt_rows:
+                rows = mt_rows
+                source = str(mt_status.get("source") or "mtproto_api")
+                source_error = str(mt_status.get("error") or "")
+        if not rows:
+            rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
         by_collection: Dict[str, int] = {}
-        active_total = 0
+        active_total = len(rows)
         new_total = 0
         relisted_total = 0
         price_samples: List[float] = []
-        for row in self.listing_state.values():
-            if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
-                continue
-            active_total += 1
-            key = self._listing_tracker_key(row)
-            entry = self.listing_tracker_state.get(key or "") or {}
-            first_seen_at = str(entry.get("first_seen_at") or (row or {}).get("last_seen") or _iso(now))
-            relisted_at = str(entry.get("last_relisted_at") or "")
-            first_seen_dt = _parse_ts(first_seen_at)
-            relisted_dt = _parse_ts(relisted_at) if relisted_at else None
-            is_new = ((now - first_seen_dt).total_seconds() <= window_sec) or (
-                relisted_dt is not None and (now - relisted_dt).total_seconds() <= window_sec
-            )
-            if is_new:
+        for row in rows:
+            if bool(row.get("is_new")):
                 new_total += 1
+            relisted_at = row.get("last_relisted_at")
+            relisted_dt = _parse_ts(relisted_at) if relisted_at else None
             if relisted_dt is not None and (now - relisted_dt).total_seconds() <= window_sec:
                 relisted_total += 1
-            collection_id = str((row or {}).get("base_id") or "").strip().lower()
+            collection_id = str(row.get("collection_id") or row.get("gift_id") or "").strip().lower()
             if collection_id:
                 by_collection[collection_id] = by_collection.get(collection_id, 0) + 1
-            price = float((row or {}).get("price_ton") or 0.0)
+            price = float(row.get("resell_amount_ton") or 0.0)
             if price > 0:
                 price_samples.append(price)
 
@@ -3083,7 +3287,8 @@ class GiftAnalyticsService:
                 for cid, count in top_collections
             ],
             "updated_at": self.state.get("updated_at") or _iso(now),
-            "source": "fragment.verified_snapshot",
+            "source": source,
+            "source_error": source_error,
         }
 
     def _evaluate_alerts(self, now: datetime) -> None:

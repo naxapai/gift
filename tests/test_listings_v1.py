@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from core import GiftAnalyticsService
 
@@ -77,7 +78,24 @@ class TestListingsV1(unittest.TestCase):
         self.assertEqual(int(svc.listing_tracker_state["foo:foo-1"].get("relist_count") or 0), 1)
         self.assertIsNotNone(svc.listing_tracker_state["foo:foo-1"].get("last_relisted_at"))
 
+    def test_listing_source_status_contract(self) -> None:
+        svc = GiftAnalyticsService()
+        payload = svc.listing_source_status_v1()
+        self.assertIn("primary_mode", payload)
+        self.assertIn("url_configured", payload)
+        self.assertIn("source", payload)
+        self.assertIn("error", payload)
+        self.assertIn("cache_ttl_sec", payload)
+
+    def test_listings_v1_fallback_when_mtproto_unavailable(self) -> None:
+        with patch.dict("os.environ", {"LISTING_PRIMARY_SOURCE": "mtproto", "LISTING_MT_API_URL": "http://127.0.0.1:9/never"}, clear=False):
+            svc = GiftAnalyticsService()
+            payload = svc.listings_v1(limit=10, only_new=False, new_window_sec=3600)
+            self.assertIn("items", payload)
+            self.assertIn("source", payload)
+            # Even in mtproto mode system must remain available via runtime fallback.
+            self.assertTrue(str(payload.get("source") or "").strip() != "")
+
 
 if __name__ == "__main__":
     unittest.main()
-

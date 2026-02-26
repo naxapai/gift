@@ -1576,6 +1576,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, _state().listings_summary_v1(new_window_sec=new_window_sec), cache_control="no-store")
             return
 
+        if path == "/api/listing/source-status":
+            _json_response(self, _state().listing_source_status_v1(), cache_control="no-store")
+            return
+
         if path.startswith("/v1/signals/") and path.count("/") == 3:
             signal_id = unquote(path.split("/")[-1])
             params = parse_qs(parsed.query)

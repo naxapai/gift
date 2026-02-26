@@ -78,6 +78,20 @@ services:
         value: "3"
       - key: V1_SIGNAL_ENGINE_MODE
         value: "tz"
+      - key: LISTING_PRIMARY_SOURCE
+        value: "auto"
+      - key: LISTING_MT_API_URL
+        sync: false
+      - key: LISTING_MT_API_TOKEN
+        sync: false
+      - key: LISTING_MT_API_TOKEN_HEADER
+        value: "Authorization"
+      - key: LISTING_MT_API_TOKEN_PREFIX
+        value: "Bearer "
+      - key: LISTING_MT_API_TIMEOUT_SEC
+        value: "8"
+      - key: LISTING_MT_CACHE_TTL_SEC
+        value: "2"
       - key: TZ_GATES_BUY_MIN
         value: "1"
       - key: TZ_GATES_BUY_MAX
