@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://giftmarketzone.local/schemas/metric.updated.json",
+  "title": "metric.updated",
+  "type": "object",
+  "required": [
+    "type",
+    "ts",
+    "key",
+    "version",
+    "payload"
+  ],
+  "properties": {
+    "type": {
+      "const": "metric.updated"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "key": {
+      "type": "string",
+      "description": "MARKET | collection_id | variant_id"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "trace_id": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "metric",
+        "scope",
+        "market",
+        "unit",
+        "point",
+        "stale"
+      ],
+      "properties": {
+        "metric": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "MARKET",
+            "COLLECTION",
+            "VARIANT"
+          ]
+        },
+        "market": {
+          "type": "boolean"
+        },
+        "collection_id": {
+          "type": "string"
+        },
+        "variant_id": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "TON",
+            "STARS",
+            "PCT",
+            "COUNT",
+            "SCORE_0_1",
+            "SCORE_0_100",
+            "RATIO",
+            "BOOL",
+            "JSON"
+          ]
+        },
+        "point": {
+          "type": "object",
+          "required": [
+            "ts",
+            "value"
+          ],
+          "properties": {
+            "ts": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "value": {
+              "type": "number"
+            },
+            "extra": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "stale": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

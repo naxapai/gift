@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://giftmarketzone.local/schemas/signal.created.json",
+  "title": "signal.created",
+  "type": "object",
+  "required": [
+    "type",
+    "ts",
+    "key",
+    "version",
+    "payload"
+  ],
+  "properties": {
+    "type": {
+      "const": "signal.created"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "key": {
+      "type": "string",
+      "description": "variant_id"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "trace_id": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "signal_id",
+        "ts",
+        "type",
+        "variant_id",
+        "collection_id",
+        "collection",
+        "score100",
+        "conf_pct",
+        "reasons",
+        "risk_flags"
+      ],
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "BUY",
+            "SELL",
+            "WATCH",
+            "SKIP"
+          ]
+        },
+        "variant_id": {
+          "type": "string"
+        },
+        "collection_id": {
+          "type": "string"
+        },
+        "collection": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "background": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "score100": {
+          "type": "number"
+        },
+        "conf_pct": {
+          "type": "number"
+        },
+        "price_ton": {
+          "type": "number"
+        },
+        "floor_ton": {
+          "type": "number"
+        },
+        "fair_ton": {
+          "type": "number"
+        },
+        "undervalue": {
+          "type": "number"
+        },
+        "expected_profit_pct": {
+          "type": "number"
+        },
+        "forecast24h_pct_min": {
+          "type": "number"
+        },
+        "forecast24h_pct_max": {
+          "type": "number"
+        },
+        "active_lots": {
+          "type": "integer"
+        },
+        "liquidity24h": {
+          "type": "number"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "risk_flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

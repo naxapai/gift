@@ -3214,23 +3214,32 @@ class GiftAnalyticsService:
             "variant_id": variant_id,
             "collection_id": str(sig.get("collection_id") or ""),
             "collection": str(sig.get("collection") or sig.get("collection_id") or ""),
-            "model": sig.get("model"),
-            "background": sig.get("background"),
-            "pattern": sig.get("pattern"),
             "score100": float(sig.get("score100") or 0.0),
             "conf_pct": float(sig.get("conf_pct") or 0.0),
-            "price_ton": float(sig.get("price_ton")) if sig.get("price_ton") not in (None, "") else None,
-            "floor_ton": float(sig.get("floor_ton")) if sig.get("floor_ton") not in (None, "") else None,
-            "fair_ton": float(sig.get("fair_ton")) if sig.get("fair_ton") not in (None, "") else None,
-            "undervalue": float(sig.get("undervalue")) if sig.get("undervalue") not in (None, "") else None,
-            "expected_profit_pct": float(sig.get("expected_profit_pct")) if sig.get("expected_profit_pct") not in (None, "") else None,
-            "forecast24h_pct_min": float(sig.get("forecast24h_pct_min")) if sig.get("forecast24h_pct_min") not in (None, "") else None,
-            "forecast24h_pct_max": float(sig.get("forecast24h_pct_max")) if sig.get("forecast24h_pct_max") not in (None, "") else None,
-            "active_lots": int(sig.get("active_lots")) if sig.get("active_lots") not in (None, "") else None,
-            "liquidity24h": float(sig.get("liquidity24h")) if sig.get("liquidity24h") not in (None, "") else None,
             "reasons": [str(x) for x in (sig.get("reasons") or [])],
             "risk_flags": [str(x) for x in (sig.get("risk_flags") or [])],
         }
+        optional_str = ("model", "background", "pattern")
+        for key in optional_str:
+            val = sig.get(key)
+            if val not in (None, ""):
+                payload[key] = str(val)
+        optional_num = (
+            "price_ton",
+            "floor_ton",
+            "fair_ton",
+            "undervalue",
+            "expected_profit_pct",
+            "forecast24h_pct_min",
+            "forecast24h_pct_max",
+            "liquidity24h",
+        )
+        for key in optional_num:
+            val = sig.get(key)
+            if val not in (None, ""):
+                payload[key] = float(val)
+        if sig.get("active_lots") not in (None, ""):
+            payload["active_lots"] = int(sig.get("active_lots"))
         return {
             "type": "signal.created",
             "ts": event_ts,
@@ -3262,8 +3271,6 @@ class GiftAnalyticsService:
             "metric": str(metric or "").upper(),
             "scope": scope_name,
             "market": bool(market),
-            "collection_id": str(collection_id or "") if collection_id else None,
-            "variant_id": str(variant_id or "") if variant_id else None,
             "unit": str(unit or "JSON"),
             "point": {
                 "ts": event_ts,
@@ -3272,6 +3279,10 @@ class GiftAnalyticsService:
             },
             "stale": self.is_stale() if stale is None else bool(stale),
         }
+        if collection_id:
+            payload["collection_id"] = str(collection_id)
+        if variant_id:
+            payload["variant_id"] = str(variant_id)
         return {
             "type": "metric.updated",
             "ts": event_ts,
