@@ -2466,7 +2466,7 @@ function renderVariantDetails(variant, listings, series) {
 
 async function loadOverviewAndScreeners() {
   const [overviewRaw, top, shock, overheat] = await Promise.all([
-    fetchJson("/v1/overview?mode=tz").catch(() => fetchJson("/api/market/overview")),
+    fetchJson("/v1/overview?mode=tz"),
     fetchJson("/api/screeners/top-movers?entity=variant&period=24h&type=price"),
     fetchJson("/api/screeners/supply-shock?entity=variant&period=24h&type=price"),
     fetchJson("/api/screeners/overheat?entity=variant&period=24h&type=price"),
@@ -2567,23 +2567,13 @@ async function loadScreenersPage() {
 }
 
 async function loadSignalsPage() {
-  const v1 = await fetchJson("/v1/signals?mode=tz&limit=5000", { cache: "no-store" }).catch(() => null);
-  if (v1 && Array.isArray(v1.items)) {
-    const all = v1.items || [];
-    state.signals.items = all;
-    state.signals.buyTotal = all.filter((x) => String(x?.type || "").toUpperCase() === "BUY").length;
-    state.signals.sellTotal = all.filter((x) => String(x?.type || "").toUpperCase() === "SELL").length;
-    state.signals.qualityDegraded = false;
-    state.signals.qualityReason = "";
-  } else {
-    const filter = state.signals.filter || "all";
-    const resp = await fetchJson(`/api/signals/latest?filter=${encodeURIComponent(filter)}&limit=5000`, { cache: "no-store" });
-    state.signals.items = resp.items || [];
-    state.signals.buyTotal = Number(resp.buy_total || 0);
-    state.signals.sellTotal = Number(resp.sell_total || 0);
-    state.signals.qualityDegraded = Boolean(resp.signals_quality_degraded);
-    state.signals.qualityReason = String(resp.signals_quality_reason || "");
-  }
+  const v1 = await fetchJson("/v1/signals?mode=tz&limit=5000", { cache: "no-store" });
+  const all = Array.isArray(v1.items) ? v1.items : [];
+  state.signals.items = all;
+  state.signals.buyTotal = all.filter((x) => String(x?.type || "").toUpperCase() === "BUY").length;
+  state.signals.sellTotal = all.filter((x) => String(x?.type || "").toUpperCase() === "SELL").length;
+  state.signals.qualityDegraded = false;
+  state.signals.qualityReason = "";
   renderSignals();
   state.pageLoaded.signals = true;
 }
