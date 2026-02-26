@@ -356,6 +356,29 @@
 
             <article class="bento-card listing-signals-card">
               <header class="card-head"><h2>Сигналы листинга</h2></header>
+              <div class="listing-signals-controls">
+                <label class="field">
+                  <span>Тип</span>
+                  <select id="listingSignalType">
+                    <option value="">Все</option>
+                    <option value="BUY">BUY</option>
+                    <option value="SELL">SELL</option>
+                    <option value="WATCH">WATCH</option>
+                    <option value="SKIP">SKIP</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Min score</span>
+                  <input id="listingSignalMinScore" type="number" min="0" max="100" step="1" placeholder="0-100" />
+                </label>
+                <label class="field">
+                  <span>Релисты</span>
+                  <input id="listingSignalIncludeRelisted" type="checkbox" checked />
+                </label>
+                <div class="row-actions">
+                  <button id="listingSignalsApplyBtn" class="btn secondary">Применить</button>
+                </div>
+              </div>
               <div id="listingSignalsStats" class="kpi-list"></div>
               <div class="table-wrap">
                 <table class="table listing-signals-table">

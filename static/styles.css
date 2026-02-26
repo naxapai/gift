@@ -1575,6 +1575,18 @@ body.booting #staleBanner {
 .listing-grid > .list-card { grid-column: span 6; }
 .listing-grid > .listing-signals-card { grid-column: span 6; }
 
+.listing-signals-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.listing-signals-controls .field {
+  margin-bottom: 0;
+}
+
 .listing-signals-table {
   table-layout: fixed;
 }

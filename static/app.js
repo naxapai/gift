@@ -73,6 +73,11 @@ const state = {
       collectionQ: "",
       modelQ: "",
     },
+    signalFilters: {
+      type: "",
+      minScore: "",
+      includeRelisted: true,
+    },
   },
   signals: {
     filter: "all",
@@ -132,6 +137,38 @@ const state = {
 const STORAGE_PAGE_KEY = "active_page";
 const STORAGE_VARIANT_KEY = "active_variant_id";
 const STORAGE_BASE_KEY = "active_base_id";
+const STORAGE_LISTING_SIGNAL_FILTERS_KEY = "listing_signal_filters_v1";
+
+function loadListingSignalFilters() {
+  try {
+    const raw = localStorage.getItem(STORAGE_LISTING_SIGNAL_FILTERS_KEY);
+    if (!raw) return { type: "", minScore: "", includeRelisted: true };
+    const parsed = JSON.parse(raw);
+    const type = String(parsed?.type || "").toUpperCase();
+    const allowed = new Set(["", "BUY", "SELL", "WATCH", "SKIP"]);
+    const minScoreNum = Number(parsed?.minScore);
+    const minScore = Number.isFinite(minScoreNum) ? Math.min(100, Math.max(0, minScoreNum)) : "";
+    return {
+      type: allowed.has(type) ? type : "",
+      minScore,
+      includeRelisted: parsed?.includeRelisted !== false,
+    };
+  } catch (_) {
+    return { type: "", minScore: "", includeRelisted: true };
+  }
+}
+
+function persistListingSignalFilters() {
+  try {
+    const sf = state.listingFeed.signalFilters || {};
+    const payload = {
+      type: String(sf.type || "").toUpperCase(),
+      minScore: sf.minScore === "" ? "" : Number(sf.minScore),
+      includeRelisted: sf.includeRelisted !== false,
+    };
+    localStorage.setItem(STORAGE_LISTING_SIGNAL_FILTERS_KEY, JSON.stringify(payload));
+  } catch (_) {}
+}
 
 const el = {
   pages: document.querySelectorAll(".page"),
@@ -204,6 +241,10 @@ const el = {
   listingOnlyNew: document.getElementById("listingOnlyNew"),
   listingWindowSec: document.getElementById("listingWindowSec"),
   listingApplyBtn: document.getElementById("listingApplyBtn"),
+  listingSignalType: document.getElementById("listingSignalType"),
+  listingSignalMinScore: document.getElementById("listingSignalMinScore"),
+  listingSignalIncludeRelisted: document.getElementById("listingSignalIncludeRelisted"),
+  listingSignalsApplyBtn: document.getElementById("listingSignalsApplyBtn"),
 
   watchlistBody: document.getElementById("watchlistBody"),
 
@@ -2049,7 +2090,9 @@ function scheduleListingRefreshFromStream() {
 function startListingStream() {
   stopListingStream();
   const win = Number(state.listingFeed.filters.windowSec || 120);
-  const url = `/v1/listings/stream?new_window_sec=${encodeURIComponent(String(win))}&interval_sec=1.5&include_relisted=1`;
+  const sf = state.listingFeed.signalFilters || {};
+  const includeRelisted = sf.includeRelisted !== false ? 1 : 0;
+  const url = `/v1/listings/stream?new_window_sec=${encodeURIComponent(String(win))}&interval_sec=1.5&include_relisted=${includeRelisted}`;
   const es = new EventSource(url, { withCredentials: true });
   es.addEventListener("market.listing.new", scheduleListingRefreshFromStream);
   es.addEventListener("market.listing.relisted", scheduleListingRefreshFromStream);
@@ -2736,16 +2779,26 @@ async function loadSignalsPage() {
 
 async function loadListingPage() {
   const f = state.listingFeed.filters || {};
+  const sf = state.listingFeed.signalFilters || {};
   const params = new URLSearchParams();
   params.set("limit", "500");
   params.set("new_window_sec", String(Number(f.windowSec || 120)));
   if (f.onlyNew) params.set("only_new", "1");
   if (f.collectionQ) params.set("collection_q", String(f.collectionQ));
   if (f.modelQ) params.set("model_q", String(f.modelQ));
+  const signalsParams = new URLSearchParams();
+  signalsParams.set("limit", "250");
+  signalsParams.set("mode", "tz");
+  signalsParams.set("new_window_sec", String(Number(f.windowSec || 120)));
+  if (sf.type) signalsParams.set("type", String(sf.type));
+  if (sf.minScore !== "" && Number.isFinite(Number(sf.minScore))) {
+    signalsParams.set("min_score", String(Math.max(0, Math.min(1, Number(sf.minScore) / 100))));
+  }
+  signalsParams.set("include_relisted", sf.includeRelisted === false ? "0" : "1");
   const [summary, rows, listingSignals] = await Promise.all([
     fetchJson(`/v1/listings/summary?new_window_sec=${encodeURIComponent(String(Number(f.windowSec || 120)))}`, { cache: "no-store" }),
     fetchJson(`/v1/listings?${params.toString()}`, { cache: "no-store" }),
-    fetchJson(`/v1/listings/signals?limit=250&mode=tz&new_window_sec=${encodeURIComponent(String(Number(f.windowSec || 120)))}`, { cache: "no-store" }),
+    fetchJson(`/v1/listings/signals?${signalsParams.toString()}`, { cache: "no-store" }),
   ]);
   const mergedSummary = { ...(summary || {}) };
   if (!mergedSummary.source && rows?.source) mergedSummary.source = rows.source;
@@ -2909,6 +2962,35 @@ function bindEvents() {
     el.listingApplyBtn.addEventListener("click", () => {
       state.listingFeed.filters.collectionQ = String(el.listingCollectionQuery?.value || "").trim();
       state.listingFeed.filters.modelQ = String(el.listingModelQuery?.value || "").trim();
+      loadListingPage().catch(() => {});
+    });
+  }
+  if (el.listingSignalType) {
+    el.listingSignalType.value = String(state.listingFeed.signalFilters?.type || "");
+    syncCustomSelect(el.listingSignalType);
+  }
+  if (el.listingSignalMinScore) {
+    const ms = state.listingFeed.signalFilters?.minScore;
+    el.listingSignalMinScore.value = ms === "" ? "" : String(ms);
+  }
+  if (el.listingSignalIncludeRelisted) {
+    el.listingSignalIncludeRelisted.checked = state.listingFeed.signalFilters?.includeRelisted !== false;
+  }
+  if (el.listingSignalsApplyBtn) {
+    el.listingSignalsApplyBtn.addEventListener("click", () => {
+      const rawType = String(el.listingSignalType?.value || "").toUpperCase();
+      const allowed = new Set(["", "BUY", "SELL", "WATCH", "SKIP"]);
+      state.listingFeed.signalFilters.type = allowed.has(rawType) ? rawType : "";
+
+      const rawScore = String(el.listingSignalMinScore?.value || "").trim();
+      if (!rawScore) {
+        state.listingFeed.signalFilters.minScore = "";
+      } else {
+        const n = Number(rawScore);
+        state.listingFeed.signalFilters.minScore = Number.isFinite(n) ? Math.min(100, Math.max(0, Math.round(n))) : "";
+      }
+      state.listingFeed.signalFilters.includeRelisted = Boolean(el.listingSignalIncludeRelisted?.checked);
+      persistListingSignalFilters();
       loadListingPage().catch(() => {});
     });
   }
@@ -3314,6 +3396,7 @@ function startAutoSync() {
 async function bootstrap() {
   if (bootstrapped) return;
   bootstrapped = true;
+  state.listingFeed.signalFilters = loadListingSignalFilters();
   preselectInitialPage();
   document.body.classList.remove("booting");
   bindEvents();
