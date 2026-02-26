@@ -59,6 +59,7 @@
         <button class="nav-btn" data-page="catalog">Каталог</button>
         <button class="nav-btn" data-page="screeners">Скринеры</button>
         <button class="nav-btn" data-page="signals">Сигналы</button>
+        <button class="nav-btn" data-page="listing">Листинг</button>
         <button class="nav-btn" data-page="watchlist">Избранное</button>
         <button class="nav-btn" data-page="settings">Настройки</button>
         <button id="adminNavBtn" class="nav-btn hidden" data-page="admin">Админ</button>
@@ -291,6 +292,63 @@
                     </tr>
                   </thead>
                   <tbody id="signalsBody"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="listing" class="page" aria-labelledby="listingTitle">
+          <h1 id="listingTitle" class="page-title">Листинг</h1>
+          <div class="bento-grid listing-grid">
+            <article class="bento-card listing-filters-card">
+              <header class="card-head"><h2>Фильтры</h2></header>
+              <label class="field">
+                <span>Коллекция</span>
+                <input id="listingCollectionQuery" type="search" placeholder="Например: artisan" />
+              </label>
+              <label class="field">
+                <span>Модель</span>
+                <input id="listingModelQuery" type="search" placeholder="Например: domino" />
+              </label>
+              <label class="field">
+                <span>Окно NEW</span>
+                <select id="listingWindowSec">
+                  <option value="120">2 мин</option>
+                  <option value="300">5 мин</option>
+                  <option value="900">15 мин</option>
+                  <option value="3600">1 час</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Только новые</span>
+                <input id="listingOnlyNew" type="checkbox" checked />
+              </label>
+              <div class="row-actions">
+                <button id="listingApplyBtn" class="btn secondary">Применить</button>
+              </div>
+            </article>
+
+            <article class="bento-card listing-summary-card">
+              <header class="card-head"><h2>Сводка</h2></header>
+              <div id="listingStats" class="kpi-list"></div>
+            </article>
+
+            <article class="bento-card list-card">
+              <header class="card-head"><h2>Новые листинги</h2></header>
+              <div class="table-wrap">
+                <table class="table listing-table">
+                  <thead>
+                    <tr>
+                      <th>Подарок</th>
+                      <th>TON</th>
+                      <th>⭐</th>
+                      <th>First seen</th>
+                      <th>Last seen</th>
+                      <th>Статус</th>
+                    </tr>
+                  </thead>
+                  <tbody id="listingBody"></tbody>
                 </table>
               </div>
             </article>
@@ -549,6 +607,7 @@
       <button class="mobile-nav-btn" data-page="catalog">Каталог</button>
       <button class="mobile-nav-btn" data-page="screeners">Скринеры</button>
       <button class="mobile-nav-btn" data-page="signals">Сигналы</button>
+      <button class="mobile-nav-btn" data-page="listing">Листинг</button>
       <button class="mobile-nav-btn" data-page="watchlist">Избранное</button>
     </nav>
 

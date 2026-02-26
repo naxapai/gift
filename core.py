@@ -29,6 +29,7 @@ FAVORITES_FILE = DATA_DIR / "favorites_by_user.json"
 INGEST_LOG_FILE = DATA_DIR / "ingest.log"
 AI_RECO_CACHE_FILE = DATA_DIR / "ai_reco_cache.json"
 STARS_RATE_CACHE_FILE = DATA_DIR / "stars_rate_cache.json"
+LISTING_TRACKER_STATE_FILE = DATA_DIR / "listing_tracker_state.json"
 
 WINDOWS = {
     "1h": 60 * 60,
@@ -322,6 +323,7 @@ class GiftAnalyticsService:
         self.variants: Dict[str, dict] = {}
         self.variant_history: Dict[str, List[dict]] = _load_json(VARIANT_HISTORY_FILE, {})
         self.listing_state: Dict[str, dict] = _load_json(LISTING_STATE_FILE, {})
+        self.listing_tracker_state: Dict[str, dict] = _load_json(LISTING_TRACKER_STATE_FILE, {})
         self.trade_events: List[dict] = _load_json(TRADE_EVENTS_FILE, [])
         self.alert_rules: List[dict] = _load_json(ALERTS_FILE, [])
         self.alert_events: List[dict] = _load_json(ALERT_EVENTS_FILE, [])
@@ -365,7 +367,10 @@ class GiftAnalyticsService:
         self.verified_source = os.getenv("VERIFIED_SOURCE", "telegram_api").strip().lower()
         # Production default is TZ; legacy remains available via mode=legacy or env override.
         self.v1_signal_engine_mode = os.getenv("V1_SIGNAL_ENGINE_MODE", "tz").strip().lower()
+        self.listing_new_window_sec = max(30, int(os.getenv("LISTING_NEW_WINDOW_SEC", "120")))
+        self.listing_tracker_retention_sec = max(3600, int(os.getenv("LISTING_TRACKER_RETENTION_SEC", "1209600")))
         self._restore_from_listing_state()
+        self._sync_listing_tracker_state(_now(), persist=True)
         allow_bootstrap_from_file = self.verified_source in {"file", "fragment", "hybrid"}
         if self.fragment_bootstrap_cache and allow_bootstrap_from_file and not self.variants:
             self._bootstrap_from_verified_file()
@@ -463,6 +468,9 @@ class GiftAnalyticsService:
 
     def _save_listing_state(self) -> None:
         _save_json(LISTING_STATE_FILE, self.listing_state)
+
+    def _save_listing_tracker_state(self) -> None:
+        _save_json(LISTING_TRACKER_STATE_FILE, self.listing_tracker_state)
 
     def _save_trade_events(self) -> None:
         _save_json(TRADE_EVENTS_FILE, self.trade_events)
@@ -796,8 +804,110 @@ class GiftAnalyticsService:
             for vid, count in new_by_variant.items():
                 self._append_history(vid, now, extras={"new_listings": count})
 
+        self._sync_listing_tracker_state(now, persist=True)
         self._save_listing_state()
         self._save_trade_events()
+
+    def _listing_tracker_key(self, row: dict) -> str | None:
+        base_id = str((row or {}).get("base_id") or "").strip().lower()
+        listing_id = str((row or {}).get("listing_id") or "").strip()
+        if not base_id or not listing_id:
+            return None
+        return f"{base_id}:{listing_id}"
+
+    def _variant_attrs_from_id(self, variant_id: str) -> tuple[str, str, str]:
+        parts = str(variant_id or "").split("|")
+        model = _slug_to_name(parts[1]) if len(parts) > 1 else "Unknown"
+        background = _slug_to_name(parts[2]) if len(parts) > 2 else "Unknown"
+        pattern = _slug_to_name(parts[3]) if len(parts) > 3 else "Unknown"
+        return model, background, pattern
+
+    def _sync_listing_tracker_state(self, now: datetime, persist: bool = True) -> None:
+        if not isinstance(self.listing_tracker_state, dict):
+            self.listing_tracker_state = {}
+        tracker = self.listing_tracker_state
+        now_iso = _iso(now)
+        active_keys: set[str] = set()
+        changed = False
+
+        for row in self.listing_state.values():
+            if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
+                continue
+            key = self._listing_tracker_key(row)
+            if not key:
+                continue
+            active_keys.add(key)
+            price_ton = float((row or {}).get("price_ton") or 0.0)
+            variant_id = str((row or {}).get("variant_id") or "")
+            base_id = str((row or {}).get("base_id") or "").lower()
+            listing_id = str((row or {}).get("listing_id") or "")
+            last_seen = str((row or {}).get("last_seen") or now_iso)
+            entry = tracker.get(key)
+            if not isinstance(entry, dict):
+                tracker[key] = {
+                    "listing_key": key,
+                    "base_id": base_id,
+                    "listing_id": listing_id,
+                    "variant_id": variant_id,
+                    "first_seen_at": last_seen,
+                    "last_seen_at": last_seen,
+                    "last_price_ton": price_ton,
+                    "active": True,
+                    "relist_count": 0,
+                    "last_relisted_at": None,
+                    "last_absent_at": None,
+                }
+                changed = True
+                continue
+
+            was_active = bool(entry.get("active"))
+            if not was_active:
+                entry["relist_count"] = int(entry.get("relist_count") or 0) + 1
+                entry["last_relisted_at"] = now_iso
+                changed = True
+
+            if str(entry.get("variant_id") or "") != variant_id:
+                entry["variant_id"] = variant_id
+                changed = True
+            if float(entry.get("last_price_ton") or 0.0) != price_ton:
+                entry["last_price_ton"] = price_ton
+                changed = True
+            if str(entry.get("last_seen_at") or "") != last_seen:
+                entry["last_seen_at"] = last_seen
+                changed = True
+            if not was_active:
+                entry["active"] = True
+                changed = True
+            if entry.get("last_absent_at") is not None:
+                entry["last_absent_at"] = None
+                changed = True
+
+        for key, entry in list(tracker.items()):
+            if not isinstance(entry, dict):
+                tracker.pop(key, None)
+                changed = True
+                continue
+            if key in active_keys:
+                continue
+            if bool(entry.get("active")):
+                entry["active"] = False
+                entry["last_absent_at"] = now_iso
+                changed = True
+
+        cutoff = now - timedelta(seconds=self.listing_tracker_retention_sec)
+        for key, entry in list(tracker.items()):
+            if bool((entry or {}).get("active")):
+                continue
+            last_seen_dt = _parse_ts((entry or {}).get("last_seen_at"))
+            if last_seen_dt < cutoff:
+                tracker.pop(key, None)
+                changed = True
+
+        if changed:
+            self._data_version += 1
+            self._invalidate_view_cache()
+            if persist:
+                self._save_listing_tracker_state()
 
     def _append_history(self, variant_id: str, ts: datetime, extras: dict | None = None) -> None:
         extras = extras or {}
@@ -2819,6 +2929,162 @@ class GiftAnalyticsService:
             if str(item.get("signal_id") or "") == str(signal_id or ""):
                 return item
         return None
+
+    def listings_v1(
+        self,
+        limit: int = 100,
+        cursor: str | None = None,
+        only_new: bool = False,
+        new_window_sec: int | None = None,
+        collection_q: str = "",
+        model_q: str = "",
+        background_q: str = "",
+        pattern_q: str = "",
+    ) -> dict:
+        now = _now()
+        self._sync_listing_tracker_state(now, persist=False)
+        window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
+        c_q = str(collection_q or "").strip().lower()
+        m_q = str(model_q or "").strip().lower()
+        b_q = str(background_q or "").strip().lower()
+        p_q = str(pattern_q or "").strip().lower()
+        rows_key = ("listings_v1_rows", bool(only_new), window_sec, c_q, m_q, b_q, p_q)
+        rows = self._cache_get(rows_key)
+        if rows is None:
+            rows = []
+            for row in self.listing_state.values():
+                if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
+                    continue
+                key = self._listing_tracker_key(row)
+                if not key:
+                    continue
+                entry = self.listing_tracker_state.get(key) or {}
+                variant_id = str((row or {}).get("variant_id") or "")
+                model_name, background_name, pattern_name = self._variant_attrs_from_id(variant_id)
+                v = self.variants.get(variant_id) or {}
+                traits = v.get("traits") or {}
+                model_name = str(((traits.get("model") or {}).get("name")) or model_name)
+                background_name = str(((traits.get("background") or {}).get("name")) or background_name)
+                pattern_name = str(((traits.get("pattern") or {}).get("name")) or pattern_name)
+                collection_id = str((row or {}).get("base_id") or "").strip().lower()
+                collection_name = self.bases.get(collection_id).name if collection_id in self.bases else _slug_to_name(collection_id)
+                if c_q and c_q not in collection_name.lower() and c_q not in collection_id:
+                    continue
+                if m_q and m_q not in model_name.lower():
+                    continue
+                if b_q and b_q not in background_name.lower():
+                    continue
+                if p_q and p_q not in pattern_name.lower():
+                    continue
+
+                first_seen_at = str(entry.get("first_seen_at") or (row or {}).get("last_seen") or _iso(now))
+                last_seen_at = str(entry.get("last_seen_at") or (row or {}).get("last_seen") or _iso(now))
+                relisted_at = str(entry.get("last_relisted_at") or "")
+                first_seen_dt = _parse_ts(first_seen_at)
+                relisted_dt = _parse_ts(relisted_at) if relisted_at else None
+                is_new = ((now - first_seen_dt).total_seconds() <= window_sec) or (
+                    relisted_dt is not None and (now - relisted_dt).total_seconds() <= window_sec
+                )
+                if only_new and not is_new:
+                    continue
+
+                price_ton = float((row or {}).get("price_ton") or 0.0)
+                rows.append(
+                    {
+                        "listing_key": key,
+                        "gift_id": collection_id,
+                        "unique_id": str((row or {}).get("listing_id") or ""),
+                        "variant_id": variant_id,
+                        "num": None,
+                        "slug": collection_id,
+                        "title": collection_name,
+                        "collection": collection_name,
+                        "collection_id": collection_id,
+                        "resell_currency": "TON",
+                        "currency_mode": "TON_ONLY",
+                        "resell_amount_ton": round(price_ton, 6),
+                        "resell_amount_stars_est": self._stars_est(price_ton),
+                        "attributes": {
+                            "model": model_name,
+                            "background": background_name,
+                            "pattern": pattern_name,
+                        },
+                        "status": str((row or {}).get("status") or "ACTIVE"),
+                        "sale_type": str((row or {}).get("sale_type") or "FIXED"),
+                        "preview_url": str((row or {}).get("preview_url") or ""),
+                        "ts_detected": first_seen_at,
+                        "first_seen_at": first_seen_at,
+                        "last_seen_at": last_seen_at,
+                        "relist_count": int(entry.get("relist_count") or 0),
+                        "last_relisted_at": relisted_at or None,
+                        "is_new": bool(is_new),
+                        "source": "fragment.verified_snapshot",
+                    }
+                )
+            rows.sort(
+                key=lambda x: (str(x.get("last_seen_at") or ""), float(x.get("resell_amount_ton") or 0.0)),
+                reverse=True,
+            )
+            self._cache_set(rows_key, rows)
+        off = self._cursor_offset(cursor)
+        lim = max(1, min(int(limit or 100), 500))
+        chunk = rows[off : off + lim]
+        next_cursor = str(off + lim) if (off + lim) < len(rows) else None
+        return {"items": chunk, "next_cursor": next_cursor, "window_sec": window_sec}
+
+    def listings_summary_v1(self, new_window_sec: int | None = None) -> dict:
+        now = _now()
+        self._sync_listing_tracker_state(now, persist=False)
+        window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
+        by_collection: Dict[str, int] = {}
+        active_total = 0
+        new_total = 0
+        relisted_total = 0
+        price_samples: List[float] = []
+        for row in self.listing_state.values():
+            if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
+                continue
+            active_total += 1
+            key = self._listing_tracker_key(row)
+            entry = self.listing_tracker_state.get(key or "") or {}
+            first_seen_at = str(entry.get("first_seen_at") or (row or {}).get("last_seen") or _iso(now))
+            relisted_at = str(entry.get("last_relisted_at") or "")
+            first_seen_dt = _parse_ts(first_seen_at)
+            relisted_dt = _parse_ts(relisted_at) if relisted_at else None
+            is_new = ((now - first_seen_dt).total_seconds() <= window_sec) or (
+                relisted_dt is not None and (now - relisted_dt).total_seconds() <= window_sec
+            )
+            if is_new:
+                new_total += 1
+            if relisted_dt is not None and (now - relisted_dt).total_seconds() <= window_sec:
+                relisted_total += 1
+            collection_id = str((row or {}).get("base_id") or "").strip().lower()
+            if collection_id:
+                by_collection[collection_id] = by_collection.get(collection_id, 0) + 1
+            price = float((row or {}).get("price_ton") or 0.0)
+            if price > 0:
+                price_samples.append(price)
+
+        top_collections = sorted(by_collection.items(), key=lambda x: x[1], reverse=True)[:8]
+        return {
+            "active_total": active_total,
+            "new_total": new_total,
+            "relisted_total": relisted_total,
+            "window_sec": window_sec,
+            "collections_active": len(by_collection),
+            "price_ton_min": round(min(price_samples), 6) if price_samples else None,
+            "price_ton_median": round(_safe_median(price_samples), 6) if price_samples else None,
+            "top_collections": [
+                {
+                    "collection_id": cid,
+                    "collection": self.bases.get(cid).name if cid in self.bases else _slug_to_name(cid),
+                    "active_listings": count,
+                }
+                for cid, count in top_collections
+            ],
+            "updated_at": self.state.get("updated_at") or _iso(now),
+            "source": "fragment.verified_snapshot",
+        }
 
     def _evaluate_alerts(self, now: datetime) -> None:
         if self.is_stale() and os.getenv("ALERTS_SUSPEND_ON_STALE", "true").lower() in {"1", "true", "yes", "on"}:

@@ -1538,6 +1538,44 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, data, cache_control="no-store")
             return
 
+        if path == "/v1/listings":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["100"])[0])
+            except Exception:
+                limit = 100
+            cursor = (params.get("cursor") or [None])[0]
+            only_new = ((params.get("only_new") or ["0"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                new_window_sec = int((params.get("new_window_sec") or ["120"])[0])
+            except Exception:
+                new_window_sec = 120
+            collection_q = (params.get("collection_q") or [""])[0]
+            model_q = (params.get("model_q") or [""])[0]
+            background_q = (params.get("background_q") or [""])[0]
+            pattern_q = (params.get("pattern_q") or [""])[0]
+            data = _state().listings_v1(
+                limit=limit,
+                cursor=cursor,
+                only_new=only_new,
+                new_window_sec=new_window_sec,
+                collection_q=collection_q,
+                model_q=model_q,
+                background_q=background_q,
+                pattern_q=pattern_q,
+            )
+            _json_response(self, data, cache_control="no-store")
+            return
+
+        if path == "/v1/listings/summary":
+            params = parse_qs(parsed.query)
+            try:
+                new_window_sec = int((params.get("new_window_sec") or ["120"])[0])
+            except Exception:
+                new_window_sec = 120
+            _json_response(self, _state().listings_summary_v1(new_window_sec=new_window_sec), cache_control="no-store")
+            return
+
         if path.startswith("/v1/signals/") and path.count("/") == 3:
             signal_id = unquote(path.split("/")[-1])
             params = parse_qs(parsed.query)

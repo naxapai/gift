@@ -785,6 +785,11 @@ body.booting #staleBanner {
   touch-action: pan-y;
 }
 
+.listing-grid .table-wrap {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -1072,6 +1077,45 @@ body.booting #staleBanner {
 .signals-table td:nth-child(7) .chip {
   padding: 4px 8px;
   font-size: 0.76rem;
+}
+
+.listing-table {
+  table-layout: fixed;
+}
+
+.listing-table th:nth-child(1),
+.listing-table td:nth-child(1) {
+  width: 34%;
+}
+
+.listing-table th:nth-child(2),
+.listing-table td:nth-child(2),
+.listing-table th:nth-child(3),
+.listing-table td:nth-child(3) {
+  width: 9%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.listing-table th:nth-child(4),
+.listing-table td:nth-child(4),
+.listing-table th:nth-child(5),
+.listing-table td:nth-child(5) {
+  width: 16%;
+  font-variant-numeric: tabular-nums;
+}
+
+.listing-table th:nth-child(6),
+.listing-table td:nth-child(6) {
+  width: 16%;
+  text-align: center;
+}
+
+.listing-table td:nth-child(1) .gift-cell {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
 }
 
 .gift-cell span {
@@ -1526,6 +1570,9 @@ body.booting #staleBanner {
 
 .signals-grid > .signals-summary-card { grid-column: span 3; }
 .signals-grid > .list-card { grid-column: span 9; }
+.listing-grid > .listing-filters-card { grid-column: span 3; }
+.listing-grid > .listing-summary-card { grid-column: span 3; }
+.listing-grid > .list-card { grid-column: span 6; }
 
 .watchlist-grid > .list-card,
 .alerts-grid > .list-card { grid-column: span 8; }
@@ -1632,6 +1679,9 @@ select:focus-visible {
   .screeners-grid > .list-card,
   .signals-grid > .signals-summary-card,
   .signals-grid > .list-card,
+  .listing-grid > .listing-filters-card,
+  .listing-grid > .listing-summary-card,
+  .listing-grid > .list-card,
   .watchlist-grid > .list-card,
   .alerts-grid > .list-card,
   .alerts-grid > .bento-card:first-child,
@@ -1971,7 +2021,7 @@ select:focus-visible {
     right: 0;
     bottom: 0;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 6px;
     padding: 8px 8px max(8px, env(safe-area-inset-bottom));
     border-top: 1px solid var(--line);

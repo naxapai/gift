@@ -54,9 +54,20 @@ const state = {
     catalog: false,
     screeners: false,
     signals: false,
+    listing: false,
     watchlist: false,
     alerts: false,
     admin: false,
+  },
+  listingFeed: {
+    items: [],
+    summary: null,
+    filters: {
+      onlyNew: true,
+      windowSec: 120,
+      collectionQ: "",
+      modelQ: "",
+    },
   },
   signals: {
     filter: "all",
@@ -178,6 +189,13 @@ const el = {
   signalFilterAll: document.getElementById("signalFilterAll"),
   signalFilterBuy: document.getElementById("signalFilterBuy"),
   signalFilterSell: document.getElementById("signalFilterSell"),
+  listingBody: document.getElementById("listingBody"),
+  listingStats: document.getElementById("listingStats"),
+  listingCollectionQuery: document.getElementById("listingCollectionQuery"),
+  listingModelQuery: document.getElementById("listingModelQuery"),
+  listingOnlyNew: document.getElementById("listingOnlyNew"),
+  listingWindowSec: document.getElementById("listingWindowSec"),
+  listingApplyBtn: document.getElementById("listingApplyBtn"),
 
   watchlistBody: document.getElementById("watchlistBody"),
 
@@ -224,7 +242,7 @@ let eventsBound = false;
 let bootstrapped = false;
 
 function preselectInitialPage() {
-  const allowed = new Set(["overview", "catalog", "screeners", "signals", "watchlist", "alerts", "settings", "admin", "base-details", "variant-details"]);
+  const allowed = new Set(["overview", "catalog", "screeners", "signals", "listing", "watchlist", "alerts", "settings", "admin", "base-details", "variant-details"]);
   const fromHash = window.location.hash.replace("#", "");
   let pageId = fromHash || localStorage.getItem(STORAGE_PAGE_KEY) || "overview";
   if (!allowed.has(pageId)) pageId = "overview";
@@ -1910,6 +1928,45 @@ function setSignalFilter(filter) {
   });
 }
 
+function renderListingStats() {
+  if (!el.listingStats) return;
+  const s = state.listingFeed.summary || {};
+  el.listingStats.innerHTML = [
+    ["Активных", Number(s.active_total || 0)],
+    ["Новых", Number(s.new_total || 0)],
+    ["Релист", Number(s.relisted_total || 0)],
+    ["Коллекций", Number(s.collections_active || 0)],
+  ]
+    .map(([k, v]) => `<div class="kpi-item"><div class="kpi-key">${k}</div><div class="kpi-value">${v}</div></div>`)
+    .join("");
+}
+
+function renderListingTable() {
+  if (!el.listingBody) return;
+  const items = Array.isArray(state.listingFeed.items) ? state.listingFeed.items : [];
+  if (!items.length) {
+    el.listingBody.innerHTML = `<tr><td colspan="6"><div class="empty-state">Листинги не найдены по текущим фильтрам</div></td></tr>`;
+    return;
+  }
+  el.listingBody.innerHTML = items
+    .map((row) => {
+      const attrs = row.attributes || {};
+      const label = `${row.collection || row.slug || row.gift_id || "-"} • ${attrs.model || "-"} • ${attrs.background || "-"} • ${attrs.pattern || "-"}`;
+      const chipClass = row.is_new ? "buy" : "hold";
+      const chipLabel = row.is_new ? "NEW" : "ACTIVE";
+      const icon = renderGiftIcon(row.preview_url, label, "gift-icon-sm");
+      return `<tr>
+        <td><button class="btn ghost open-variant gift-cell" data-variant="${row.variant_id || ""}">${icon}<span>${label}</span></button></td>
+        <td>${formatTon(row.resell_amount_ton)}</td>
+        <td>${formatStars(row.resell_amount_stars_est)}</td>
+        <td>${formatDateTime(row.first_seen_at)}</td>
+        <td>${formatDateTime(row.last_seen_at)}</td>
+        <td><span class="chip ${chipClass}">${chipLabel}</span></td>
+      </tr>`;
+    })
+    .join("");
+}
+
 function renderWatchlist() {
   const items = state.variants.filter((v) => state.watchlist.has(v.variant_id));
   if (!items.length) {
@@ -2578,6 +2635,25 @@ async function loadSignalsPage() {
   state.pageLoaded.signals = true;
 }
 
+async function loadListingPage() {
+  const f = state.listingFeed.filters || {};
+  const params = new URLSearchParams();
+  params.set("limit", "500");
+  params.set("new_window_sec", String(Number(f.windowSec || 120)));
+  if (f.onlyNew) params.set("only_new", "1");
+  if (f.collectionQ) params.set("collection_q", String(f.collectionQ));
+  if (f.modelQ) params.set("model_q", String(f.modelQ));
+  const [summary, rows] = await Promise.all([
+    fetchJson(`/v1/listings/summary?new_window_sec=${encodeURIComponent(String(Number(f.windowSec || 120)))}`, { cache: "no-store" }),
+    fetchJson(`/v1/listings?${params.toString()}`, { cache: "no-store" }),
+  ]);
+  state.listingFeed.summary = summary || {};
+  state.listingFeed.items = Array.isArray(rows?.items) ? rows.items : [];
+  renderListingStats();
+  renderListingTable();
+  state.pageLoaded.listing = true;
+}
+
 async function loadAlerts() {
   const resp = await fetchJson("/api/alerts", {}, true);
   el.alertsJson.textContent = JSON.stringify(resp.items || [], null, 2);
@@ -2696,6 +2772,38 @@ function bindEvents() {
   if (el.signalFilterAll) el.signalFilterAll.addEventListener("click", () => setSignalFilter("all"));
   if (el.signalFilterBuy) el.signalFilterBuy.addEventListener("click", () => setSignalFilter("buy"));
   if (el.signalFilterSell) el.signalFilterSell.addEventListener("click", () => setSignalFilter("sell"));
+  if (el.listingOnlyNew) {
+    el.listingOnlyNew.checked = Boolean(state.listingFeed.filters.onlyNew);
+    el.listingOnlyNew.addEventListener("change", () => {
+      state.listingFeed.filters.onlyNew = Boolean(el.listingOnlyNew.checked);
+      loadListingPage().catch(() => {});
+    });
+  }
+  if (el.listingWindowSec) {
+    el.listingWindowSec.value = String(state.listingFeed.filters.windowSec || 120);
+    syncCustomSelect(el.listingWindowSec);
+    el.listingWindowSec.addEventListener("change", () => {
+      state.listingFeed.filters.windowSec = Number(el.listingWindowSec.value || 120);
+      loadListingPage().catch(() => {});
+    });
+  }
+  if (el.listingCollectionQuery) {
+    el.listingCollectionQuery.addEventListener("change", () => {
+      state.listingFeed.filters.collectionQ = String(el.listingCollectionQuery.value || "").trim();
+    });
+  }
+  if (el.listingModelQuery) {
+    el.listingModelQuery.addEventListener("change", () => {
+      state.listingFeed.filters.modelQ = String(el.listingModelQuery.value || "").trim();
+    });
+  }
+  if (el.listingApplyBtn) {
+    el.listingApplyBtn.addEventListener("click", () => {
+      state.listingFeed.filters.collectionQ = String(el.listingCollectionQuery?.value || "").trim();
+      state.listingFeed.filters.modelQ = String(el.listingModelQuery?.value || "").trim();
+      loadListingPage().catch(() => {});
+    });
+  }
   if (el.catalogFiltersToggleBtn) {
     el.catalogFiltersToggleBtn.addEventListener("click", () => {
       setCatalogFiltersCollapsed(!state.ui.catalogFiltersCollapsed);
@@ -2995,7 +3103,7 @@ async function loadAll() {
   }
 
   const activePage = window.location.hash.replace("#", "") || localStorage.getItem(STORAGE_PAGE_KEY) || "overview";
-  const allowed = new Set(["overview", "catalog", "screeners", "signals", "watchlist", "alerts", "settings", "admin", "base-details", "variant-details"]);
+  const allowed = new Set(["overview", "catalog", "screeners", "signals", "listing", "watchlist", "alerts", "settings", "admin", "base-details", "variant-details"]);
   const pageToOpen = allowed.has(activePage) ? activePage : "overview";
 
   if (pageToOpen === "variant-details") {
@@ -3042,6 +3150,10 @@ async function ensurePageData(pageId) {
     await loadSignalsPage();
     return;
   }
+  if (pageId === "listing") {
+    await loadListingPage();
+    return;
+  }
   if (pageId === "alerts") {
     if (!state.pageLoaded.alerts) {
       await loadAlerts();
@@ -3071,6 +3183,8 @@ async function autoSyncTick() {
       await loadScreenersPage();
     } else if (activePage === "signals") {
       await loadSignalsPage();
+    } else if (activePage === "listing") {
+      await loadListingPage();
     } else if (activePage === "variant-details" && state.selectedVariantId) {
       await openVariant(state.selectedVariantId);
     }
