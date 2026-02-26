@@ -3414,6 +3414,110 @@ class GiftAnalyticsService:
             "source_error": source_error,
         }
 
+    def listings_signals_v1(
+        self,
+        limit: int = 50,
+        cursor: str | None = None,
+        since: str | None = None,
+        new_window_sec: int | None = None,
+        include_relisted: bool = True,
+        signal_type: str | None = None,
+        min_score: float | None = None,
+        mode: str | None = None,
+    ) -> dict:
+        eff_mode = self._effective_v1_mode(mode)
+        events_payload = self.listings_events_v1(
+            limit=5000,
+            cursor=None,
+            since=since,
+            new_window_sec=new_window_sec,
+            include_relisted=include_relisted,
+        )
+        out: list[dict] = []
+        for ev in (events_payload.get("items") or []):
+            if not isinstance(ev, dict):
+                continue
+            variant_id = str(ev.get("variant_id") or "").strip()
+            v = self.variants.get(variant_id) if variant_id else None
+            if v:
+                base_sig = self._v1_signal(v, mode=eff_mode)
+                sig_type_val = str(base_sig.get("type") or "WATCH")
+                score100 = float(base_sig.get("score100") or 0.0)
+                conf_pct = float(base_sig.get("conf_pct") or 0.0)
+                forecast_min = float(base_sig.get("forecast24h_pct_min") or 0.0)
+                forecast_max = float(base_sig.get("forecast24h_pct_max") or 0.0)
+                expected_profit_pct = float(base_sig.get("expected_profit_pct") or 0.0)
+                undervalue = float(base_sig.get("undervalue") or 0.0)
+                price_ton = base_sig.get("price_ton")
+                fair_ton = base_sig.get("fair_ton")
+                floor_ton = base_sig.get("floor_ton")
+                reasons = list(base_sig.get("reasons") or [])[:4]
+                risks = list(base_sig.get("risk_flags") or [])[:4]
+            else:
+                is_relisted = str(ev.get("topic") or "").endswith("relisted")
+                sig_type_val = "WATCH" if is_relisted else "BUY"
+                score100 = 52.0 if is_relisted else 58.0
+                conf_pct = 46.0 if is_relisted else 52.0
+                forecast_min = -8.0 if is_relisted else -4.0
+                forecast_max = 6.0 if is_relisted else 10.0
+                expected_profit_pct = 0.0
+                undervalue = 0.0
+                price_ton = None
+                fair_ton = None
+                floor_ton = None
+                reasons = ["Вариант пока прогревается в аналитике, используется быстрый listing-сигнал."]
+                risks = ["WARMUP_VARIANT_METRICS"]
+
+            if signal_type and sig_type_val != str(signal_type):
+                continue
+            if min_score is not None and (score100 / 100.0) < float(min_score):
+                continue
+
+            signal_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"listing|{ev.get('topic')}|{ev.get('listing_key')}|{ev.get('ts')}"))
+            out.append(
+                {
+                    "signal_id": signal_id,
+                    "ts": ev.get("ts") or _iso(_now()),
+                    "type": sig_type_val,
+                    "topic": ev.get("topic"),
+                    "listing_key": ev.get("listing_key"),
+                    "variant_id": variant_id,
+                    "collection_id": ev.get("gift_id"),
+                    "collection": ev.get("title") or ev.get("gift_id"),
+                    "model": ((ev.get("attributes") or {}).get("model") if isinstance(ev.get("attributes"), dict) else None),
+                    "background": ((ev.get("attributes") or {}).get("background") if isinstance(ev.get("attributes"), dict) else None),
+                    "pattern": ((ev.get("attributes") or {}).get("pattern") if isinstance(ev.get("attributes"), dict) else None),
+                    "score100": round(score100, 1),
+                    "conf_pct": round(conf_pct, 1),
+                    "price_ton": price_ton,
+                    "floor_ton": floor_ton,
+                    "fair_ton": fair_ton,
+                    "undervalue": round(undervalue, 6),
+                    "expected_profit_pct": round(expected_profit_pct, 6),
+                    "forecast24h_pct_min": round(forecast_min, 1),
+                    "forecast24h_pct_max": round(forecast_max, 1),
+                    "active_lots": None,
+                    "liquidity24h": None,
+                    "reasons": reasons,
+                    "risk_flags": risks,
+                    "engine_mode": eff_mode,
+                    "source": ev.get("source") or events_payload.get("source") or "mtproto_api",
+                }
+            )
+
+        out.sort(key=lambda x: (str(x.get("ts") or ""), float(x.get("score100") or 0.0)), reverse=True)
+        off = self._cursor_offset(cursor)
+        lim = max(1, min(int(limit or 50), 500))
+        chunk = out[off : off + lim]
+        next_cursor = str(off + lim) if (off + lim) < len(out) else None
+        return {
+            "items": chunk,
+            "next_cursor": next_cursor,
+            "engine_mode": eff_mode,
+            "source": events_payload.get("source"),
+            "source_error": events_payload.get("source_error"),
+        }
+
     def _evaluate_alerts(self, now: datetime) -> None:
         if self.is_stale() and os.getenv("ALERTS_SUSPEND_ON_STALE", "true").lower() in {"1", "true", "yes", "on"}:
             return

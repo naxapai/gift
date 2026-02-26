@@ -144,6 +144,18 @@ class TestListingsV1(unittest.TestCase):
             self.assertIn("unique_id", ev)
             self.assertIn("attributes", ev)
 
+    def test_listings_signals_v1_contract(self) -> None:
+        svc = GiftAnalyticsService()
+        payload = svc.listings_signals_v1(limit=5, new_window_sec=3600, mode="tz")
+        self.assertIn("items", payload)
+        self.assertIn("engine_mode", payload)
+        self.assertIn("source", payload)
+        for row in payload["items"]:
+            self.assertIn("signal_id", row)
+            self.assertIn("type", row)
+            self.assertIn("score100", row)
+            self.assertIn("conf_pct", row)
+
 
 if __name__ == "__main__":
     unittest.main()

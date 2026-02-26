@@ -1602,6 +1602,42 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/v1/listings/signals":
+            params = parse_qs(parsed.query)
+            signal_type = (params.get("type") or [None])[0]
+            min_score_raw = (params.get("min_score") or [None])[0]
+            try:
+                min_score = float(min_score_raw) if min_score_raw not in (None, "") else None
+            except Exception:
+                min_score = None
+            since = (params.get("since") or [None])[0]
+            mode = (params.get("mode") or [None])[0]
+            try:
+                limit = int((params.get("limit") or ["50"])[0])
+            except Exception:
+                limit = 50
+            cursor = (params.get("cursor") or [None])[0]
+            try:
+                new_window_sec = int((params.get("new_window_sec") or ["120"])[0])
+            except Exception:
+                new_window_sec = 120
+            include_relisted = ((params.get("include_relisted") or ["1"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            _json_response(
+                self,
+                _state().listings_signals_v1(
+                    limit=limit,
+                    cursor=cursor,
+                    since=since,
+                    new_window_sec=new_window_sec,
+                    include_relisted=include_relisted,
+                    signal_type=signal_type,
+                    min_score=min_score,
+                    mode=mode,
+                ),
+                cache_control="no-store",
+            )
+            return
+
         if path == "/v1/listings/stream":
             params = parse_qs(parsed.query)
             since = (params.get("since") or [None])[0]
