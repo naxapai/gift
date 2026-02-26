@@ -58,11 +58,18 @@ class MTProtoListingBridgeState:
         self.refresh_sec = max(1.0, float(os.getenv("MT_BRIDGE_REFRESH_SEC", "2.0")))
         self.gift_types_refresh_sec = max(60.0, float(os.getenv("MT_BRIDGE_GIFT_TYPES_REFRESH_SEC", "900")))
         self.max_gift_types = max(1, int(os.getenv("MT_BRIDGE_MAX_GIFT_TYPES", "120")))
+        self.max_gift_types_per_cycle = max(1, int(os.getenv("MT_BRIDGE_MAX_GIFT_TYPES_PER_CYCLE", "22")))
+        self.bootstrap_gift_types_per_cycle = max(1, int(os.getenv("MT_BRIDGE_BOOTSTRAP_GIFT_TYPES_PER_CYCLE", "36")))
         self.per_gift_limit = max(1, min(200, int(os.getenv("MT_BRIDGE_PER_GIFT_LIMIT", "80"))))
         self.per_request_delay_sec = max(0.0, float(os.getenv("MT_BRIDGE_PER_REQUEST_DELAY_SEC", "0.08")))
         self.timeout_sec = max(5.0, float(os.getenv("MT_BRIDGE_TIMEOUT_SEC", "20")))
         self.new_window_sec = max(30, int(os.getenv("MT_BRIDGE_NEW_WINDOW_SEC", "120")))
         self.retention_sec = max(3600, int(os.getenv("MT_BRIDGE_RETENTION_SEC", "1209600")))
+        self.hot_interval_sec = max(0.8, float(os.getenv("MT_BRIDGE_HOT_INTERVAL_SEC", "1.2")))
+        self.warm_interval_sec = max(2.0, float(os.getenv("MT_BRIDGE_WARM_INTERVAL_SEC", "6.0")))
+        self.cold_interval_sec = max(5.0, float(os.getenv("MT_BRIDGE_COLD_INTERVAL_SEC", "20.0")))
+        self.hot_count_threshold = max(10, int(os.getenv("MT_BRIDGE_HOT_COUNT_THRESHOLD", "80")))
+        self.warm_count_threshold = max(3, int(os.getenv("MT_BRIDGE_WARM_COUNT_THRESHOLD", "18")))
         self.api_id = int((os.getenv("MT_BRIDGE_API_ID", "0") or "0").strip() or "0")
         self.api_hash = (os.getenv("MT_BRIDGE_API_HASH", "") or "").strip()
         self.string_session = (os.getenv("MT_BRIDGE_STRING_SESSION", "") or "").strip()
@@ -82,7 +89,10 @@ class MTProtoListingBridgeState:
         self.last_gift_types_sync_at = None
         self.last_gift_types_error = ""
         self.gift_types: list[int] = []
-        self.tracker_by_key: dict[str, dict] = _load_json(STATE_FILE, {"tracker_by_key": {}}).get("tracker_by_key") or {}
+        state_payload = _load_json(STATE_FILE, {})
+        self.tracker_by_key: dict[str, dict] = (state_payload.get("tracker_by_key") if isinstance(state_payload, dict) else {}) or {}
+        self.poll_state_by_gift: dict[str, dict] = (state_payload.get("poll_state_by_gift") if isinstance(state_payload, dict) else {}) or {}
+        self.last_cycle_polled: list[dict] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client = None
         snap = _load_json(SNAPSHOT_FILE, {})
@@ -228,7 +238,49 @@ class MTProtoListingBridgeState:
             )
         return out
 
-    async def _ingest_mtproto(self) -> tuple[list[dict], str]:
+    def _pick_due_gift_types(self, all_gift_ids: list[int]) -> list[int]:
+        ids = [int(x) for x in all_gift_ids[: self.max_gift_types]]
+        if not ids:
+            return []
+        now_ts = time.time()
+        missing = [gid for gid in ids if str(gid) not in self.poll_state_by_gift]
+        if missing:
+            return missing[: self.bootstrap_gift_types_per_cycle]
+        due = []
+        for gid in ids:
+            st = self.poll_state_by_gift.get(str(gid)) or {}
+            next_due = float(st.get("next_due_ts") or 0.0)
+            if next_due <= now_ts:
+                due.append(gid)
+        if not due:
+            next_gid = min(
+                ids,
+                key=lambda x: float((self.poll_state_by_gift.get(str(x)) or {}).get("next_due_ts") or 0.0),
+            )
+            due = [next_gid]
+        due.sort(key=lambda x: float((self.poll_state_by_gift.get(str(x)) or {}).get("next_due_ts") or 0.0))
+        return due[: self.max_gift_types_per_cycle]
+
+    def _next_interval_for_count(self, active_count: int, changed: bool) -> float:
+        if changed or active_count >= self.hot_count_threshold:
+            return self.hot_interval_sec
+        if active_count >= self.warm_count_threshold:
+            return self.warm_interval_sec
+        return self.cold_interval_sec
+
+    def _update_poll_state(self, gift_id: int, active_count: int, changed: bool) -> None:
+        now_ts = time.time()
+        interval = self._next_interval_for_count(active_count, changed)
+        jitter = random.uniform(0.0, min(0.8, interval * 0.12))
+        self.poll_state_by_gift[str(int(gift_id))] = {
+            "last_polled_ts": now_ts,
+            "last_active_count": int(active_count),
+            "next_due_ts": now_ts + interval + jitter,
+            "last_changed": bool(changed),
+            "interval_sec": float(interval),
+        }
+
+    async def _ingest_mtproto(self) -> tuple[list[dict], str, set[str]]:
         now_iso = _now_iso()
         if (
             not self.gift_types
@@ -238,13 +290,29 @@ class MTProtoListingBridgeState:
             self.gift_types = (await self._fetch_gift_types())[: self.max_gift_types]
             self.last_gift_types_sync_at = now_iso
             self.last_gift_types_error = ""
+        selected_ids = self._pick_due_gift_types(self.gift_types)
+        polled_gift_type_ids: set[str] = set(str(int(x)) for x in selected_ids)
         items: list[dict] = []
-        for gid in self.gift_types[: self.max_gift_types]:
+        self.last_cycle_polled = []
+        for gid in selected_ids:
             chunk = await self._fetch_resale_for_gift(gid)
             items.extend(chunk)
+            state_before = self.poll_state_by_gift.get(str(int(gid))) or {}
+            prev_count = int(state_before.get("last_active_count") or -1)
+            cur_count = len(chunk)
+            changed = prev_count != cur_count
+            self._update_poll_state(gid, active_count=cur_count, changed=changed)
+            self.last_cycle_polled.append(
+                {
+                    "gift_type_id": str(int(gid)),
+                    "active_count": int(cur_count),
+                    "changed": bool(changed),
+                    "next_interval_sec": float((self.poll_state_by_gift.get(str(int(gid))) or {}).get("interval_sec") or self.cold_interval_sec),
+                }
+            )
             if self.per_request_delay_sec > 0:
                 await asyncio.sleep(self.per_request_delay_sec)
-        return items, "mtproto_api"
+        return items, "mtproto_api", polled_gift_type_ids
 
     def _fetch_upstream_reserve(self) -> tuple[list[dict], str]:
         if not self.upstream_url:
@@ -259,10 +327,28 @@ class MTProtoListingBridgeState:
             raise RuntimeError("mt_bridge_upstream_invalid_payload")
         return items, "upstream_reserve"
 
-    def _apply_tracker(self, items: list[dict]) -> list[dict]:
+    def _apply_tracker(self, items: list[dict], polled_gift_type_ids: set[str] | None = None, full_scan: bool = False) -> list[dict]:
         now = datetime.now(timezone.utc)
         now_iso = _now_iso()
+        polled_types = set(str(x) for x in (polled_gift_type_ids or set()))
         active_keys: set[str] = set()
+        existing_items = self.dataset.get("items") if isinstance(self.dataset, dict) else []
+        active_item_by_key: dict[str, dict] = {}
+        if isinstance(existing_items, list):
+            for row in existing_items:
+                if not isinstance(row, dict):
+                    continue
+                k = str(row.get("listing_key") or "")
+                if k:
+                    active_item_by_key[k] = row
+        scoped_existing_keys: set[str] = set()
+        if full_scan:
+            scoped_existing_keys = set(active_item_by_key.keys())
+        elif polled_types:
+            for k, row in active_item_by_key.items():
+                gift_type_id = str((row or {}).get("gift_type_id") or "")
+                if gift_type_id in polled_types:
+                    scoped_existing_keys.add(k)
         norm_items: list[dict] = []
         for it in items:
             if not isinstance(it, dict):
@@ -271,6 +357,7 @@ class MTProtoListingBridgeState:
             unique_id = str(it.get("unique_id") or it.get("id") or "").strip()
             if not gift_id or not unique_id:
                 continue
+            gift_type_id = str(it.get("gift_type_id") or "").strip()
             key = f"{gift_id}:{unique_id}"
             active_keys.add(key)
             entry = self.tracker_by_key.get(key)
@@ -298,6 +385,7 @@ class MTProtoListingBridgeState:
             enriched.update(
                 {
                     "listing_key": key,
+                    "gift_type_id": gift_type_id or None,
                     "first_seen_at": first_seen_at,
                     "last_seen_at": str(entry.get("last_seen_at") or now_iso),
                     "relist_count": int(entry.get("relist_count") or 0),
@@ -306,15 +394,24 @@ class MTProtoListingBridgeState:
                     "source": "mtproto_api",
                 }
             )
-            norm_items.append(enriched)
+            active_item_by_key[key] = enriched
 
         cutoff = now.timestamp() - float(self.retention_sec)
-        for key, entry in list(self.tracker_by_key.items()):
-            if key in active_keys:
-                continue
-            if bool(entry.get("active")):
+        absent_keys: set[str] = set()
+        if full_scan:
+            absent_keys = set(k for k in active_item_by_key.keys() if k not in active_keys)
+        elif scoped_existing_keys:
+            absent_keys = set(k for k in scoped_existing_keys if k not in active_keys)
+        for key in absent_keys:
+            active_item_by_key.pop(key, None)
+            entry = self.tracker_by_key.get(key)
+            if isinstance(entry, dict):
                 entry["active"] = False
                 entry["last_absent_at"] = now_iso
+
+        for key, entry in list(self.tracker_by_key.items()):
+            if key in active_keys or key in active_item_by_key:
+                continue
             last_seen = str(entry.get("last_seen_at") or "")
             try:
                 last_ts = datetime.fromisoformat(last_seen.replace("Z", "+00:00")).timestamp() if last_seen else 0.0
@@ -322,7 +419,9 @@ class MTProtoListingBridgeState:
                 last_ts = 0.0
             if last_ts > 0 and last_ts < cutoff:
                 self.tracker_by_key.pop(key, None)
+                active_item_by_key.pop(key, None)
 
+        norm_items = list(active_item_by_key.values())
         norm_items.sort(key=lambda x: str(x.get("last_seen_at") or ""), reverse=True)
         return norm_items
 
@@ -333,13 +432,14 @@ class MTProtoListingBridgeState:
             self.ingest_running = True
             self.ingest_started_at = _now_iso()
         selected: list[dict] = []
+        polled_gift_type_ids: set[str] = set()
         source = "none"
         err = ""
         try:
             if self._telethon_ready():
                 if self._loop is None:
                     self._loop = asyncio.new_event_loop()
-                selected, source = self._loop.run_until_complete(self._ingest_mtproto())
+                selected, source, polled_gift_type_ids = self._loop.run_until_complete(self._ingest_mtproto())
             else:
                 raise RuntimeError("mtproto_credentials_missing")
         except Exception as exc:
@@ -353,13 +453,17 @@ class MTProtoListingBridgeState:
                 source = "error"
 
         with self.lock:
-            if selected:
-                items = self._apply_tracker(selected)
+            if selected or source == "mtproto_api":
+                items = self._apply_tracker(
+                    selected,
+                    polled_gift_type_ids=polled_gift_type_ids,
+                    full_scan=(source != "mtproto_api"),
+                )
                 self.dataset = {"updated_at": _now_iso(), "items": items}
                 self.last_source = source
                 self.last_error = ""
                 _save_json(SNAPSHOT_FILE, self.dataset)
-                _save_json(STATE_FILE, {"tracker_by_key": self.tracker_by_key})
+                _save_json(STATE_FILE, {"tracker_by_key": self.tracker_by_key, "poll_state_by_gift": self.poll_state_by_gift})
             else:
                 self.last_error = err or "ingest_failed"
             self.ingest_running = False
@@ -398,6 +502,15 @@ class MTProtoListingBridgeState:
                 "mtproto_ready": self._telethon_ready(),
                 "upstream_configured": bool(self.upstream_url),
                 "items_count": len(self.dataset.get("items") or []),
+                "scheduler": {
+                    "max_per_cycle": self.max_gift_types_per_cycle,
+                    "bootstrap_per_cycle": self.bootstrap_gift_types_per_cycle,
+                    "hot_interval_sec": self.hot_interval_sec,
+                    "warm_interval_sec": self.warm_interval_sec,
+                    "cold_interval_sec": self.cold_interval_sec,
+                    "tracked_gift_types": len(self.poll_state_by_gift),
+                    "last_cycle_polled": self.last_cycle_polled[: self.max_gift_types_per_cycle],
+                },
             }
 
 
