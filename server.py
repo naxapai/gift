@@ -1804,6 +1804,20 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/stream":
+            params = parse_qs(parsed.query)
+            types_csv = str((params.get("types") or [""])[0] or "").strip()
+            if types_csv:
+                types = {x.strip() for x in types_csv.split(",") if x.strip()}
+            else:
+                types = set()
+            mode = (params.get("mode") or [None])[0]
+            try:
+                heartbeat_ms = int((params.get("heartbeat") or ["15000"])[0])
+            except Exception:
+                heartbeat_ms = 15000
+            heartbeat_ms = max(5000, min(60000, heartbeat_ms))
+            sleep_sec = max(1.0, heartbeat_ms / 1000.0)
+
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
@@ -1816,25 +1830,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 updated = str((_state().state or {}).get("updated_at") or "")
                 if updated != last_updated:
                     last_updated = updated
-                    payload = {
-                        "updated_at": updated,
-                        "market_state": overview.get("market_state"),
-                        "stale": overview.get("stale"),
-                    }
-                    self.wfile.write(b"event: provider.health\n")
-                    self.wfile.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
-                    top = (overview.get("top_signals") or [])[:1]
-                    if top:
-                        self.wfile.write(b"event: signal.created\n")
-                        self.wfile.write(f"data: {json.dumps(top[0], ensure_ascii=False)}\n\n".encode("utf-8"))
-                    self.wfile.write(b"event: collection.updated\n")
-                    self.wfile.write(f"data: {json.dumps({'updated_at': updated}, ensure_ascii=False)}\n\n".encode('utf-8'))
-                    self.wfile.write(b"event: variant.updated\n")
-                    self.wfile.write(f"data: {json.dumps({'updated_at': updated}, ensure_ascii=False)}\n\n".encode('utf-8'))
+                    for ev in _state().stream_events_v1(types=types, mode=mode):
+                        ev_name = str(ev.get("type") or "provider.health")
+                        self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
+                        self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
                 else:
                     self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()
-                time.sleep(3)
+                time.sleep(sleep_sec)
             return
 
         if path.startswith("/api/") and not path.startswith("/api/auth/"):

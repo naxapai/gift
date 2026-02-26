@@ -3165,6 +3165,163 @@ class GiftAnalyticsService:
                 return item
         return None
 
+    def build_signal_created_event_v1(
+        self,
+        signal: dict,
+        ts: str | None = None,
+        version: int = 1,
+        trace_id: str | None = None,
+    ) -> dict:
+        sig = signal if isinstance(signal, dict) else {}
+        event_ts = str(ts or _iso(_now()))
+        variant_id = str(sig.get("variant_id") or "")
+        key = variant_id or str(sig.get("collection_id") or "")
+        payload = {
+            "signal_id": str(sig.get("signal_id") or str(uuid.uuid4())),
+            "ts": str(sig.get("ts") or event_ts),
+            "type": str(sig.get("type") or "WATCH"),
+            "variant_id": variant_id,
+            "collection_id": str(sig.get("collection_id") or ""),
+            "collection": str(sig.get("collection") or sig.get("collection_id") or ""),
+            "model": sig.get("model"),
+            "background": sig.get("background"),
+            "pattern": sig.get("pattern"),
+            "score100": float(sig.get("score100") or 0.0),
+            "conf_pct": float(sig.get("conf_pct") or 0.0),
+            "price_ton": float(sig.get("price_ton")) if sig.get("price_ton") not in (None, "") else None,
+            "floor_ton": float(sig.get("floor_ton")) if sig.get("floor_ton") not in (None, "") else None,
+            "fair_ton": float(sig.get("fair_ton")) if sig.get("fair_ton") not in (None, "") else None,
+            "undervalue": float(sig.get("undervalue")) if sig.get("undervalue") not in (None, "") else None,
+            "expected_profit_pct": float(sig.get("expected_profit_pct")) if sig.get("expected_profit_pct") not in (None, "") else None,
+            "forecast24h_pct_min": float(sig.get("forecast24h_pct_min")) if sig.get("forecast24h_pct_min") not in (None, "") else None,
+            "forecast24h_pct_max": float(sig.get("forecast24h_pct_max")) if sig.get("forecast24h_pct_max") not in (None, "") else None,
+            "active_lots": int(sig.get("active_lots")) if sig.get("active_lots") not in (None, "") else None,
+            "liquidity24h": float(sig.get("liquidity24h")) if sig.get("liquidity24h") not in (None, "") else None,
+            "reasons": [str(x) for x in (sig.get("reasons") or [])],
+            "risk_flags": [str(x) for x in (sig.get("risk_flags") or [])],
+        }
+        return {
+            "type": "signal.created",
+            "ts": event_ts,
+            "key": key,
+            "version": max(1, int(version or 1)),
+            "trace_id": str(trace_id or uuid.uuid4()),
+            "payload": payload,
+        }
+
+    def build_metric_updated_event_v1(
+        self,
+        metric: str,
+        scope: str,
+        value: float,
+        unit: str,
+        market: bool = False,
+        collection_id: str | None = None,
+        variant_id: str | None = None,
+        stale: bool | None = None,
+        extra: dict | None = None,
+        ts: str | None = None,
+        version: int = 1,
+        trace_id: str | None = None,
+    ) -> dict:
+        event_ts = str(ts or _iso(_now()))
+        scope_name = str(scope or "MARKET").upper()
+        key = "MARKET" if market else (str(variant_id or "").strip() or str(collection_id or "").strip() or "MARKET")
+        payload = {
+            "metric": str(metric or "").upper(),
+            "scope": scope_name,
+            "market": bool(market),
+            "collection_id": str(collection_id or "") if collection_id else None,
+            "variant_id": str(variant_id or "") if variant_id else None,
+            "unit": str(unit or "JSON"),
+            "point": {
+                "ts": event_ts,
+                "value": float(value or 0.0),
+                "extra": extra or {},
+            },
+            "stale": self.is_stale() if stale is None else bool(stale),
+        }
+        return {
+            "type": "metric.updated",
+            "ts": event_ts,
+            "key": key,
+            "version": max(1, int(version or 1)),
+            "trace_id": str(trace_id or uuid.uuid4()),
+            "payload": payload,
+        }
+
+    def stream_events_v1(self, types: set[str] | None = None, mode: str | None = None) -> list[dict]:
+        wanted = set(types or [])
+        all_types = {"signal.created", "metric.updated", "variant.updated", "collection.updated", "provider.health"}
+        if not wanted:
+            wanted = set(all_types)
+        now_iso = _iso(_now())
+        out: list[dict] = []
+        overview = self.overview_v1(mode=mode)
+        if "metric.updated" in wanted:
+            out.append(
+                self.build_metric_updated_event_v1(
+                    metric="MARKET_INDEX",
+                    scope="MARKET",
+                    value=float(overview.get("market_index") or 0.0),
+                    unit="SCORE_0_100",
+                    market=True,
+                    stale=bool(overview.get("stale")),
+                    extra={"market_state": overview.get("market_state")},
+                    ts=now_iso,
+                )
+            )
+            out.append(
+                self.build_metric_updated_event_v1(
+                    metric="LIQUIDITY_SCORE",
+                    scope="MARKET",
+                    value=float(((overview.get("key_metrics") or {}).get("avg_liquidity24h") or 0.0)),
+                    unit="SCORE_0_1",
+                    market=True,
+                    stale=bool(overview.get("stale")),
+                    ts=now_iso,
+                )
+            )
+        if "signal.created" in wanted:
+            top = (overview.get("top_signals") or [])
+            if top:
+                out.append(self.build_signal_created_event_v1(top[0], ts=now_iso))
+        if "variant.updated" in wanted:
+            out.append(
+                {
+                    "type": "variant.updated",
+                    "ts": now_iso,
+                    "key": "VARIANT",
+                    "version": 1,
+                    "trace_id": str(uuid.uuid4()),
+                    "payload": {"updated_at": now_iso},
+                }
+            )
+        if "collection.updated" in wanted:
+            out.append(
+                {
+                    "type": "collection.updated",
+                    "ts": now_iso,
+                    "key": "COLLECTION",
+                    "version": 1,
+                    "trace_id": str(uuid.uuid4()),
+                    "payload": {"updated_at": now_iso},
+                }
+            )
+        if "provider.health" in wanted:
+            provider = ((overview.get("provider_health") or [{}])[0] or {})
+            out.append(
+                {
+                    "type": "provider.health",
+                    "ts": now_iso,
+                    "key": str(provider.get("provider") or "provider"),
+                    "version": 1,
+                    "trace_id": str(uuid.uuid4()),
+                    "payload": provider,
+                }
+            )
+        return out
+
     def metrics_definitions_v1(self) -> list[dict]:
         return list(METRIC_DEFINITIONS_V1)
 
