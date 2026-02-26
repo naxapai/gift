@@ -94,6 +94,12 @@ services:
         value: "0"
       - key: TZ_GATES_SELL_MAX
         value: "20"
+      - key: TZ_GATES_ALERT_BOT_TOKEN
+        sync: false
+      - key: TZ_GATES_ALERT_CHAT_ID
+        sync: false
+      - key: TZ_GATES_ALERT_COOLDOWN_SEC
+        value: "7200"
       - key: AUTH_REQUIRED
         value: "false"
       - key: ADMIN_TELEGRAM_USER_ID
@@ -288,3 +294,9 @@ services:
         value: "0"
       - key: TZ_GATES_SELL_MAX
         value: "20"
+      - key: TZ_GATES_ALERT_BOT_TOKEN
+        sync: false
+      - key: TZ_GATES_ALERT_CHAT_ID
+        sync: false
+      - key: TZ_GATES_ALERT_COOLDOWN_SEC
+        value: "7200"

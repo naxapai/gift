@@ -114,12 +114,20 @@ All formula changes must be made by explicit PR with calibration notes.
 2. `engine_mode` must always be present in `/v1` responses.
 3. Any threshold edits require calibration evidence (distribution delta and quality delta).
 
-## Current Calibration Target (Top-100 `/v1/signals?mode=tz`)
+## Current Calibration Target (Top-N `/v1/signals?mode=tz`, prod corridor)
 
-- `BUY`: 5-12
-- `SELL`: 5-12
-- `WATCH`: 25-40
-- `SKIP`: 45-60
+- `BUY`: 1-20
+- `SELL`: 0-20
+- `WATCH`: 0-80
+- `SKIP`: 80-260
+
+## Current Production Baseline
+
+- Snapshot date: 2026-02-26
+- Engine: `tz`
+- Status: `status_ok=true`, `source_ok=true`, `gates_ok=true`, `corridor_ok=true`
+- Distribution snapshot: `BUY=5`, `SELL=0`, `WATCH=1`, `SKIP=139`
+- Source: `report_source=runtime`
 
 ## Phase Status (1-5)
 
@@ -135,6 +143,10 @@ All formula changes must be made by explicit PR with calibration notes.
 2. Status file: `data/tz_gates_status.json`
 3. Admin endpoint: `GET /api/admin/formula-gates/status`
 4. Render cron: `tz-formula-gates-check` (every 30 minutes)
+5. Alert: Telegram notification on `source_ok=false` OR `gates_ok=false`
+   - `TZ_GATES_ALERT_BOT_TOKEN`
+   - `TZ_GATES_ALERT_CHAT_ID`
+   - `TZ_GATES_ALERT_COOLDOWN_SEC` (default `7200`)
 
 ## Backtest Workflow
 
