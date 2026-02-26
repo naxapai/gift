@@ -79,7 +79,7 @@ services:
       - key: V1_SIGNAL_ENGINE_MODE
         value: "tz"
       - key: LISTING_PRIMARY_SOURCE
-        value: "auto"
+        value: "mtproto"
       - key: LISTING_MT_API_URL
         value: "https://gift-listing-mtproto-bridge.onrender.com/api/listings/new"
       - key: LISTING_MT_API_TOKEN
@@ -282,7 +282,7 @@ services:
     env: python
     plan: free
     buildCommand: ""
-    startCommand: "python3 listing_mtproto_bridge.py"
+    startCommand: "pip3 install -r requirements.txt && python3 listing_mtproto_bridge.py"
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
