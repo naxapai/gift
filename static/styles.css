@@ -1577,7 +1577,7 @@ body.booting #staleBanner {
 
 .listing-signals-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto auto;
+  grid-template-columns: repeat(6, minmax(0, 1fr)) auto;
   gap: 10px;
   align-items: end;
   margin-bottom: 10px;
@@ -1585,6 +1585,14 @@ body.booting #staleBanner {
 
 .listing-signals-controls .field {
   margin-bottom: 0;
+}
+
+.listing-signals-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .listing-signals-table {
@@ -1927,6 +1935,12 @@ select:focus-visible {
   .table th,
   .table td {
     padding: 8px 6px;
+  }
+  .listing-signals-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .listing-signals-pager {
+    justify-content: space-between;
   }
   .screeners-table th:nth-child(1),
   .screeners-table td:nth-child(1) {

@@ -1622,6 +1622,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 new_window_sec = 120
             include_relisted = ((params.get("include_relisted") or ["1"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                page = int((params.get("page") or [None])[0]) if (params.get("page") or [None])[0] not in (None, "") else None
+            except Exception:
+                page = None
+            try:
+                page_size = int((params.get("page_size") or [None])[0]) if (params.get("page_size") or [None])[0] not in (None, "") else None
+            except Exception:
+                page_size = None
+            sort_by = (params.get("sort_by") or [None])[0]
+            sort_dir = (params.get("sort_dir") or [None])[0]
             _json_response(
                 self,
                 _state().listings_signals_v1(
@@ -1633,6 +1643,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                     signal_type=signal_type,
                     min_score=min_score,
                     mode=mode,
+                    page=page,
+                    page_size=page_size,
+                    sort_by=sort_by,
+                    sort_dir=sort_dir,
                 ),
                 cache_control="no-store",
             )

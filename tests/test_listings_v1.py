@@ -156,6 +156,28 @@ class TestListingsV1(unittest.TestCase):
             self.assertIn("score100", row)
             self.assertIn("conf_pct", row)
 
+    def test_listings_signals_v1_pagination_and_sort(self) -> None:
+        svc = GiftAnalyticsService()
+        payload = svc.listings_signals_v1(
+            new_window_sec=3600,
+            mode="tz",
+            page=1,
+            page_size=25,
+            sort_by="score100",
+            sort_dir="asc",
+        )
+        self.assertIn("total", payload)
+        self.assertIn("page", payload)
+        self.assertIn("page_size", payload)
+        self.assertIn("total_pages", payload)
+        self.assertIn("sort_by", payload)
+        self.assertIn("sort_dir", payload)
+        self.assertEqual(int(payload["page"]), 1)
+        self.assertEqual(int(payload["page_size"]), 25)
+        self.assertEqual(str(payload["sort_by"]), "score100")
+        self.assertEqual(str(payload["sort_dir"]), "asc")
+        self.assertLessEqual(len(payload.get("items", [])), 25)
+
 
 if __name__ == "__main__":
     unittest.main()

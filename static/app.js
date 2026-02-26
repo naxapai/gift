@@ -77,7 +77,13 @@ const state = {
       type: "",
       minScore: "",
       includeRelisted: true,
+      sortBy: "ts",
+      sortDir: "desc",
+      pageSize: 50,
     },
+    signalPage: 1,
+    signalTotalPages: 1,
+    signalTotal: 0,
   },
   signals: {
     filter: "all",
@@ -142,19 +148,27 @@ const STORAGE_LISTING_SIGNAL_FILTERS_KEY = "listing_signal_filters_v1";
 function loadListingSignalFilters() {
   try {
     const raw = localStorage.getItem(STORAGE_LISTING_SIGNAL_FILTERS_KEY);
-    if (!raw) return { type: "", minScore: "", includeRelisted: true };
+    if (!raw) return { type: "", minScore: "", includeRelisted: true, sortBy: "ts", sortDir: "desc", pageSize: 50 };
     const parsed = JSON.parse(raw);
     const type = String(parsed?.type || "").toUpperCase();
     const allowed = new Set(["", "BUY", "SELL", "WATCH", "SKIP"]);
     const minScoreNum = Number(parsed?.minScore);
     const minScore = Number.isFinite(minScoreNum) ? Math.min(100, Math.max(0, minScoreNum)) : "";
+    const sortByAllowed = new Set(["ts", "score100", "conf_pct", "type", "collection", "forecast24h_pct_max"]);
+    const sortBy = sortByAllowed.has(String(parsed?.sortBy || "")) ? String(parsed?.sortBy) : "ts";
+    const sortDir = String(parsed?.sortDir || "desc").toLowerCase() === "asc" ? "asc" : "desc";
+    const pageSizeN = Number(parsed?.pageSize);
+    const pageSize = Number.isFinite(pageSizeN) ? Math.max(25, Math.min(100, Math.round(pageSizeN))) : 50;
     return {
       type: allowed.has(type) ? type : "",
       minScore,
       includeRelisted: parsed?.includeRelisted !== false,
+      sortBy,
+      sortDir,
+      pageSize,
     };
   } catch (_) {
-    return { type: "", minScore: "", includeRelisted: true };
+    return { type: "", minScore: "", includeRelisted: true, sortBy: "ts", sortDir: "desc", pageSize: 50 };
   }
 }
 
@@ -165,6 +179,9 @@ function persistListingSignalFilters() {
       type: String(sf.type || "").toUpperCase(),
       minScore: sf.minScore === "" ? "" : Number(sf.minScore),
       includeRelisted: sf.includeRelisted !== false,
+      sortBy: String(sf.sortBy || "ts"),
+      sortDir: String(sf.sortDir || "desc"),
+      pageSize: Number(sf.pageSize || 50),
     };
     localStorage.setItem(STORAGE_LISTING_SIGNAL_FILTERS_KEY, JSON.stringify(payload));
   } catch (_) {}
@@ -245,6 +262,12 @@ const el = {
   listingSignalMinScore: document.getElementById("listingSignalMinScore"),
   listingSignalIncludeRelisted: document.getElementById("listingSignalIncludeRelisted"),
   listingSignalsApplyBtn: document.getElementById("listingSignalsApplyBtn"),
+  listingSignalSortBy: document.getElementById("listingSignalSortBy"),
+  listingSignalSortDir: document.getElementById("listingSignalSortDir"),
+  listingSignalsPageSize: document.getElementById("listingSignalsPageSize"),
+  listingSignalsPrevBtn: document.getElementById("listingSignalsPrevBtn"),
+  listingSignalsNextBtn: document.getElementById("listingSignalsNextBtn"),
+  listingSignalsPageInfo: document.getElementById("listingSignalsPageInfo"),
 
   watchlistBody: document.getElementById("watchlistBody"),
 
@@ -2037,11 +2060,22 @@ function renderListingSignals() {
     if (dist[t] !== undefined) dist[t] += 1;
   }
   el.listingSignalsStats.innerHTML = [
-    ["Сигналов", rows.length],
+    ["Сигналов", Number(state.listingFeed.signalTotal || rows.length)],
     ["BUY", dist.BUY],
     ["SELL", dist.SELL],
     ["WATCH", dist.WATCH],
   ].map(([k, v]) => `<div class="kpi-item"><div class="kpi-key">${k}</div><div class="kpi-value">${v}</div></div>`).join("");
+  if (el.listingSignalsPageInfo) {
+    const page = Math.max(1, Number(state.listingFeed.signalPage || 1));
+    const totalPages = Math.max(1, Number(state.listingFeed.signalTotalPages || 1));
+    el.listingSignalsPageInfo.textContent = `Стр. ${page} / ${totalPages}`;
+  }
+  if (el.listingSignalsPrevBtn) {
+    el.listingSignalsPrevBtn.disabled = Number(state.listingFeed.signalPage || 1) <= 1;
+  }
+  if (el.listingSignalsNextBtn) {
+    el.listingSignalsNextBtn.disabled = Number(state.listingFeed.signalPage || 1) >= Number(state.listingFeed.signalTotalPages || 1);
+  }
 
   if (!rows.length) {
     el.listingSignalsBody.innerHTML = `<tr><td colspan="6"><div class="empty-state">Сигналы листинга пока отсутствуют</div></td></tr>`;
@@ -2790,6 +2824,10 @@ async function loadListingPage() {
   signalsParams.set("limit", "250");
   signalsParams.set("mode", "tz");
   signalsParams.set("new_window_sec", String(Number(f.windowSec || 120)));
+  signalsParams.set("page", String(Math.max(1, Number(state.listingFeed.signalPage || 1))));
+  signalsParams.set("page_size", String(Math.max(25, Math.min(100, Number(sf.pageSize || 50)))));
+  signalsParams.set("sort_by", String(sf.sortBy || "ts"));
+  signalsParams.set("sort_dir", String(sf.sortDir || "desc"));
   if (sf.type) signalsParams.set("type", String(sf.type));
   if (sf.minScore !== "" && Number.isFinite(Number(sf.minScore))) {
     signalsParams.set("min_score", String(Math.max(0, Math.min(1, Number(sf.minScore) / 100))));
@@ -2808,6 +2846,9 @@ async function loadListingPage() {
   state.listingFeed.signals = Array.isArray(listingSignals?.items) ? listingSignals.items : [];
   state.listingFeed.signalsSource = String(listingSignals?.source || "");
   state.listingFeed.signalsSourceError = String(listingSignals?.source_error || "");
+  state.listingFeed.signalTotal = Number(listingSignals?.total || 0);
+  state.listingFeed.signalTotalPages = Math.max(1, Number(listingSignals?.total_pages || 1));
+  state.listingFeed.signalPage = Math.max(1, Math.min(Number(state.listingFeed.signalPage || 1), state.listingFeed.signalTotalPages));
   renderListingStats();
   renderListingTable();
   renderListingSignals();
@@ -2976,6 +3017,18 @@ function bindEvents() {
   if (el.listingSignalIncludeRelisted) {
     el.listingSignalIncludeRelisted.checked = state.listingFeed.signalFilters?.includeRelisted !== false;
   }
+  if (el.listingSignalSortBy) {
+    el.listingSignalSortBy.value = String(state.listingFeed.signalFilters?.sortBy || "ts");
+    syncCustomSelect(el.listingSignalSortBy);
+  }
+  if (el.listingSignalSortDir) {
+    el.listingSignalSortDir.value = String(state.listingFeed.signalFilters?.sortDir || "desc");
+    syncCustomSelect(el.listingSignalSortDir);
+  }
+  if (el.listingSignalsPageSize) {
+    el.listingSignalsPageSize.value = String(state.listingFeed.signalFilters?.pageSize || 50);
+    syncCustomSelect(el.listingSignalsPageSize);
+  }
   if (el.listingSignalsApplyBtn) {
     el.listingSignalsApplyBtn.addEventListener("click", () => {
       const rawType = String(el.listingSignalType?.value || "").toUpperCase();
@@ -2990,7 +3043,25 @@ function bindEvents() {
         state.listingFeed.signalFilters.minScore = Number.isFinite(n) ? Math.min(100, Math.max(0, Math.round(n))) : "";
       }
       state.listingFeed.signalFilters.includeRelisted = Boolean(el.listingSignalIncludeRelisted?.checked);
+      state.listingFeed.signalFilters.sortBy = String(el.listingSignalSortBy?.value || "ts");
+      state.listingFeed.signalFilters.sortDir = String(el.listingSignalSortDir?.value || "desc");
+      state.listingFeed.signalFilters.pageSize = Math.max(25, Math.min(100, Number(el.listingSignalsPageSize?.value || 50)));
+      state.listingFeed.signalPage = 1;
       persistListingSignalFilters();
+      loadListingPage().catch(() => {});
+    });
+  }
+  if (el.listingSignalsPrevBtn) {
+    el.listingSignalsPrevBtn.addEventListener("click", () => {
+      if (state.listingFeed.signalPage <= 1) return;
+      state.listingFeed.signalPage -= 1;
+      loadListingPage().catch(() => {});
+    });
+  }
+  if (el.listingSignalsNextBtn) {
+    el.listingSignalsNextBtn.addEventListener("click", () => {
+      if (state.listingFeed.signalPage >= state.listingFeed.signalTotalPages) return;
+      state.listingFeed.signalPage += 1;
       loadListingPage().catch(() => {});
     });
   }

@@ -3424,6 +3424,10 @@ class GiftAnalyticsService:
         signal_type: str | None = None,
         min_score: float | None = None,
         mode: str | None = None,
+        page: int | None = None,
+        page_size: int | None = None,
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
     ) -> dict:
         eff_mode = self._effective_v1_mode(mode)
         events_payload = self.listings_events_v1(
@@ -3505,17 +3509,71 @@ class GiftAnalyticsService:
                 }
             )
 
-        out.sort(key=lambda x: (str(x.get("ts") or ""), float(x.get("score100") or 0.0)), reverse=True)
-        off = self._cursor_offset(cursor)
-        lim = max(1, min(int(limit or 50), 500))
+        sort_field = str(sort_by or "ts").strip().lower()
+        sort_direction = str(sort_dir or "desc").strip().lower()
+        reverse = sort_direction != "asc"
+        allowed_sort_fields = {
+            "ts",
+            "score100",
+            "conf_pct",
+            "type",
+            "collection",
+            "variant_id",
+            "forecast24h_pct_max",
+        }
+        if sort_field not in allowed_sort_fields:
+            sort_field = "ts"
+
+        def _sort_key(row: dict):
+            if sort_field == "score100":
+                return float(row.get("score100") or 0.0)
+            if sort_field == "conf_pct":
+                return float(row.get("conf_pct") or 0.0)
+            if sort_field == "forecast24h_pct_max":
+                return float(row.get("forecast24h_pct_max") or 0.0)
+            if sort_field == "type":
+                return str(row.get("type") or "")
+            if sort_field == "collection":
+                return str(row.get("collection") or row.get("collection_id") or "")
+            if sort_field == "variant_id":
+                return str(row.get("variant_id") or "")
+            return str(row.get("ts") or "")
+
+        out.sort(key=_sort_key, reverse=reverse)
+        total = len(out)
+
+        page_n = None
+        page_size_n = None
+        if page is not None or page_size is not None:
+            try:
+                page_n = max(1, int(page or 1))
+            except Exception:
+                page_n = 1
+            try:
+                page_size_n = max(1, min(int(page_size or limit or 50), 200))
+            except Exception:
+                page_size_n = max(1, min(int(limit or 50), 200))
+            off = (page_n - 1) * page_size_n
+            lim = page_size_n
+        else:
+            off = self._cursor_offset(cursor)
+            lim = max(1, min(int(limit or 50), 500))
+
         chunk = out[off : off + lim]
-        next_cursor = str(off + lim) if (off + lim) < len(out) else None
+        next_cursor = str(off + lim) if (off + lim) < total else None
+        total_pages = max(1, int(math.ceil(total / float(lim)))) if lim else 1
         return {
             "items": chunk,
             "next_cursor": next_cursor,
             "engine_mode": eff_mode,
             "source": events_payload.get("source"),
             "source_error": events_payload.get("source_error"),
+            "total": total,
+            "page": page_n if page_n is not None else None,
+            "page_size": lim,
+            "total_pages": total_pages,
+            "sort_by": sort_field,
+            "sort_dir": "asc" if not reverse else "desc",
         }
 
     def _evaluate_alerts(self, now: datetime) -> None:

@@ -375,6 +375,32 @@
                   <span>Релисты</span>
                   <input id="listingSignalIncludeRelisted" type="checkbox" checked />
                 </label>
+                <label class="field">
+                  <span>Сортировка</span>
+                  <select id="listingSignalSortBy">
+                    <option value="ts">Время</option>
+                    <option value="score100">Score</option>
+                    <option value="conf_pct">Conf</option>
+                    <option value="type">Тип</option>
+                    <option value="collection">Коллекция</option>
+                    <option value="forecast24h_pct_max">Прогноз 24h</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Порядок</span>
+                  <select id="listingSignalSortDir">
+                    <option value="desc">По убыванию</option>
+                    <option value="asc">По возрастанию</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>На странице</span>
+                  <select id="listingSignalsPageSize">
+                    <option value="25">25</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                  </select>
+                </label>
                 <div class="row-actions">
                   <button id="listingSignalsApplyBtn" class="btn secondary">Применить</button>
                 </div>
@@ -394,6 +420,11 @@
                   </thead>
                   <tbody id="listingSignalsBody"></tbody>
                 </table>
+              </div>
+              <div class="listing-signals-pager">
+                <button id="listingSignalsPrevBtn" class="btn ghost">Назад</button>
+                <div id="listingSignalsPageInfo" class="muted small">Стр. 1 / 1</div>
+                <button id="listingSignalsNextBtn" class="btn ghost">Вперед</button>
               </div>
             </article>
           </div>
