@@ -1810,6 +1810,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                 types = {x.strip() for x in types_csv.split(",") if x.strip()}
             else:
                 types = set()
+            allowed_types = {"signal.created", "metric.updated", "listing.event", "provider.health", "variant.updated", "collection.updated"}
+            unknown_types = sorted([t for t in types if t not in allowed_types])
+            if unknown_types:
+                _json_response(
+                    self,
+                    {"ok": False, "error": "unsupported_stream_type", "unsupported": unknown_types},
+                    status=HTTPStatus.BAD_REQUEST,
+                    cache_control="no-store",
+                )
+                return
             mode = (params.get("mode") or [None])[0]
             try:
                 heartbeat_ms = int((params.get("heartbeat") or ["15000"])[0])

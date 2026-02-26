@@ -61,7 +61,26 @@ class TestV1StreamSchema(unittest.TestCase):
         self.assertTrue(len(events) > 0)
         self.assertTrue(all(str(e.get("type")) == "metric.updated" for e in events))
 
+    def test_listing_event_schema_required_fields(self) -> None:
+        svc = GiftAnalyticsService()
+        listing = {
+            "topic": "market.listing.new",
+            "ts": "2026-02-26T00:00:00Z",
+            "listing_key": "k1",
+            "variant_id": "c|m|b|p",
+            "gift_id": "c",
+            "title": "Collection",
+            "resell_currency": "TON",
+            "resell_amount": 10.0,
+            "attributes": {"model": "M", "background": "B", "pattern": "P"},
+        }
+        ev = svc.build_listing_event_v1(listing)
+        self.assertEqual(ev["type"], "listing.event")
+        self.assertIn("payload", ev)
+        payload = ev["payload"]
+        for key in ["topic", "ts", "listing_key", "variant_id", "collection_id", "collection", "attributes"]:
+            self.assertIn(key, payload)
+
 
 if __name__ == "__main__":
     unittest.main()
-

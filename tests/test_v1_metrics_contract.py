@@ -58,7 +58,13 @@ class TestV1MetricsContract(unittest.TestCase):
         self.assertEqual(payload["unit"], "TON")
         self.assertTrue(len(payload.get("points", [])) >= 1)
 
+    def test_metrics_v1_errors_for_missing_ids(self) -> None:
+        svc = GiftAnalyticsService()
+        with self.assertRaises(ValueError):
+            svc.metrics_v1(metric="FLOOR_REALTIME", scope="VARIANT")
+        with self.assertRaises(ValueError):
+            svc.metrics_v1(metric="FLOOR_REALTIME", scope="COLLECTION")
+
 
 if __name__ == "__main__":
     unittest.main()
-

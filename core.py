@@ -3250,14 +3250,46 @@ class GiftAnalyticsService:
             "payload": payload,
         }
 
+    def build_listing_event_v1(
+        self,
+        listing: dict,
+        ts: str | None = None,
+        version: int = 1,
+        trace_id: str | None = None,
+    ) -> dict:
+        row = listing if isinstance(listing, dict) else {}
+        event_ts = str(ts or _iso(_now()))
+        variant_id = str(row.get("variant_id") or "")
+        key = variant_id or str(row.get("collection_id") or row.get("gift_id") or "")
+        payload = {
+            "topic": str(row.get("topic") or "market.listing.new"),
+            "ts": str(row.get("ts") or event_ts),
+            "listing_key": str(row.get("listing_key") or ""),
+            "variant_id": variant_id,
+            "collection_id": str(row.get("gift_id") or row.get("collection_id") or ""),
+            "collection": str(row.get("title") or row.get("collection") or row.get("gift_id") or ""),
+            "resell_currency": str(row.get("resell_currency") or "TON"),
+            "resell_amount": float(row.get("resell_amount") or 0.0) if row.get("resell_amount") not in (None, "") else None,
+            "attributes": row.get("attributes") if isinstance(row.get("attributes"), dict) else {},
+        }
+        return {
+            "type": "listing.event",
+            "ts": event_ts,
+            "key": key,
+            "version": max(1, int(version or 1)),
+            "trace_id": str(trace_id or uuid.uuid4()),
+            "payload": payload,
+        }
+
     def stream_events_v1(self, types: set[str] | None = None, mode: str | None = None) -> list[dict]:
         wanted = set(types or [])
-        all_types = {"signal.created", "metric.updated", "variant.updated", "collection.updated", "provider.health"}
+        all_types = {"signal.created", "metric.updated", "listing.event", "variant.updated", "collection.updated", "provider.health"}
         if not wanted:
             wanted = set(all_types)
         now_iso = _iso(_now())
         out: list[dict] = []
         overview = self.overview_v1(mode=mode)
+        market_summary = self.market_overview()
         if "metric.updated" in wanted:
             out.append(
                 self.build_metric_updated_event_v1(
@@ -3282,10 +3314,67 @@ class GiftAnalyticsService:
                     ts=now_iso,
                 )
             )
+            out.append(
+                self.build_metric_updated_event_v1(
+                    metric="FLOOR_REALTIME",
+                    scope="MARKET",
+                    value=float(market_summary.get("floor_ton_median") or market_summary.get("floor_ton_min") or 0.0),
+                    unit="TON",
+                    market=True,
+                    stale=bool(overview.get("stale")),
+                    ts=now_iso,
+                )
+            )
+            out.append(
+                self.build_metric_updated_event_v1(
+                    metric="LISTING_VELOCITY",
+                    scope="MARKET",
+                    value=float(market_summary.get("active_listings") or 0.0),
+                    unit="RATIO",
+                    market=True,
+                    stale=bool(overview.get("stale")),
+                    ts=now_iso,
+                )
+            )
+            collections = self.collections_v1(limit=1).get("items") or []
+            if collections:
+                top_col = collections[0]
+                out.append(
+                    self.build_metric_updated_event_v1(
+                        metric="FLOOR_REALTIME",
+                        scope="COLLECTION",
+                        value=float(top_col.get("floor_ton") or 0.0),
+                        unit="TON",
+                        market=False,
+                        collection_id=str(top_col.get("collection_id") or ""),
+                        stale=bool(overview.get("stale")),
+                        ts=now_iso,
+                    )
+                )
+            variants = self.variants_v1(limit=1, mode=mode).get("items") or []
+            if variants:
+                top_var = variants[0]
+                out.append(
+                    self.build_metric_updated_event_v1(
+                        metric="EDGE_SCORE",
+                        scope="VARIANT",
+                        value=float(top_var.get("score") or 0.0),
+                        unit="SCORE_0_1",
+                        market=False,
+                        collection_id=str(top_var.get("collection_id") or ""),
+                        variant_id=str(top_var.get("variant_id") or ""),
+                        stale=bool(overview.get("stale")),
+                        ts=now_iso,
+                    )
+                )
         if "signal.created" in wanted:
             top = (overview.get("top_signals") or [])
             if top:
                 out.append(self.build_signal_created_event_v1(top[0], ts=now_iso))
+        if "listing.event" in wanted:
+            listing_items = self.listings_events_v1(limit=1, include_relisted=True).get("items") or []
+            if listing_items:
+                out.append(self.build_listing_event_v1(listing_items[0], ts=now_iso))
         if "variant.updated" in wanted:
             out.append(
                 {
