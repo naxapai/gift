@@ -63,6 +63,7 @@ class MTProtoListingBridgeState:
         self.per_gift_limit = max(1, min(200, int(os.getenv("MT_BRIDGE_PER_GIFT_LIMIT", "80"))))
         self.per_request_delay_sec = max(0.0, float(os.getenv("MT_BRIDGE_PER_REQUEST_DELAY_SEC", "0.08")))
         self.timeout_sec = max(5.0, float(os.getenv("MT_BRIDGE_TIMEOUT_SEC", "20")))
+        self.max_parallel_requests = max(1, min(8, int(os.getenv("MT_BRIDGE_MAX_PARALLEL_REQUESTS", "4"))))
         self.new_window_sec = max(30, int(os.getenv("MT_BRIDGE_NEW_WINDOW_SEC", "120")))
         self.retention_sec = max(3600, int(os.getenv("MT_BRIDGE_RETENTION_SEC", "1209600")))
         self.hot_interval_sec = max(0.8, float(os.getenv("MT_BRIDGE_HOT_INTERVAL_SEC", "1.2")))
@@ -294,8 +295,20 @@ class MTProtoListingBridgeState:
         polled_gift_type_ids: set[str] = set(str(int(x)) for x in selected_ids)
         items: list[dict] = []
         self.last_cycle_polled = []
-        for gid in selected_ids:
-            chunk = await self._fetch_resale_for_gift(gid)
+        sem = asyncio.Semaphore(self.max_parallel_requests)
+
+        async def _fetch_one(gid: int, idx: int) -> tuple[int, list[dict], bool]:
+            if self.per_request_delay_sec > 0:
+                await asyncio.sleep(self.per_request_delay_sec * float(idx))
+            async with sem:
+                try:
+                    chunk = await asyncio.wait_for(self._fetch_resale_for_gift(gid), timeout=self.timeout_sec)
+                    return gid, chunk, True
+                except Exception:
+                    return gid, [], False
+
+        tasks = [_fetch_one(int(gid), i) for i, gid in enumerate(selected_ids)]
+        for gid, chunk, ok in await asyncio.gather(*tasks):
             items.extend(chunk)
             state_before = self.poll_state_by_gift.get(str(int(gid))) or {}
             prev_count = int(state_before.get("last_active_count") or -1)
@@ -307,11 +320,10 @@ class MTProtoListingBridgeState:
                     "gift_type_id": str(int(gid)),
                     "active_count": int(cur_count),
                     "changed": bool(changed),
+                    "ok": bool(ok),
                     "next_interval_sec": float((self.poll_state_by_gift.get(str(int(gid))) or {}).get("interval_sec") or self.cold_interval_sec),
                 }
             )
-            if self.per_request_delay_sec > 0:
-                await asyncio.sleep(self.per_request_delay_sec)
         return items, "mtproto_api", polled_gift_type_ids
 
     def _fetch_upstream_reserve(self) -> tuple[list[dict], str]:
@@ -508,6 +520,7 @@ class MTProtoListingBridgeState:
                     "hot_interval_sec": self.hot_interval_sec,
                     "warm_interval_sec": self.warm_interval_sec,
                     "cold_interval_sec": self.cold_interval_sec,
+                    "max_parallel_requests": self.max_parallel_requests,
                     "tracked_gift_types": len(self.poll_state_by_gift),
                     "last_cycle_polled": self.last_cycle_polled[: self.max_gift_types_per_cycle],
                 },
