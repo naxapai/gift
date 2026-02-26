@@ -2463,6 +2463,108 @@ class GiftAnalyticsService:
         except Exception:
             return 0
 
+    def _fallback_v1_counts_from_listings(self) -> dict:
+        active_rows = [row for row in self.listing_state.values() if str((row or {}).get("status") or "ACTIVE").upper() == "ACTIVE"]
+        variant_ids = {
+            str((row or {}).get("variant_id") or "")
+            for row in active_rows
+            if str((row or {}).get("variant_id") or "").strip()
+        }
+        collections = set()
+        models = set()
+        for vid in variant_ids:
+            parts = str(vid).split("|")
+            if len(parts) >= 2:
+                collections.add(parts[0])
+                models.add(parts[1])
+        return {
+            "gifts": len(active_rows),
+            "collections": len(collections),
+            "models": len(models),
+        }
+
+    def _fallback_v1_signals_from_listings(
+        self,
+        signal_type: str | None = None,
+        min_score: float | None = None,
+        since_dt: datetime | None = None,
+        mode: str | None = None,
+    ) -> List[dict]:
+        eff_mode = self._effective_v1_mode(mode)
+        by_variant: Dict[str, dict] = {}
+        for row in self.listing_state.values():
+            if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
+                continue
+            variant_id = str((row or {}).get("variant_id") or "").strip()
+            if not variant_id:
+                continue
+            price = float((row or {}).get("price_ton") or 0.0)
+            ts = str((row or {}).get("last_seen") or self.state.get("updated_at") or _iso(_now()))
+            bucket = by_variant.setdefault(
+                variant_id,
+                {
+                    "variant_id": variant_id,
+                    "price_ton": price,
+                    "floor_ton": price,
+                    "active_lots": 0,
+                    "ts": ts,
+                },
+            )
+            bucket["active_lots"] = int(bucket.get("active_lots") or 0) + 1
+            if price > 0 and (float(bucket.get("price_ton") or 0) <= 0 or price < float(bucket.get("price_ton") or 0)):
+                bucket["price_ton"] = price
+                bucket["floor_ton"] = price
+            if ts > str(bucket.get("ts") or ""):
+                bucket["ts"] = ts
+
+        items: List[dict] = []
+        for variant_id, agg in by_variant.items():
+            parts = variant_id.split("|")
+            collection_id = parts[0] if len(parts) > 0 else ""
+            model_slug = parts[1] if len(parts) > 1 else ""
+            background_slug = parts[2] if len(parts) > 2 else ""
+            pattern_slug = parts[3] if len(parts) > 3 else ""
+            collection = self.bases.get(collection_id).name if collection_id in self.bases else _slug_to_name(collection_id)
+            score100 = 50.0
+            conf_pct = 30.0
+            if signal_type and str(signal_type).upper() != "WATCH":
+                continue
+            if min_score is not None and (score100 / 100.0) < float(min_score):
+                continue
+            ts = str(agg.get("ts") or self.state.get("updated_at") or _iso(_now()))
+            if since_dt and _parse_ts(ts) < since_dt:
+                continue
+            signal_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{ts}|{variant_id}|WATCH|fallback"))
+            items.append(
+                {
+                    "signal_id": signal_id,
+                    "ts": ts,
+                    "type": "WATCH",
+                    "variant_id": variant_id,
+                    "collection_id": collection_id,
+                    "collection": collection,
+                    "model": _slug_to_name(model_slug),
+                    "background": _slug_to_name(background_slug),
+                    "pattern": _slug_to_name(pattern_slug),
+                    "score100": score100,
+                    "conf_pct": conf_pct,
+                    "price_ton": float(agg.get("price_ton") or 0.0),
+                    "floor_ton": float(agg.get("floor_ton") or 0.0),
+                    "fair_ton": None,
+                    "undervalue": None,
+                    "expected_profit_pct": None,
+                    "forecast24h_pct_min": None,
+                    "forecast24h_pct_max": None,
+                    "active_lots": int(agg.get("active_lots") or 0),
+                    "liquidity24h": None,
+                    "reasons": ["Fallback: runtime variants warming up, using active listing snapshot."],
+                    "risk_flags": ["Degraded signal quality while primary sync is rebuilding."],
+                    "engine_mode": eff_mode,
+                }
+            )
+        items.sort(key=lambda x: (str(x.get("ts") or ""), int(x.get("active_lots") or 0)), reverse=True)
+        return items
+
     def overview_v1(self, mode: str | None = None) -> dict:
         self._ensure_recos()
         eff_mode = self._effective_v1_mode(mode)
@@ -2503,6 +2605,15 @@ class GiftAnalyticsService:
                 "models": len({((v.get("traits") or {}).get("model") or {}).get("id") for v in self.variants.values() if ((v.get("traits") or {}).get("model") or {}).get("id")}),
             }
         )
+        if (
+            int(counts_payload.get("gifts") or 0) <= 0
+            and int(counts_payload.get("collections") or 0) <= 0
+            and int(counts_payload.get("models") or 0) <= 0
+        ):
+            counts_payload = self._fallback_v1_counts_from_listings()
+        if not top_signals:
+            top_signals = self._fallback_v1_signals_from_listings(mode=eff_mode)[:8]
+            recommendation = top_signals[0] if top_signals else None
         return {
             "market_index": market_index,
             "market_state": market_state,
@@ -2689,6 +2800,13 @@ class GiftAnalyticsService:
             if sig.get("type") not in {"BUY", "SELL", "WATCH", "SKIP"}:
                 continue
             items.append(sig)
+        if not items:
+            items = self._fallback_v1_signals_from_listings(
+                signal_type=signal_type,
+                min_score=min_score,
+                since_dt=since_dt,
+                mode=eff_mode,
+            )
         items.sort(key=lambda x: (str(x.get("ts") or ""), float(x.get("score100") or 0.0)), reverse=True)
         off = self._cursor_offset(cursor)
         lim = max(1, min(int(limit or 50), 200))

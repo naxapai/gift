@@ -1562,8 +1562,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not TZ_GATES_STATUS_FILE.exists():
                 _json_response(
                     self,
-                    {"ok": False, "error": "tz_gates_status_not_found"},
-                    status=HTTPStatus.NOT_FOUND,
+                    {
+                        "status_ok": False,
+                        "checked_at": None,
+                        "source_ok": False,
+                        "gates_ok": False,
+                        "corridor_checks": {},
+                        "report_source": "missing",
+                        "error": "tz_gates_status_not_found",
+                    },
                     cache_control="no-store",
                 )
                 return
@@ -1572,8 +1579,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 _json_response(
                     self,
-                    {"ok": False, "error": "tz_gates_status_invalid"},
-                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "status_ok": False,
+                        "checked_at": None,
+                        "source_ok": False,
+                        "gates_ok": False,
+                        "corridor_checks": {},
+                        "report_source": "invalid",
+                        "error": "tz_gates_status_invalid",
+                    },
                     cache_control="no-store",
                 )
                 return
