@@ -3071,7 +3071,7 @@ class GiftAnalyticsService:
                 stars_est = self._stars_est(ton)
         listing_key = str(raw.get("listing_key") or f"{gift_id}:{unique_id}")
         variant_id = str(raw.get("variant_id") or "").strip()
-        if not variant_id:
+        if (not variant_id) or ("|unknown|unknown|unknown" in variant_id.lower()):
             variant_id = f"{gift_id}|{_slug_text(model)}|{_slug_text(background)}|{_slug_text(pattern)}"
         return {
             "listing_key": listing_key,

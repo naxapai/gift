@@ -116,6 +116,7 @@ class TestListingsV1(unittest.TestCase):
             {
                 "gift_id": "5868595669182186720",
                 "unique_id": "6001201753654035500",
+                "variant_id": "5868595669182186720|unknown|unknown|unknown",
                 "slug": "ValentineBox-11249",
                 "title": "Valentine Box",
                 "attributes": {"model": "Outline", "background": "French Blue", "pattern": "Dragonfly"},

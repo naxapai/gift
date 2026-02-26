@@ -142,6 +142,18 @@ class MTProtoListingBridgeState:
                     return name
         return "Unknown"
 
+    def _slug_text(self, text: str) -> str:
+        return "".join(ch if ("a" <= ch <= "z" or "0" <= ch <= "9") else "_" for ch in str(text or "").strip().lower()).strip("_") or "unknown"
+
+    def _base_id_from(self, gid: int | str, slug: str, title: str) -> str:
+        slug_head = str(slug or "").split("-", 1)[0].strip().lower()
+        if any(("a" <= ch <= "z") for ch in slug_head):
+            return self._slug_text(slug_head)
+        title_slug = self._slug_text(title)
+        if any(("a" <= ch <= "z") for ch in title_slug):
+            return title_slug
+        return self._slug_text(str(gid))
+
     def _to_stars_float(self, val: Any) -> float | None:
         if val is None:
             return None
@@ -176,10 +188,14 @@ class MTProtoListingBridgeState:
             gid = getattr(g, "gift_id", None) or gift_id
             if unique_id is None or gid is None:
                 continue
+            slug = str(getattr(g, "slug", "") or "")
+            title = str(getattr(g, "title", "") or "")
             attrs = list(getattr(g, "attributes", []) or [])
             model = self._attr_name(attrs, ("model",))
             background = self._attr_name(attrs, ("backdrop", "background"))
             pattern = self._attr_name(attrs, ("pattern", "symbol"))
+            base_id = self._base_id_from(gid, slug, title)
+            variant_id = f"{base_id}|{self._slug_text(model)}|{self._slug_text(background)}|{self._slug_text(pattern)}"
             amount_raw = getattr(g, "resell_amount", None)
             stars_val = None
             if isinstance(amount_raw, list):
@@ -191,11 +207,15 @@ class MTProtoListingBridgeState:
                 stars_val = self._to_stars_float(amount_raw)
             out.append(
                 {
-                    "gift_id": str(gid),
+                    "gift_id": base_id,
+                    "gift_type_id": str(gid),
                     "unique_id": str(unique_id),
+                    "variant_id": variant_id,
                     "num": getattr(g, "num", None),
-                    "slug": str(getattr(g, "slug", "") or ""),
-                    "title": str(getattr(g, "title", "") or ""),
+                    "slug": slug,
+                    "title": title,
+                    "collection": title,
+                    "collection_id": base_id,
                     "resell_currency": "STARS",
                     "currency_mode": "TON_ONLY" if bool(getattr(g, "resale_ton_only", False)) else "STARS",
                     "resell_amount_ton": None,
@@ -454,4 +474,3 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
-
