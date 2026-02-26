@@ -1738,6 +1738,43 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, data, cache_control="no-store")
             return
 
+        if path == "/v1/metrics/definitions":
+            _json_response(self, _state().metrics_definitions_v1(), cache_control="no-store")
+            return
+
+        if path == "/v1/metrics":
+            params = parse_qs(parsed.query)
+            metric = (params.get("metric") or [""])[0]
+            scope = (params.get("scope") or [None])[0]
+            market = ((params.get("market") or ["0"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            collection_id = (params.get("collection_id") or [None])[0]
+            variant_id = (params.get("variant_id") or [None])[0]
+            from_ts = (params.get("from") or [None])[0]
+            to_ts = (params.get("to") or [None])[0]
+            interval = (params.get("interval") or [None])[0]
+            mode = (params.get("mode") or [None])[0]
+            try:
+                limit = int((params.get("limit") or ["500"])[0])
+            except Exception:
+                limit = 500
+            try:
+                payload = _state().metrics_v1(
+                    metric=metric,
+                    scope=scope,
+                    market=market,
+                    collection_id=collection_id,
+                    variant_id=variant_id,
+                    from_ts=from_ts,
+                    to_ts=to_ts,
+                    interval=interval,
+                    limit=limit,
+                    mode=mode,
+                )
+                _json_response(self, payload, cache_control="no-store")
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            return
+
         if path == "/v1/favorites":
             user = _require_auth(self)
             if not user:

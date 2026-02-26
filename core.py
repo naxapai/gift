@@ -40,6 +40,68 @@ WINDOWS = {
     "30d": 30 * 24 * 60 * 60,
 }
 
+METRIC_UNITS: dict[str, str] = {
+    "FLOOR_REALTIME": "TON",
+    "FLOOR_HISTORY": "TON",
+    "NEW_LISTINGS_REALTIME": "COUNT",
+    "LISTING_FEED": "JSON",
+    "LISTING_VELOCITY": "RATIO",
+    "LISTING_PRESSURE": "RATIO",
+    "FAIR_PRICE": "TON",
+    "UNDERVALUE": "RATIO",
+    "EXPECTED_PROFIT": "RATIO",
+    "LIQUIDITY_SCORE": "SCORE_0_1",
+    "LIQUIDITY_HEATMAP": "JSON",
+    "LIQUIDITY_CHART": "JSON",
+    "VOLUME_CHART": "JSON",
+    "VOLUME_VELOCITY": "RATIO",
+    "VELOCITY_SCORE": "SCORE_0_100",
+    "ABSORPTION_RATE": "RATIO",
+    "MARKET_DEPTH": "JSON",
+    "BUY_WALL_SCORE": "RATIO",
+    "WHALE_RATIO": "RATIO",
+    "WHALE_IMPULSE": "RATIO",
+    "RARITY_SCORE": "SCORE_0_1",
+    "VOLATILITY": "RATIO",
+    "SUPPLY_CHART": "JSON",
+    "EDGE_SCORE": "SCORE_0_1",
+    "BUY_SCORE": "SCORE_0_100",
+    "SELL_SCORE": "SCORE_0_100",
+    "MARKET_INDEX": "SCORE_0_100",
+    "TREND_SCORE": "RATIO",
+}
+
+METRIC_DEFINITIONS_V1: list[dict] = [
+    {"metric": "FLOOR_REALTIME", "scope": "VARIANT", "title_ru": "Минимальная цена", "unit": "TON", "is_timeseries": False, "description": "Текущий floor (min listing price)."},
+    {"metric": "FLOOR_HISTORY", "scope": "VARIANT", "title_ru": "История floor", "unit": "TON", "is_timeseries": True, "description": "Исторические точки floor."},
+    {"metric": "NEW_LISTINGS_REALTIME", "scope": "VARIANT", "title_ru": "Новые листинги", "unit": "COUNT", "is_timeseries": False, "description": "Количество новых листингов за окно."},
+    {"metric": "LISTING_FEED", "scope": "VARIANT", "title_ru": "Лента листингов", "unit": "JSON", "is_timeseries": False, "description": "Последние listing events."},
+    {"metric": "LISTING_VELOCITY", "scope": "VARIANT", "title_ru": "Скорость листингов", "unit": "RATIO", "is_timeseries": False, "description": "new_listings_10m."},
+    {"metric": "LISTING_PRESSURE", "scope": "VARIANT", "title_ru": "Давление продавцов", "unit": "RATIO", "is_timeseries": False, "description": "active_lots / max(sales24h,1)."},
+    {"metric": "FAIR_PRICE", "scope": "VARIANT", "title_ru": "Справедливая цена", "unit": "TON", "is_timeseries": False, "description": "0.7*median24h + 0.3*floor."},
+    {"metric": "UNDERVALUE", "scope": "VARIANT", "title_ru": "Недооценка", "unit": "RATIO", "is_timeseries": False, "description": "(Fair-P)/Fair."},
+    {"metric": "EXPECTED_PROFIT", "scope": "VARIANT", "title_ru": "Ожидаемая прибыль", "unit": "RATIO", "is_timeseries": False, "description": "((target_sell-P)/P)-fees."},
+    {"metric": "LIQUIDITY_SCORE", "scope": "VARIANT", "title_ru": "Ликвидность", "unit": "SCORE_0_1", "is_timeseries": False, "description": "clamp(sales24h/1000,0,1)."},
+    {"metric": "LIQUIDITY_HEATMAP", "scope": "VARIANT", "title_ru": "Тепловая карта ликвидности", "unit": "JSON", "is_timeseries": True, "description": "Временной срез ликвидности."},
+    {"metric": "LIQUIDITY_CHART", "scope": "VARIANT", "title_ru": "График ликвидности", "unit": "JSON", "is_timeseries": True, "description": "Таймсерия ликвидности."},
+    {"metric": "VOLUME_CHART", "scope": "VARIANT", "title_ru": "График объема", "unit": "JSON", "is_timeseries": True, "description": "Таймсерия объема."},
+    {"metric": "VOLUME_VELOCITY", "scope": "VARIANT", "title_ru": "Скорость объема", "unit": "RATIO", "is_timeseries": False, "description": "volume_10m / (volume_30m/3)."},
+    {"metric": "VELOCITY_SCORE", "scope": "MARKET", "title_ru": "Индекс скорости", "unit": "SCORE_0_100", "is_timeseries": False, "description": "Интегральная скорость рынка."},
+    {"metric": "ABSORPTION_RATE", "scope": "VARIANT", "title_ru": "Скорость поглощения", "unit": "RATIO", "is_timeseries": False, "description": "sales_30m / max(new_listings_30m,1)."},
+    {"metric": "MARKET_DEPTH", "scope": "VARIANT", "title_ru": "Глубина рынка", "unit": "JSON", "is_timeseries": False, "description": "Лоты в диапазоне floor..floor*1.05."},
+    {"metric": "BUY_WALL_SCORE", "scope": "VARIANT", "title_ru": "Стена покупателей", "unit": "RATIO", "is_timeseries": False, "description": "near_floor_sales_30m / near_floor_listings."},
+    {"metric": "WHALE_RATIO", "scope": "VARIANT", "title_ru": "Доля китов", "unit": "RATIO", "is_timeseries": False, "description": "whale_volume_24h/total_volume_24h."},
+    {"metric": "WHALE_IMPULSE", "scope": "VARIANT", "title_ru": "Импульс китов", "unit": "RATIO", "is_timeseries": False, "description": "Прирост whale ratio за окно."},
+    {"metric": "RARITY_SCORE", "scope": "VARIANT", "title_ru": "Редкость", "unit": "SCORE_0_1", "is_timeseries": False, "description": "Скор редкости варианта."},
+    {"metric": "VOLATILITY", "scope": "VARIANT", "title_ru": "Волатильность", "unit": "RATIO", "is_timeseries": False, "description": "std(log_returns)*sqrt(N)."},
+    {"metric": "SUPPLY_CHART", "scope": "VARIANT", "title_ru": "График предложения", "unit": "JSON", "is_timeseries": True, "description": "Таймсерия активных лотов."},
+    {"metric": "EDGE_SCORE", "scope": "VARIANT", "title_ru": "Edge score", "unit": "SCORE_0_1", "is_timeseries": False, "description": "Главная формула edge."},
+    {"metric": "BUY_SCORE", "scope": "VARIANT", "title_ru": "BUY score", "unit": "SCORE_0_100", "is_timeseries": False, "description": "Прокси buy score."},
+    {"metric": "SELL_SCORE", "scope": "VARIANT", "title_ru": "SELL score", "unit": "SCORE_0_100", "is_timeseries": False, "description": "Прокси sell score."},
+    {"metric": "MARKET_INDEX", "scope": "MARKET", "title_ru": "Индекс рынка", "unit": "SCORE_0_100", "is_timeseries": False, "description": "Средняя рыночная оценка."},
+    {"metric": "TREND_SCORE", "scope": "MARKET", "title_ru": "Тренд", "unit": "RATIO", "is_timeseries": False, "description": "Нормированный тренд рынка."},
+]
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -2256,6 +2318,158 @@ class GiftAnalyticsService:
                 risks_out.append(code)
         return reasons_out[:4], risks_out[:4]
 
+    def _metric_interval_to_seconds(self, interval: str | None) -> int:
+        raw = str(interval or "1m").strip().lower()
+        mapping = {
+            "1m": 60,
+            "5m": 300,
+            "15m": 900,
+            "1h": 3600,
+            "6h": 21600,
+            "24h": 86400,
+        }
+        return mapping.get(raw, 60)
+
+    def _strict_formula_inputs(self, v: dict) -> dict:
+        metrics = v.get("metrics") or {}
+        variant_id = str(v.get("variant_id") or "")
+        now = _now()
+        floor_ton = float(metrics.get("floor_ton") or 0.0)
+        price_ton = floor_ton
+        median_24h = float(metrics.get("median_ton") or 0.0)
+        if median_24h <= 0:
+            median_24h = float(metrics.get("vwap_ton_24h") or metrics.get("vwap_ton") or floor_ton)
+        fair_ton = (0.7 * median_24h) + (0.3 * floor_ton) if (median_24h > 0 or floor_ton > 0) else 0.0
+        undervalue = ((fair_ton - price_ton) / fair_ton) if fair_ton > 0 else 0.0
+
+        sales24h = int(metrics.get("trades_count_24h") or 0)
+        active_lots = int(metrics.get("active_listings") or 0)
+        listing_pressure = active_lots / max(sales24h, 1)
+        listing_pressure_norm = _clamp(listing_pressure / 3.0, 0.0, 1.0)
+
+        sales30m, volume30m = self._trades_in_window(variant_id, now, 1800)
+        _, volume10m = self._trades_in_window(variant_id, now, 600)
+        denom = (volume30m / 3.0) if volume30m > 0 else 0.0
+        volume_velocity = (volume10m / denom) if denom > 0 else 0.0
+        volume_velocity_norm = _clamp(volume_velocity / 2.0, 0.0, 1.0)
+
+        new_listings30m = self._new_listings_in_window(variant_id, now, 1800)
+        absorption_rate = sales30m / max(new_listings30m, 1)
+        absorption_rate_norm = _clamp(absorption_rate / 2.0, 0.0, 1.0)
+
+        liquidity_score = _clamp(sales24h / 1000.0, 0.0, 1.0)
+
+        hist = self.variant_history.get(variant_id, [])
+        cutoff = now - timedelta(seconds=WINDOWS["24h"])
+        floors: list[float] = [float(h.get("floor_ton") or 0.0) for h in hist if _parse_ts(h.get("ts")) >= cutoff and float(h.get("floor_ton") or 0.0) > 0]
+        log_returns: list[float] = []
+        for idx in range(1, len(floors)):
+            prev = floors[idx - 1]
+            cur = floors[idx]
+            if prev > 0 and cur > 0:
+                try:
+                    log_returns.append(math.log(cur / prev))
+                except Exception:
+                    continue
+        volatility = float(_safe_pstdev(log_returns) * math.sqrt(len(log_returns))) if len(log_returns) > 1 else 0.0
+
+        target_sell = min(fair_ton, floor_ton * 1.02) if floor_ton > 0 and fair_ton > 0 else max(fair_ton, floor_ton)
+        expected_profit_pct = ((target_sell - price_ton) / price_ton - 0.03) if price_ton > 0 else 0.0
+
+        edge_raw = (
+            0.45 * _clamp(undervalue, 0.0, 1.0)
+            + 0.25 * liquidity_score
+            + 0.15 * volume_velocity_norm
+            + 0.15 * absorption_rate_norm
+            - 0.2 * listing_pressure_norm
+        )
+        edge_score = _clamp(edge_raw, 0.0, 1.0)
+        score100 = round(edge_score * 100.0, 1)
+        confidence = _clamp(0.30 + 0.70 * min(1.0, sales24h / 50.0), 0.0, 1.0)
+        conf_pct = round(confidence * 100.0, 1)
+
+        return {
+            "active_lots": active_lots,
+            "price_ton": round(price_ton, 6),
+            "floor_ton": round(floor_ton, 6),
+            "floor_type": "real",
+            "median_ton": round(median_24h, 6),
+            "fair_ton": round(fair_ton, 6),
+            "undervalue": round(undervalue, 6),
+            "trend_t": round(_clamp((volume_velocity_norm + absorption_rate_norm) / 2.0, 0.0, 1.0), 6),
+            "liq_score": round(liquidity_score, 6),
+            "risk_pen": round(0.2 * listing_pressure_norm, 6),
+            "score": round(edge_score, 6),
+            "score100": score100,
+            "confidence": round(confidence, 6),
+            "conf_pct": conf_pct,
+            "expected_profit_pct": round(expected_profit_pct, 6),
+            "forecast24h_pct_min": 0.0,
+            "forecast24h_pct_max": 0.0,
+            "liquidity24h": round(liquidity_score, 6),
+            "reasons": [
+                f"Undervalue: {round(undervalue * 100.0, 2)}%.",
+                f"Absorption rate 30m: {round(absorption_rate, 3)}.",
+                f"Volume velocity 10m/30m: {round(volume_velocity, 3)}.",
+            ],
+            "risk_flags": [],
+            "action_hint": "WATCH",
+            "forecast_confidence": round(confidence, 6),
+            "sell_pressure": round(listing_pressure_norm, 6),
+            "sales24h": sales24h,
+            "liq6h": round(sales24h / 6.0, 6),
+            "vol30m": round(volume30m, 6),
+            "listing_pressure": round(listing_pressure, 6),
+            "listing_pressure_norm": round(listing_pressure_norm, 6),
+            "volume_velocity": round(volume_velocity, 6),
+            "volume_velocity_norm": round(volume_velocity_norm, 6),
+            "absorption_rate": round(absorption_rate, 6),
+            "absorption_rate_norm": round(absorption_rate_norm, 6),
+            "volatility": round(volatility, 6),
+            "new_listings_30m": int(new_listings30m),
+            "sales30m": int(sales30m),
+            "volume10m_ton": round(volume10m, 6),
+            "volume30m_ton": round(volume30m, 6),
+        }
+
+    def _tz_signal_math_strict(self, v: dict) -> dict:
+        mm = self._strict_formula_inputs(v)
+        score = float(mm.get("score") or 0.0)
+        expected = float(mm.get("expected_profit_pct") or 0.0)
+        lp_norm = float(mm.get("listing_pressure_norm") or 0.0)
+        ar_norm = float(mm.get("absorption_rate_norm") or 0.0)
+        vol = float(mm.get("volatility") or 0.0)
+        liq = float(mm.get("liq_score") or 0.0)
+        conf = float(mm.get("confidence") or 0.0)
+
+        center = (score - 0.5) * 0.38 + (0.07 * ar_norm) - (0.10 * lp_norm)
+        spread = _clamp(0.06 + (0.16 * (1.0 - liq)) + (0.08 * min(1.0, vol)), 0.05, 0.32)
+        forecast_min = _clamp(center - spread, -0.55, 0.55)
+        forecast_max = _clamp(center + spread, -0.55, 0.55)
+
+        risk_flags = list(mm.get("risk_flags") or [])
+        if float(mm.get("sales24h") or 0) < 5:
+            risk_flags.append("THIN_LIQUIDITY")
+        if float(mm.get("listing_pressure") or 0.0) > 2.5:
+            risk_flags.append("HIGH_LISTING_PRESSURE")
+        mm["risk_flags"] = sorted(set(risk_flags))
+
+        score100 = float(mm.get("score100") or 0.0)
+        if score100 >= 80 and expected > 0:
+            action = "BUY"
+        elif score100 < 40 and forecast_max < 0:
+            action = "SELL"
+        elif score100 >= 40:
+            action = "WATCH"
+        else:
+            action = "SKIP"
+
+        mm["action_hint"] = action
+        mm["forecast24h_pct_min"] = round(forecast_min * 100.0, 1)
+        mm["forecast24h_pct_max"] = round(forecast_max * 100.0, 1)
+        mm["forecast_confidence"] = round(conf, 6)
+        return mm
+
     def _tz_signal_math(self, v: dict) -> dict:
         metrics = v.get("metrics") or {}
         active_lots = int(metrics.get("active_listings") or 0)
@@ -2468,15 +2682,17 @@ class GiftAnalyticsService:
 
     def _effective_v1_mode(self, mode: str | None = None) -> str:
         raw = str(mode or self.v1_signal_engine_mode or "legacy").strip().lower()
+        if raw in {"tz_strict", "strict"}:
+            return "tz_strict"
         if raw in {"tz", "v1"}:
             return "tz"
         return "legacy"
 
     def _v1_variant_summary(self, v: dict, mode: str | None = None) -> dict:
         traits = v.get("traits") or {}
-        mm = self._tz_signal_math(v)
-        reco = v.get("reco") or {}
         eff_mode = self._effective_v1_mode(mode)
+        mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
+        reco = v.get("reco") or {}
         base_id = str(v.get("base_id") or "")
         base_name = self.bases.get(base_id).name if base_id in self.bases else base_id
         action_hint = mm["action_hint"]
@@ -2484,7 +2700,7 @@ class GiftAnalyticsService:
         conf_pct = mm["conf_pct"]
         reasons = mm["reasons"]
         risk_flags = mm["risk_flags"]
-        if eff_mode != "tz":
+        if eff_mode == "legacy":
             action_hint = self._legacy_action_norm(reco.get("action"))
             try:
                 score100 = round(float(reco.get("reco_score") or score100), 1)
@@ -2533,7 +2749,7 @@ class GiftAnalyticsService:
     def _v1_signal(self, v: dict, mode: str | None = None) -> dict:
         eff_mode = self._effective_v1_mode(mode)
         variant = self._v1_variant_summary(v, mode=eff_mode)
-        mm = self._tz_signal_math(v)
+        mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
         reco = v.get("reco") or {}
         signal_ts = variant.get("updated_at") or self.state.get("updated_at") or _iso(_now())
         signal_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{signal_ts}|{variant.get('variant_id')}|{variant.get('action_hint')}"))
@@ -2544,7 +2760,7 @@ class GiftAnalyticsService:
         expected_profit_pct = variant.get("expected_profit_pct")
         forecast_min = mm.get("forecast24h_pct_min")
         forecast_max = mm.get("forecast24h_pct_max")
-        if eff_mode != "tz":
+        if eff_mode == "legacy":
             forecast = reco.get("forecast") if isinstance(reco, dict) else {}
             rng = (forecast or {}).get("range_pct") if isinstance(forecast, dict) else None
             if isinstance(rng, list) and len(rng) >= 2:
@@ -2948,6 +3164,198 @@ class GiftAnalyticsService:
             if str(item.get("signal_id") or "") == str(signal_id or ""):
                 return item
         return None
+
+    def metrics_definitions_v1(self) -> list[dict]:
+        return list(METRIC_DEFINITIONS_V1)
+
+    def _resolve_metric_scope(self, scope: str | None, market: bool, collection_id: str | None, variant_id: str | None) -> str:
+        if market:
+            return "MARKET"
+        raw = str(scope or "").strip().upper()
+        if raw in {"MARKET", "COLLECTION", "VARIANT"}:
+            return raw
+        if variant_id:
+            return "VARIANT"
+        if collection_id:
+            return "COLLECTION"
+        return "MARKET"
+
+    def _series_points_from_history(
+        self,
+        history: list[dict],
+        field: str,
+        from_dt: datetime | None,
+        to_dt: datetime | None,
+        interval_sec: int,
+        limit: int,
+    ) -> list[dict]:
+        bucket_values: dict[int, float] = {}
+        for row in history:
+            ts = _parse_ts(row.get("ts"))
+            if from_dt and ts < from_dt:
+                continue
+            if to_dt and ts > to_dt:
+                continue
+            value = row.get(field)
+            try:
+                val = float(value)
+            except Exception:
+                continue
+            if not math.isfinite(val):
+                continue
+            bucket = int(ts.timestamp() // max(1, interval_sec)) * max(1, interval_sec)
+            bucket_values[bucket] = val
+        points = [{"ts": _iso(datetime.fromtimestamp(b, tz=timezone.utc)), "value": v} for b, v in sorted(bucket_values.items())]
+        if limit > 0 and len(points) > limit:
+            points = points[-limit:]
+        return points
+
+    def metrics_v1(
+        self,
+        metric: str,
+        scope: str | None = None,
+        market: bool = False,
+        collection_id: str | None = None,
+        variant_id: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        interval: str | None = None,
+        limit: int = 500,
+        mode: str | None = None,
+    ) -> dict:
+        metric_name = str(metric or "").strip().upper()
+        if metric_name not in METRIC_UNITS:
+            raise ValueError(f"unsupported_metric:{metric_name}")
+        scope_name = self._resolve_metric_scope(scope, market, collection_id, variant_id)
+        from_dt = _parse_ts(from_ts) if from_ts else None
+        to_dt = _parse_ts(to_ts) if to_ts else None
+        interval_sec = self._metric_interval_to_seconds(interval)
+        lim = max(1, min(int(limit or 500), 5000))
+        eff_mode = self._effective_v1_mode(mode)
+        now_iso = _iso(_now())
+        points: list[dict] = []
+
+        if scope_name == "VARIANT":
+            variant_key = str(variant_id or "").strip()
+            v = self.variants.get(variant_key)
+            if not v:
+                mapped = self._listing_to_variant(variant_key)
+                if mapped:
+                    v = self.variants.get(mapped)
+                    variant_key = mapped
+            if not v:
+                raise ValueError("variant_not_found")
+            mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
+            hist = self.variant_history.get(variant_key, [])
+            if metric_name == "FLOOR_HISTORY":
+                points = self._series_points_from_history(hist, "floor_ton", from_dt, to_dt, interval_sec, lim)
+            elif metric_name == "VOLUME_CHART":
+                points = self._series_points_from_history(hist, "vwap_ton", from_dt, to_dt, interval_sec, lim)
+            elif metric_name == "SUPPLY_CHART":
+                points = self._series_points_from_history(hist, "active_listings", from_dt, to_dt, interval_sec, lim)
+            elif metric_name == "LIQUIDITY_CHART":
+                lv = float(mm.get("liq_score") or 0.0)
+                points = self._series_points_from_history(hist, "floor_ton", from_dt, to_dt, interval_sec, lim)
+                for p in points:
+                    p["value"] = lv
+            elif metric_name == "LIQUIDITY_HEATMAP":
+                lv = float(mm.get("liq_score") or 0.0)
+                points = [{"ts": now_iso, "value": lv, "extra": {"heat": [{"bucket": "24h", "value": lv}]}}]
+            elif metric_name == "LISTING_FEED":
+                events = self.listings_events_v1(limit=50, since=from_ts, include_relisted=True).get("items") or []
+                points = [{"ts": now_iso, "value": float(len(events)), "extra": {"items": events[:50]}}]
+            elif metric_name == "MARKET_DEPTH":
+                floor = float(mm.get("floor_ton") or 0.0)
+                band_hi = floor * 1.05 if floor > 0 else 0.0
+                depth_count = 0
+                depth_ton = 0.0
+                for row in self.listing_state.values():
+                    if str((row or {}).get("variant_id") or "") != variant_key:
+                        continue
+                    price = float((row or {}).get("price_ton") or 0.0)
+                    if floor > 0 and price >= floor and price <= band_hi:
+                        depth_count += 1
+                        depth_ton += price
+                points = [{"ts": now_iso, "value": float(depth_count), "extra": {"depth_count": depth_count, "depth_ton": round(depth_ton, 6)}}]
+            else:
+                value_map = {
+                    "FLOOR_REALTIME": float(mm.get("floor_ton") or 0.0),
+                    "NEW_LISTINGS_REALTIME": float(self._new_listings_in_window(variant_key, _now(), 600)),
+                    "LISTING_VELOCITY": float(mm.get("new_listings_30m") or 0.0),
+                    "LISTING_PRESSURE": float(mm.get("listing_pressure") or 0.0),
+                    "FAIR_PRICE": float(mm.get("fair_ton") or 0.0),
+                    "UNDERVALUE": float(mm.get("undervalue") or 0.0),
+                    "EXPECTED_PROFIT": float(mm.get("expected_profit_pct") or 0.0),
+                    "LIQUIDITY_SCORE": float(mm.get("liq_score") or 0.0),
+                    "VOLUME_VELOCITY": float(mm.get("volume_velocity") or 0.0),
+                    "ABSORPTION_RATE": float(mm.get("absorption_rate") or 0.0),
+                    "VOLATILITY": float(mm.get("volatility") or 0.0),
+                    "EDGE_SCORE": float(mm.get("score") or 0.0),
+                    "BUY_SCORE": float(mm.get("score100") or 0.0) if str(mm.get("action_hint") or "") == "BUY" else max(0.0, float(mm.get("score100") or 0.0) * 0.5),
+                    "SELL_SCORE": float(100.0 - float(mm.get("score100") or 0.0)),
+                    "BUY_WALL_SCORE": _clamp(float(mm.get("absorption_rate") or 0.0), 0.0, 2.0),
+                    "WHALE_RATIO": 0.0,
+                    "WHALE_IMPULSE": 0.0,
+                    "RARITY_SCORE": _clamp(1.0 / max(1, int(mm.get("active_lots") or 1)), 0.0, 1.0),
+                }
+                points = [{"ts": now_iso, "value": float(value_map.get(metric_name, 0.0))}]
+
+        elif scope_name == "COLLECTION":
+            col_id = str(collection_id or "").strip()
+            if not col_id:
+                raise ValueError("collection_id_required")
+            rows = self.variants_v1(collection_id=col_id, limit=5000, mode=eff_mode).get("items") or []
+            if not rows:
+                raise ValueError("collection_not_found")
+            if metric_name == "FLOOR_REALTIME":
+                value = _safe_median([float(r.get("floor_ton") or 0.0) for r in rows if float(r.get("floor_ton") or 0.0) > 0])
+            elif metric_name == "MARKET_INDEX":
+                value = _safe_mean([float(r.get("score100") or 0.0) for r in rows])
+            elif metric_name == "TREND_SCORE":
+                value = _safe_mean([float(r.get("trend_t") or 0.0) for r in rows])
+            elif metric_name == "LIQUIDITY_SCORE":
+                value = _safe_mean([float(r.get("liq_score") or 0.0) for r in rows])
+            else:
+                value = _safe_mean([float(r.get("score") or 0.0) for r in rows])
+            points = [{"ts": now_iso, "value": float(value)}]
+
+        else:  # MARKET
+            overview = self.overview_v1(mode=eff_mode)
+            market_summary = self.market_overview()
+            if metric_name == "MARKET_INDEX":
+                value = float(overview.get("market_index") or 0.0)
+            elif metric_name == "TREND_SCORE":
+                avg_24h = float(market_summary.get("avg_change_24h") or 0.0)
+                value = _clamp((avg_24h + 100.0) / 200.0, 0.0, 1.0)
+            elif metric_name == "FLOOR_REALTIME":
+                value = float(market_summary.get("floor_ton_median") or market_summary.get("floor_ton_min") or 0.0)
+            elif metric_name == "LIQUIDITY_SCORE":
+                value = float((overview.get("key_metrics") or {}).get("avg_liquidity24h") or 0.0)
+            elif metric_name == "VOLUME_VELOCITY":
+                value = 1.0
+            elif metric_name == "ABSORPTION_RATE":
+                value = 1.0
+            elif metric_name == "LISTING_VELOCITY":
+                value = float(market_summary.get("active_listings") or 0.0)
+            elif metric_name == "VELOCITY_SCORE":
+                value = float(overview.get("market_index") or 0.0)
+            else:
+                value = 0.0
+            points = [{"ts": now_iso, "value": float(value)}]
+
+        if not points:
+            points = [{"ts": now_iso, "value": 0.0}]
+        return {
+            "metric": metric_name,
+            "scope": scope_name,
+            "market": bool(scope_name == "MARKET"),
+            "collection_id": collection_id if scope_name == "COLLECTION" else None,
+            "variant_id": variant_id if scope_name == "VARIANT" else None,
+            "unit": METRIC_UNITS.get(metric_name, "JSON"),
+            "points": points,
+            "stale": self.is_stale(),
+            "engine_mode": eff_mode,
+        }
 
     def _is_listing_new(self, now: datetime, first_seen_at: str, relisted_at: str | None, window_sec: int) -> bool:
         first_seen_dt = _parse_ts(first_seen_at)
