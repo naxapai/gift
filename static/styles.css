@@ -1573,6 +1573,51 @@ body.booting #staleBanner {
 .listing-grid > .listing-filters-card { grid-column: span 3; }
 .listing-grid > .listing-summary-card { grid-column: span 3; }
 .listing-grid > .list-card { grid-column: span 6; }
+.listing-grid > .listing-signals-card { grid-column: span 6; }
+
+.listing-signals-table {
+  table-layout: fixed;
+}
+
+.listing-signals-table th:nth-child(1),
+.listing-signals-table td:nth-child(1) {
+  width: 36%;
+}
+
+.listing-signals-table th:nth-child(2),
+.listing-signals-table td:nth-child(2) {
+  width: 12%;
+  text-align: center;
+}
+
+.listing-signals-table th:nth-child(3),
+.listing-signals-table td:nth-child(3),
+.listing-signals-table th:nth-child(4),
+.listing-signals-table td:nth-child(4) {
+  width: 9%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.listing-signals-table th:nth-child(5),
+.listing-signals-table td:nth-child(5) {
+  width: 16%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.listing-signals-table th:nth-child(6),
+.listing-signals-table td:nth-child(6) {
+  width: 18%;
+  text-align: center;
+}
+
+.listing-signals-table td:nth-child(1) .gift-cell {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
 
 .watchlist-grid > .list-card,
 .alerts-grid > .list-card { grid-column: span 8; }
@@ -1682,6 +1727,7 @@ select:focus-visible {
   .listing-grid > .listing-filters-card,
   .listing-grid > .listing-summary-card,
   .listing-grid > .list-card,
+  .listing-grid > .listing-signals-card,
   .watchlist-grid > .list-card,
   .alerts-grid > .list-card,
   .alerts-grid > .bento-card:first-child,

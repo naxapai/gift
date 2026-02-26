@@ -62,6 +62,11 @@ const state = {
   listingFeed: {
     items: [],
     summary: null,
+    signals: [],
+    signalsSource: "",
+    signalsSourceError: "",
+    stream: null,
+    streamRefreshTimer: null,
     filters: {
       onlyNew: true,
       windowSec: 120,
@@ -190,6 +195,8 @@ const el = {
   signalFilterBuy: document.getElementById("signalFilterBuy"),
   signalFilterSell: document.getElementById("signalFilterSell"),
   listingBody: document.getElementById("listingBody"),
+  listingSignalsBody: document.getElementById("listingSignalsBody"),
+  listingSignalsStats: document.getElementById("listingSignalsStats"),
   listingStats: document.getElementById("listingStats"),
   listingSourceNote: document.getElementById("listingSourceNote"),
   listingCollectionQuery: document.getElementById("listingCollectionQuery"),
@@ -394,6 +401,9 @@ function setPage(pageId) {
   if (pageId === "admin" && !state.admin.isAdmin) {
     showToast("Доступ к разделу Админ запрещен");
     pageId = "overview";
+  }
+  if (pageId !== "listing") {
+    stopListingStream();
   }
   el.pages.forEach((p) => p.classList.remove("active"));
   const pageEl = document.getElementById(pageId);
@@ -1977,6 +1987,85 @@ function renderListingTable() {
     .join("");
 }
 
+function renderListingSignals() {
+  if (!el.listingSignalsBody || !el.listingSignalsStats) return;
+  const rows = Array.isArray(state.listingFeed.signals) ? state.listingFeed.signals : [];
+  const dist = { BUY: 0, SELL: 0, WATCH: 0, SKIP: 0 };
+  for (const s of rows) {
+    const t = String(s?.type || "").toUpperCase();
+    if (dist[t] !== undefined) dist[t] += 1;
+  }
+  el.listingSignalsStats.innerHTML = [
+    ["Сигналов", rows.length],
+    ["BUY", dist.BUY],
+    ["SELL", dist.SELL],
+    ["WATCH", dist.WATCH],
+  ].map(([k, v]) => `<div class="kpi-item"><div class="kpi-key">${k}</div><div class="kpi-value">${v}</div></div>`).join("");
+
+  if (!rows.length) {
+    el.listingSignalsBody.innerHTML = `<tr><td colspan="6"><div class="empty-state">Сигналы листинга пока отсутствуют</div></td></tr>`;
+    return;
+  }
+  el.listingSignalsBody.innerHTML = rows.map((s) => {
+    const action = String(s?.type || "WATCH").toUpperCase();
+    const label = (s?.model && s?.background && s?.pattern)
+      ? `${s.collection || s.collection_id || "-"} • ${s.model} • ${s.background} • ${s.pattern}`
+      : (s?.variant_id || s?.listing_key || "-");
+    const icon = renderGiftIcon("", label, "gift-icon-sm");
+    const minF = Number(s?.forecast24h_pct_min || 0);
+    const maxF = Number(s?.forecast24h_pct_max || 0);
+    const src = String(s?.source || state.listingFeed.signalsSource || "-");
+    return `<tr>
+      <td><span class="gift-cell">${icon}<span>${label}</span></span></td>
+      <td><span class="chip ${(action || "watch").toLowerCase()}">${actionLabel(action)}</span></td>
+      <td>${Number(s?.score100 || 0).toFixed(1)}</td>
+      <td>${Number(s?.conf_pct || 0).toFixed(1)}%</td>
+      <td>${formatPct(minF)}…${formatPct(maxF)}</td>
+      <td>${src}</td>
+    </tr>`;
+  }).join("");
+}
+
+function stopListingStream() {
+  if (state.listingFeed.stream) {
+    try { state.listingFeed.stream.close(); } catch (_) {}
+    state.listingFeed.stream = null;
+  }
+  if (state.listingFeed.streamRefreshTimer) {
+    clearTimeout(state.listingFeed.streamRefreshTimer);
+    state.listingFeed.streamRefreshTimer = null;
+  }
+}
+
+function scheduleListingRefreshFromStream() {
+  if (state.listingFeed.streamRefreshTimer) return;
+  state.listingFeed.streamRefreshTimer = setTimeout(() => {
+    state.listingFeed.streamRefreshTimer = null;
+    if ((document.querySelector(".page.active")?.id || "") !== "listing") return;
+    loadListingPage().catch(() => {});
+  }, 1200);
+}
+
+function startListingStream() {
+  stopListingStream();
+  const win = Number(state.listingFeed.filters.windowSec || 120);
+  const url = `/v1/listings/stream?new_window_sec=${encodeURIComponent(String(win))}&interval_sec=1.5&include_relisted=1`;
+  const es = new EventSource(url, { withCredentials: true });
+  es.addEventListener("market.listing.new", scheduleListingRefreshFromStream);
+  es.addEventListener("market.listing.relisted", scheduleListingRefreshFromStream);
+  es.addEventListener("listing.feed.health", () => {});
+  es.onerror = () => {
+    stopListingStream();
+    if ((document.querySelector(".page.active")?.id || "") === "listing") {
+      state.listingFeed.streamRefreshTimer = setTimeout(() => {
+        state.listingFeed.streamRefreshTimer = null;
+        startListingStream();
+      }, 3500);
+    }
+  };
+  state.listingFeed.stream = es;
+}
+
 function renderWatchlist() {
   const items = state.variants.filter((v) => state.watchlist.has(v.variant_id));
   if (!items.length) {
@@ -2653,17 +2742,23 @@ async function loadListingPage() {
   if (f.onlyNew) params.set("only_new", "1");
   if (f.collectionQ) params.set("collection_q", String(f.collectionQ));
   if (f.modelQ) params.set("model_q", String(f.modelQ));
-  const [summary, rows] = await Promise.all([
+  const [summary, rows, listingSignals] = await Promise.all([
     fetchJson(`/v1/listings/summary?new_window_sec=${encodeURIComponent(String(Number(f.windowSec || 120)))}`, { cache: "no-store" }),
     fetchJson(`/v1/listings?${params.toString()}`, { cache: "no-store" }),
+    fetchJson(`/v1/listings/signals?limit=250&mode=tz&new_window_sec=${encodeURIComponent(String(Number(f.windowSec || 120)))}`, { cache: "no-store" }),
   ]);
   const mergedSummary = { ...(summary || {}) };
   if (!mergedSummary.source && rows?.source) mergedSummary.source = rows.source;
   if (!mergedSummary.source_error && rows?.source_error) mergedSummary.source_error = rows.source_error;
   state.listingFeed.summary = mergedSummary;
   state.listingFeed.items = Array.isArray(rows?.items) ? rows.items : [];
+  state.listingFeed.signals = Array.isArray(listingSignals?.items) ? listingSignals.items : [];
+  state.listingFeed.signalsSource = String(listingSignals?.source || "");
+  state.listingFeed.signalsSourceError = String(listingSignals?.source_error || "");
   renderListingStats();
   renderListingTable();
+  renderListingSignals();
+  startListingStream();
   state.pageLoaded.listing = true;
 }
 
