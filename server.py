@@ -95,6 +95,91 @@ _TON_BALANCE_CACHE_LOCK = threading.Lock()
 _TON_BALANCE_CACHE: dict[str, dict] = {}
 
 
+def _tz_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _as_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+def _tz_gates_corridor() -> dict:
+    return {
+        "buy_min": _as_int_env("TZ_GATES_BUY_MIN", 3),
+        "buy_max": _as_int_env("TZ_GATES_BUY_MAX", 15),
+        "watch_min": _as_int_env("TZ_GATES_WATCH_MIN", 15),
+        "watch_max": _as_int_env("TZ_GATES_WATCH_MAX", 45),
+        "skip_min": _as_int_env("TZ_GATES_SKIP_MIN", 40),
+        "skip_max": _as_int_env("TZ_GATES_SKIP_MAX", 85),
+        "sell_min": _as_int_env("TZ_GATES_SELL_MIN", 0),
+        "sell_max": _as_int_env("TZ_GATES_SELL_MAX", 12),
+    }
+
+
+def _tz_gates_corridor_checks(dist: dict, corridor: dict) -> dict:
+    return {
+        "buy_ok": corridor["buy_min"] <= int(dist.get("BUY", 0)) <= corridor["buy_max"],
+        "watch_ok": corridor["watch_min"] <= int(dist.get("WATCH", 0)) <= corridor["watch_max"],
+        "skip_ok": corridor["skip_min"] <= int(dist.get("SKIP", 0)) <= corridor["skip_max"],
+        "sell_ok": corridor["sell_min"] <= int(dist.get("SELL", 0)) <= corridor["sell_max"],
+    }
+
+
+def _normalize_tz_gates_payload(payload: dict | None, report_source: str = "file", error: str = "") -> dict:
+    payload = payload or {}
+    report = payload.get("report") if isinstance(payload.get("report"), dict) else {}
+    dist = report.get("distribution") if isinstance(report.get("distribution"), dict) else {}
+    if not dist and isinstance(payload.get("distribution"), dict):
+        dist = payload.get("distribution") or {}
+    corridor = payload.get("corridor") if isinstance(payload.get("corridor"), dict) else _tz_gates_corridor()
+    corridor_checks = payload.get("corridor_checks") if isinstance(payload.get("corridor_checks"), dict) else _tz_gates_corridor_checks(dist, corridor)
+    source_raw = str((report.get("source") if isinstance(report, dict) else "") or payload.get("source") or "")
+    source_ok = payload.get("source_ok")
+    if source_ok is None:
+        source_ok = source_raw in {"remote", "local", "local_fallback"}
+    gates_ok = payload.get("gates_ok")
+    if gates_ok is None:
+        gates_ok = bool(report.get("gates_passed")) if isinstance(report, dict) else bool(payload.get("ok"))
+    status_ok = payload.get("status_ok")
+    if status_ok is None:
+        status_ok = bool(source_ok) and bool(gates_ok) and all(bool(v) for v in corridor_checks.values())
+    return {
+        "status_ok": bool(status_ok),
+        "checked_at": payload.get("checked_at") or _tz_now_iso(),
+        "source_ok": bool(source_ok),
+        "gates_ok": bool(gates_ok),
+        "corridor_checks": corridor_checks,
+        "report_source": payload.get("report_source") or report_source,
+        "error": str(payload.get("error") or error or ""),
+        "corridor": corridor,
+        "report": report,
+        "ok": bool(status_ok),
+    }
+
+
+def _build_tz_gates_payload_runtime() -> dict:
+    from scripts.backtest_tz_signals import run as backtest_run
+
+    horizon_hours = _as_int_env("TZ_GATES_HORIZON_HOURS", 24)
+    limit = _as_int_env("TZ_GATES_LIMIT", 1000)
+    report = backtest_run(horizon_hours=horizon_hours, mode="tz", limit=limit, signals_url=None)
+    corridor = _tz_gates_corridor()
+    dist = report.get("distribution") if isinstance(report.get("distribution"), dict) else {}
+    payload = {
+        "checked_at": _tz_now_iso(),
+        "source_ok": str(report.get("source") or "") in {"remote", "local", "local_fallback"},
+        "gates_ok": bool(report.get("gates_passed")),
+        "corridor": corridor,
+        "corridor_checks": _tz_gates_corridor_checks(dist, corridor),
+        "report_source": "runtime",
+        "report": report,
+    }
+    return _normalize_tz_gates_payload(payload, report_source="runtime")
+
+
 SIGNAL_ENGINE_DEFAULTS: dict = {
     "version": "1.0",
     "windows": {
