@@ -3026,15 +3026,34 @@ class GiftAnalyticsService:
     def _normalize_mt_listing_item(self, raw: dict, now: datetime, window_sec: int) -> dict | None:
         if not isinstance(raw, dict):
             return None
-        gift_id = str(raw.get("gift_id") or raw.get("collection_id") or raw.get("slug") or "").strip().lower()
+        raw_gift_id = str(raw.get("gift_id") or "").strip().lower()
+        raw_collection_id = str(raw.get("collection_id") or "").strip().lower()
+        raw_slug = str(raw.get("slug") or "").strip()
         unique_id = str(raw.get("unique_id") or raw.get("id") or raw.get("listing_id") or "").strip()
-        if not gift_id or not unique_id:
+        if not unique_id:
             return None
+        slug_head = str(raw_slug.split("-", 1)[0] or "").strip().lower()
+        collection = str(raw.get("collection") or raw.get("title") or "").strip()
+
+        def _has_letters(v: str) -> bool:
+            return bool(re.search(r"[a-z]", str(v or "").lower()))
+
+        def _slug_text(text: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "_", str(text).strip().lower()).strip("_") or "unknown"
+
+        gift_id = ""
+        for candidate in [raw_collection_id, raw_gift_id, slug_head, raw_slug.lower(), _slug_text(collection)]:
+            if candidate and _has_letters(candidate):
+                gift_id = candidate
+                break
+        if not gift_id:
+            gift_id = raw_collection_id or raw_gift_id or slug_head or "unknown"
+
         attrs = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
         model = str(attrs.get("model") or raw.get("model") or "").strip() or "Unknown"
         background = str(attrs.get("background") or raw.get("background") or "").strip() or "Unknown"
         pattern = str(attrs.get("pattern") or raw.get("pattern") or "").strip() or "Unknown"
-        collection = str(raw.get("collection") or raw.get("title") or _slug_to_name(gift_id))
+        collection = collection or _slug_to_name(gift_id)
         first_seen_at = str(raw.get("first_seen_at") or raw.get("ts_detected") or raw.get("ts") or _iso(now))
         last_seen_at = str(raw.get("last_seen_at") or raw.get("ts") or first_seen_at)
         relisted_at = str(raw.get("last_relisted_at") or "")
@@ -3051,11 +3070,15 @@ class GiftAnalyticsService:
             except Exception:
                 stars_est = self._stars_est(ton)
         listing_key = str(raw.get("listing_key") or f"{gift_id}:{unique_id}")
+        variant_id = str(raw.get("variant_id") or "").strip()
+        if not variant_id:
+            variant_id = f"{gift_id}|{_slug_text(model)}|{_slug_text(background)}|{_slug_text(pattern)}"
         return {
             "listing_key": listing_key,
             "gift_id": gift_id,
+            "gift_type_id": raw_gift_id or None,
             "unique_id": unique_id,
-            "variant_id": str(raw.get("variant_id") or f"{gift_id}|unknown|unknown|unknown"),
+            "variant_id": variant_id,
             "num": raw.get("num"),
             "slug": str(raw.get("slug") or gift_id),
             "title": collection,

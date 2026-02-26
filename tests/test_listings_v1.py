@@ -109,6 +109,27 @@ class TestListingsV1(unittest.TestCase):
             # Even in mtproto mode system must remain available via runtime fallback.
             self.assertTrue(str(payload.get("source") or "").strip() != "")
 
+    def test_normalize_mt_listing_item_builds_variant_from_attrs(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime(2026, 2, 26, 0, 0, 0, tzinfo=timezone.utc)
+        row = svc._normalize_mt_listing_item(  # noqa: SLF001
+            {
+                "gift_id": "5868595669182186720",
+                "unique_id": "6001201753654035500",
+                "slug": "ValentineBox-11249",
+                "title": "Valentine Box",
+                "attributes": {"model": "Outline", "background": "French Blue", "pattern": "Dragonfly"},
+                "resell_amount_stars_est": 1750,
+            },
+            now=now,
+            window_sec=120,
+        )
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["gift_id"], "valentinebox")
+        self.assertEqual(row["variant_id"], "valentinebox|outline|french_blue|dragonfly")
+        self.assertEqual(row["collection_id"], "valentinebox")
+
 
 if __name__ == "__main__":
     unittest.main()
