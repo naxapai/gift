@@ -131,6 +131,19 @@ class TestListingsV1(unittest.TestCase):
         self.assertEqual(row["variant_id"], "valentinebox|outline|french_blue|dragonfly")
         self.assertEqual(row["collection_id"], "valentinebox")
 
+    def test_listings_events_v1_contract(self) -> None:
+        svc = GiftAnalyticsService()
+        payload = svc.listings_events_v1(limit=5, new_window_sec=3600)
+        self.assertIn("items", payload)
+        self.assertIn("source", payload)
+        self.assertIn("window_sec", payload)
+        for ev in payload["items"]:
+            self.assertIn("topic", ev)
+            self.assertIn("ts", ev)
+            self.assertIn("gift_id", ev)
+            self.assertIn("unique_id", ev)
+            self.assertIn("attributes", ev)
+
 
 if __name__ == "__main__":
     unittest.main()

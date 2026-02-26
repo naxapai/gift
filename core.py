@@ -3337,6 +3337,72 @@ class GiftAnalyticsService:
             "source_error": source_error,
         }
 
+    def listings_events_v1(
+        self,
+        limit: int = 100,
+        cursor: str | None = None,
+        since: str | None = None,
+        new_window_sec: int | None = None,
+        include_relisted: bool = True,
+    ) -> dict:
+        now = _now()
+        window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
+        since_dt = _parse_ts(since) if since else (now - timedelta(seconds=window_sec))
+
+        rows_payload = self.listings_v1(limit=5000, cursor=None, only_new=False, new_window_sec=window_sec)
+        rows = rows_payload.get("items") if isinstance(rows_payload, dict) else []
+        events: list[dict] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+
+            def _append_event(event_ts: datetime | None, event_name: str) -> None:
+                if event_ts is None or event_ts < since_dt:
+                    return
+                events.append(
+                    {
+                        "topic": event_name,
+                        "ts": _iso(event_ts),
+                        "source": str(row.get("source") or rows_payload.get("source") or "mtproto_api"),
+                        "gift_id": str(row.get("collection_id") or row.get("gift_id") or ""),
+                        "unique_id": str(row.get("unique_id") or ""),
+                        "num": row.get("num"),
+                        "slug": str(row.get("slug") or ""),
+                        "title": str(row.get("title") or row.get("collection") or ""),
+                        "listing_key": str(row.get("listing_key") or ""),
+                        "variant_id": str(row.get("variant_id") or ""),
+                        "resell_currency": str(row.get("resell_currency") or "STARS"),
+                        "resell_amount": row.get("resell_amount_stars_est")
+                        if str(row.get("resell_currency") or "").upper() == "STARS"
+                        else row.get("resell_amount_ton"),
+                        "attributes": {
+                            "model": str(attrs.get("model") or "Unknown"),
+                            "background": str(attrs.get("background") or "Unknown"),
+                            "pattern": str(attrs.get("pattern") or "Unknown"),
+                        },
+                    }
+                )
+
+            first_seen_dt = _parse_ts(row.get("first_seen_at"))
+            _append_event(first_seen_dt, "market.listing.new")
+            if include_relisted:
+                relisted_dt = _parse_ts(row.get("last_relisted_at"))
+                _append_event(relisted_dt, "market.listing.relisted")
+
+        events.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
+        off = self._cursor_offset(cursor)
+        lim = max(1, min(int(limit or 100), 1000))
+        chunk = events[off : off + lim]
+        next_cursor = str(off + lim) if (off + lim) < len(events) else None
+        return {
+            "items": chunk,
+            "next_cursor": next_cursor,
+            "window_sec": window_sec,
+            "source": rows_payload.get("source") if isinstance(rows_payload, dict) else "",
+            "source_error": rows_payload.get("source_error") if isinstance(rows_payload, dict) else "",
+        }
+
     def _evaluate_alerts(self, now: datetime) -> None:
         if self.is_stale() and os.getenv("ALERTS_SUSPEND_ON_STALE", "true").lower() in {"1", "true", "yes", "on"}:
             return

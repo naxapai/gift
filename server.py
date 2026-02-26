@@ -1576,6 +1576,32 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, _state().listings_summary_v1(new_window_sec=new_window_sec), cache_control="no-store")
             return
 
+        if path == "/v1/listings/events":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["100"])[0])
+            except Exception:
+                limit = 100
+            cursor = (params.get("cursor") or [None])[0]
+            since = (params.get("since") or [None])[0]
+            try:
+                new_window_sec = int((params.get("new_window_sec") or ["120"])[0])
+            except Exception:
+                new_window_sec = 120
+            include_relisted = ((params.get("include_relisted") or ["1"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            _json_response(
+                self,
+                _state().listings_events_v1(
+                    limit=limit,
+                    cursor=cursor,
+                    since=since,
+                    new_window_sec=new_window_sec,
+                    include_relisted=include_relisted,
+                ),
+                cache_control="no-store",
+            )
+            return
+
         if path == "/api/listing/source-status":
             _json_response(self, _state().listing_source_status_v1(), cache_control="no-store")
             return
