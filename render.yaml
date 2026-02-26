@@ -3,7 +3,7 @@ services:
     name: telegram-gifts-market
     env: python
     plan: free
-    buildCommand: ""
+    buildCommand: "pip3 install -r requirements.txt"
     startCommand: "python3 server.py"
     healthCheckPath: /healthz
     autoDeploy: true
