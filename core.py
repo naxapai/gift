@@ -3131,6 +3131,7 @@ class GiftAnalyticsService:
                 "source": source,
                 "error": error,
                 "updated_at": updated_at or _iso(now),
+                "rows_count": len(rows),
             }
         )
         return rows, {
@@ -3138,6 +3139,7 @@ class GiftAnalyticsService:
             "error": error,
             "updated_at": updated_at or _iso(now),
             "url_configured": bool(self.listing_mt_api_url),
+            "rows_count": len(rows),
         }
 
     def _apply_listing_filters(
@@ -3180,13 +3182,21 @@ class GiftAnalyticsService:
 
     def listing_source_status_v1(self) -> dict:
         _, status = self._refresh_mt_listing_source(force=False)
+        rows_count = int(status.get("rows_count") or 0)
+        error = str(status.get("error") or "")
+        source = str(status.get("source") or "")
+        degraded = bool(source.startswith("mtproto")) and (rows_count == 0)
+        if degraded and not error:
+            error = "mtproto_empty_payload"
         return {
             "primary_mode": self.listing_primary_source,
             "url_configured": bool(self.listing_mt_api_url),
-            "source": status.get("source"),
-            "error": status.get("error"),
+            "source": source,
+            "error": error,
             "updated_at": status.get("updated_at"),
             "cache_ttl_sec": self.listing_mt_cache_ttl_sec,
+            "rows_count": rows_count,
+            "degraded": degraded,
         }
 
     def listings_v1(
@@ -3211,10 +3221,20 @@ class GiftAnalyticsService:
             source_status = mt_status
             if mt_rows:
                 rows = mt_rows
+            elif primary_mode in {"mtproto", "mtproto_api"}:
+                source_status = {
+                    "source": "fragment.verified_snapshot",
+                    "error": str(mt_status.get("error") or "mtproto_empty_payload"),
+                    "updated_at": self.state.get("updated_at"),
+                }
         if not rows:
             rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
             if not str(source_status.get("source") or "").startswith("mtproto"):
-                source_status = {"source": "fragment.verified_snapshot", "error": "", "updated_at": self.state.get("updated_at")}
+                source_status = {
+                    "source": "fragment.verified_snapshot",
+                    "error": str(source_status.get("error") or ""),
+                    "updated_at": self.state.get("updated_at"),
+                }
         rows = self._apply_listing_filters(
             rows,
             only_new=only_new,
@@ -3242,12 +3262,15 @@ class GiftAnalyticsService:
         source = "fragment.verified_snapshot"
         source_error = ""
         rows = []
+        mt_status = {}
         if self.listing_primary_source in {"auto", "mtproto", "mtproto_api"}:
             mt_rows, mt_status = self._refresh_mt_listing_source(force=False, window_sec=window_sec)
             if mt_rows:
                 rows = mt_rows
                 source = str(mt_status.get("source") or "mtproto_api")
                 source_error = str(mt_status.get("error") or "")
+            elif self.listing_primary_source in {"mtproto", "mtproto_api"}:
+                source_error = str(mt_status.get("error") or "mtproto_empty_payload")
         if not rows:
             rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
         by_collection: Dict[str, int] = {}

@@ -86,6 +86,19 @@ class TestListingsV1(unittest.TestCase):
         self.assertIn("source", payload)
         self.assertIn("error", payload)
         self.assertIn("cache_ttl_sec", payload)
+        self.assertIn("rows_count", payload)
+        self.assertIn("degraded", payload)
+
+    def test_listing_source_status_marks_empty_mtproto_as_degraded(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(
+            svc,
+            "_refresh_mt_listing_source",
+            return_value=([], {"source": "mtproto_api", "error": "", "updated_at": "2026-02-26T00:00:00Z", "rows_count": 0}),
+        ):
+            status = svc.listing_source_status_v1()
+        self.assertTrue(bool(status.get("degraded")))
+        self.assertEqual(str(status.get("error") or ""), "mtproto_empty_payload")
 
     def test_listings_v1_fallback_when_mtproto_unavailable(self) -> None:
         with patch.dict("os.environ", {"LISTING_PRIMARY_SOURCE": "mtproto", "LISTING_MT_API_URL": "http://127.0.0.1:9/never"}, clear=False):
