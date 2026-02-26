@@ -3348,9 +3348,20 @@ class GiftAnalyticsService:
         now = _now()
         window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
         since_dt = _parse_ts(since) if since else (now - timedelta(seconds=window_sec))
-
-        rows_payload = self.listings_v1(limit=5000, cursor=None, only_new=False, new_window_sec=window_sec)
-        rows = rows_payload.get("items") if isinstance(rows_payload, dict) else []
+        source = "fragment.verified_snapshot"
+        source_error = ""
+        rows = []
+        if self.listing_primary_source in {"auto", "mtproto", "mtproto_api"}:
+            mt_rows, mt_status = self._refresh_mt_listing_source(force=False, window_sec=window_sec)
+            if mt_rows:
+                rows = mt_rows
+                source = str(mt_status.get("source") or "mtproto_api")
+                source_error = str(mt_status.get("error") or "")
+            elif self.listing_primary_source in {"mtproto", "mtproto_api"}:
+                source_error = str(mt_status.get("error") or "mtproto_empty_payload")
+        if not rows:
+            rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
+            source = "fragment.verified_snapshot"
         events: list[dict] = []
         for row in rows if isinstance(rows, list) else []:
             if not isinstance(row, dict):
@@ -3364,7 +3375,7 @@ class GiftAnalyticsService:
                     {
                         "topic": event_name,
                         "ts": _iso(event_ts),
-                        "source": str(row.get("source") or rows_payload.get("source") or "mtproto_api"),
+                        "source": str(row.get("source") or source or "mtproto_api"),
                         "gift_id": str(row.get("collection_id") or row.get("gift_id") or ""),
                         "unique_id": str(row.get("unique_id") or ""),
                         "num": row.get("num"),
@@ -3399,8 +3410,8 @@ class GiftAnalyticsService:
             "items": chunk,
             "next_cursor": next_cursor,
             "window_sec": window_sec,
-            "source": rows_payload.get("source") if isinstance(rows_payload, dict) else "",
-            "source_error": rows_payload.get("source_error") if isinstance(rows_payload, dict) else "",
+            "source": source,
+            "source_error": source_error,
         }
 
     def _evaluate_alerts(self, now: datetime) -> None:

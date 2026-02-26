@@ -1602,6 +1602,77 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/v1/listings/stream":
+            params = parse_qs(parsed.query)
+            since = (params.get("since") or [None])[0]
+            try:
+                limit = int((params.get("limit") or ["200"])[0])
+            except Exception:
+                limit = 200
+            try:
+                new_window_sec = int((params.get("new_window_sec") or ["120"])[0])
+            except Exception:
+                new_window_sec = 120
+            include_relisted = ((params.get("include_relisted") or ["1"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                interval_sec = float((params.get("interval_sec") or ["2.5"])[0])
+            except Exception:
+                interval_sec = 2.5
+            interval_sec = max(0.8, min(interval_sec, 10.0))
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            last_seen_ts = since or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            sent_ids: set[str] = set()
+            deadline = time.time() + 25
+            while time.time() < deadline:
+                payload = _state().listings_events_v1(
+                    limit=limit,
+                    cursor=None,
+                    since=last_seen_ts,
+                    new_window_sec=new_window_sec,
+                    include_relisted=include_relisted,
+                )
+                items = payload.get("items") if isinstance(payload, dict) else []
+                fresh = []
+                max_ts = last_seen_ts
+                for ev in reversed(items if isinstance(items, list) else []):
+                    ts = str(ev.get("ts") or "")
+                    event_id = f"{ev.get('topic')}|{ev.get('listing_key')}|{ts}"
+                    if not ts or event_id in sent_ids:
+                        continue
+                    sent_ids.add(event_id)
+                    fresh.append(ev)
+                    if ts > max_ts:
+                        max_ts = ts
+
+                if len(sent_ids) > 10000:
+                    sent_ids.clear()
+
+                if fresh:
+                    for ev in fresh:
+                        ev_name = str(ev.get("topic") or "market.listing.new")
+                        self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
+                        self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
+                    health_payload = {
+                        "source": payload.get("source"),
+                        "source_error": payload.get("source_error"),
+                        "count": len(fresh),
+                        "ts": max_ts,
+                    }
+                    self.wfile.write(b"event: listing.feed.health\n")
+                    self.wfile.write(f"data: {json.dumps(health_payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+                    last_seen_ts = max_ts
+                else:
+                    self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+                time.sleep(interval_sec)
+            return
+
         if path == "/api/listing/source-status":
             _json_response(self, _state().listing_source_status_v1(), cache_control="no-store")
             return
