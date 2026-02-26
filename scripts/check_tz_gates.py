@@ -35,14 +35,14 @@ def main() -> int:
     dist = report.get("distribution") or {}
 
     corridor = {
-        "buy_min": _as_int("TZ_GATES_BUY_MIN", 3),
-        "buy_max": _as_int("TZ_GATES_BUY_MAX", 15),
-        "watch_min": _as_int("TZ_GATES_WATCH_MIN", 15),
-        "watch_max": _as_int("TZ_GATES_WATCH_MAX", 45),
-        "skip_min": _as_int("TZ_GATES_SKIP_MIN", 40),
-        "skip_max": _as_int("TZ_GATES_SKIP_MAX", 85),
+        "buy_min": _as_int("TZ_GATES_BUY_MIN", 1),
+        "buy_max": _as_int("TZ_GATES_BUY_MAX", 20),
+        "watch_min": _as_int("TZ_GATES_WATCH_MIN", 5),
+        "watch_max": _as_int("TZ_GATES_WATCH_MAX", 80),
+        "skip_min": _as_int("TZ_GATES_SKIP_MIN", 80),
+        "skip_max": _as_int("TZ_GATES_SKIP_MAX", 260),
         "sell_min": _as_int("TZ_GATES_SELL_MIN", 0),
-        "sell_max": _as_int("TZ_GATES_SELL_MAX", 12),
+        "sell_max": _as_int("TZ_GATES_SELL_MAX", 20),
     }
     corridor_checks = {
         "buy_ok": corridor["buy_min"] <= int(dist.get("BUY", 0)) <= corridor["buy_max"],

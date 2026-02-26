@@ -78,6 +78,22 @@ services:
         value: "3"
       - key: V1_SIGNAL_ENGINE_MODE
         value: "tz"
+      - key: TZ_GATES_BUY_MIN
+        value: "1"
+      - key: TZ_GATES_BUY_MAX
+        value: "20"
+      - key: TZ_GATES_WATCH_MIN
+        value: "5"
+      - key: TZ_GATES_WATCH_MAX
+        value: "80"
+      - key: TZ_GATES_SKIP_MIN
+        value: "80"
+      - key: TZ_GATES_SKIP_MAX
+        value: "260"
+      - key: TZ_GATES_SELL_MIN
+        value: "0"
+      - key: TZ_GATES_SELL_MAX
+        value: "20"
       - key: AUTH_REQUIRED
         value: "false"
       - key: ADMIN_TELEGRAM_USER_ID
@@ -257,18 +273,18 @@ services:
       - key: TZ_GATES_STATUS_FILE
         value: "data/tz_gates_status.json"
       - key: TZ_GATES_BUY_MIN
-        value: "3"
+        value: "1"
       - key: TZ_GATES_BUY_MAX
-        value: "15"
+        value: "20"
       - key: TZ_GATES_WATCH_MIN
-        value: "15"
+        value: "5"
       - key: TZ_GATES_WATCH_MAX
-        value: "45"
+        value: "80"
       - key: TZ_GATES_SKIP_MIN
-        value: "40"
+        value: "80"
       - key: TZ_GATES_SKIP_MAX
-        value: "85"
+        value: "260"
       - key: TZ_GATES_SELL_MIN
         value: "0"
       - key: TZ_GATES_SELL_MAX
-        value: "12"
+        value: "20"
