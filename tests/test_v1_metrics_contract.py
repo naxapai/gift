@@ -65,6 +65,19 @@ class TestV1MetricsContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             svc.metrics_v1(metric="FLOOR_REALTIME", scope="COLLECTION")
 
+    def test_metrics_v1_scope_mismatch_and_range_validation(self) -> None:
+        svc = GiftAnalyticsService()
+        with self.assertRaises(ValueError):
+            svc.metrics_v1(metric="MARKET_INDEX", scope="VARIANT", variant_id="x|m|b|p")
+        with self.assertRaises(ValueError):
+            svc.metrics_v1(
+                metric="FLOOR_HISTORY",
+                scope="VARIANT",
+                variant_id="x|m|b|p",
+                from_ts="2026-02-27T00:00:00Z",
+                to_ts="2026-02-26T00:00:00Z",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

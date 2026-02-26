@@ -102,6 +102,37 @@ METRIC_DEFINITIONS_V1: list[dict] = [
     {"metric": "TREND_SCORE", "scope": "MARKET", "title_ru": "Тренд", "unit": "RATIO", "is_timeseries": False, "description": "Нормированный тренд рынка."},
 ]
 
+METRIC_ALLOWED_SCOPES: dict[str, set[str]] = {
+    "FLOOR_REALTIME": {"MARKET", "COLLECTION", "VARIANT"},
+    "FLOOR_HISTORY": {"COLLECTION", "VARIANT"},
+    "NEW_LISTINGS_REALTIME": {"MARKET", "COLLECTION", "VARIANT"},
+    "LISTING_FEED": {"VARIANT"},
+    "LISTING_VELOCITY": {"MARKET", "COLLECTION", "VARIANT"},
+    "LISTING_PRESSURE": {"VARIANT"},
+    "FAIR_PRICE": {"VARIANT"},
+    "UNDERVALUE": {"VARIANT"},
+    "EXPECTED_PROFIT": {"VARIANT"},
+    "LIQUIDITY_SCORE": {"MARKET", "COLLECTION", "VARIANT"},
+    "LIQUIDITY_HEATMAP": {"VARIANT"},
+    "LIQUIDITY_CHART": {"VARIANT"},
+    "VOLUME_CHART": {"VARIANT"},
+    "VOLUME_VELOCITY": {"MARKET", "COLLECTION", "VARIANT"},
+    "VELOCITY_SCORE": {"MARKET"},
+    "ABSORPTION_RATE": {"MARKET", "COLLECTION", "VARIANT"},
+    "MARKET_DEPTH": {"VARIANT"},
+    "BUY_WALL_SCORE": {"VARIANT"},
+    "WHALE_RATIO": {"VARIANT"},
+    "WHALE_IMPULSE": {"VARIANT"},
+    "RARITY_SCORE": {"VARIANT"},
+    "VOLATILITY": {"MARKET", "COLLECTION", "VARIANT"},
+    "SUPPLY_CHART": {"MARKET", "COLLECTION", "VARIANT"},
+    "EDGE_SCORE": {"VARIANT"},
+    "BUY_SCORE": {"VARIANT"},
+    "SELL_SCORE": {"VARIANT"},
+    "MARKET_INDEX": {"MARKET", "COLLECTION"},
+    "TREND_SCORE": {"MARKET", "COLLECTION", "VARIANT"},
+}
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -3426,6 +3457,56 @@ class GiftAnalyticsService:
             return "COLLECTION"
         return "MARKET"
 
+    def _validate_metric_scope(self, metric_name: str, scope_name: str) -> None:
+        allowed = METRIC_ALLOWED_SCOPES.get(metric_name, set())
+        if allowed and scope_name not in allowed:
+            raise ValueError(f"metric_scope_mismatch:{metric_name}:{scope_name}")
+
+    def _aggregate_variant_series_for_collection(
+        self,
+        collection_id: str,
+        field: str,
+        from_dt: datetime | None,
+        to_dt: datetime | None,
+        interval_sec: int,
+        limit: int,
+        reducer: str = "median",
+    ) -> list[dict]:
+        buckets: dict[int, list[float]] = {}
+        for v in self.variants.values():
+            if str(v.get("base_id") or "") != str(collection_id):
+                continue
+            variant_id = str(v.get("variant_id") or "")
+            hist = self.variant_history.get(variant_id, [])
+            for row in hist:
+                ts = _parse_ts(row.get("ts"))
+                if from_dt and ts < from_dt:
+                    continue
+                if to_dt and ts > to_dt:
+                    continue
+                try:
+                    val = float(row.get(field))
+                except Exception:
+                    continue
+                if not math.isfinite(val):
+                    continue
+                bucket = int(ts.timestamp() // max(1, interval_sec)) * max(1, interval_sec)
+                buckets.setdefault(bucket, []).append(val)
+        out: list[dict] = []
+        for bucket, values in sorted(buckets.items()):
+            if not values:
+                continue
+            if reducer == "sum":
+                value = float(sum(values))
+            elif reducer == "mean":
+                value = _safe_mean(values)
+            else:
+                value = _safe_median(values)
+            out.append({"ts": _iso(datetime.fromtimestamp(bucket, tz=timezone.utc)), "value": float(value)})
+        if limit > 0 and len(out) > limit:
+            out = out[-limit:]
+        return out
+
     def _series_points_from_history(
         self,
         history: list[dict],
@@ -3473,8 +3554,11 @@ class GiftAnalyticsService:
         if metric_name not in METRIC_UNITS:
             raise ValueError(f"unsupported_metric:{metric_name}")
         scope_name = self._resolve_metric_scope(scope, market, collection_id, variant_id)
+        self._validate_metric_scope(metric_name, scope_name)
         from_dt = _parse_ts(from_ts) if from_ts else None
         to_dt = _parse_ts(to_ts) if to_ts else None
+        if from_dt and to_dt and from_dt > to_dt:
+            raise ValueError("invalid_time_range")
         interval_sec = self._metric_interval_to_seconds(interval)
         lim = max(1, min(int(limit or 500), 5000))
         eff_mode = self._effective_v1_mode(mode)
@@ -3553,41 +3637,151 @@ class GiftAnalyticsService:
             rows = self.variants_v1(collection_id=col_id, limit=5000, mode=eff_mode).get("items") or []
             if not rows:
                 raise ValueError("collection_not_found")
-            if metric_name == "FLOOR_REALTIME":
+            if metric_name == "FLOOR_HISTORY":
+                points = self._aggregate_variant_series_for_collection(
+                    collection_id=col_id,
+                    field="floor_ton",
+                    from_dt=from_dt,
+                    to_dt=to_dt,
+                    interval_sec=interval_sec,
+                    limit=lim,
+                    reducer="median",
+                )
+            elif metric_name == "SUPPLY_CHART":
+                points = self._aggregate_variant_series_for_collection(
+                    collection_id=col_id,
+                    field="active_listings",
+                    from_dt=from_dt,
+                    to_dt=to_dt,
+                    interval_sec=interval_sec,
+                    limit=lim,
+                    reducer="sum",
+                )
+            elif metric_name == "FLOOR_REALTIME":
                 value = _safe_median([float(r.get("floor_ton") or 0.0) for r in rows if float(r.get("floor_ton") or 0.0) > 0])
+                points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "MARKET_INDEX":
                 value = _safe_mean([float(r.get("score100") or 0.0) for r in rows])
+                points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "TREND_SCORE":
                 value = _safe_mean([float(r.get("trend_t") or 0.0) for r in rows])
+                points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "LIQUIDITY_SCORE":
                 value = _safe_mean([float(r.get("liq_score") or 0.0) for r in rows])
+                points = [{"ts": now_iso, "value": float(value)}]
+            elif metric_name == "VOLUME_VELOCITY":
+                values = []
+                for row in rows:
+                    src = self.variants.get(str(row.get("variant_id") or ""))
+                    if not src:
+                        continue
+                    mm = self._tz_signal_math_strict(src) if eff_mode == "tz_strict" else self._tz_signal_math(src)
+                    values.append(float(mm.get("volume_velocity") or 0.0))
+                points = [{"ts": now_iso, "value": _safe_mean(values)}]
+            elif metric_name == "ABSORPTION_RATE":
+                values = []
+                for row in rows:
+                    src = self.variants.get(str(row.get("variant_id") or ""))
+                    if not src:
+                        continue
+                    mm = self._tz_signal_math_strict(src) if eff_mode == "tz_strict" else self._tz_signal_math(src)
+                    values.append(float(mm.get("absorption_rate") or 0.0))
+                points = [{"ts": now_iso, "value": _safe_mean(values)}]
+            elif metric_name == "NEW_LISTINGS_REALTIME":
+                total_new = 0.0
+                for row in rows:
+                    variant_key = str(row.get("variant_id") or "")
+                    total_new += float(self._new_listings_in_window(variant_key, _now(), 600))
+                points = [{"ts": now_iso, "value": total_new}]
+            elif metric_name == "LISTING_VELOCITY":
+                total_new_10m = 0.0
+                for row in rows:
+                    variant_key = str(row.get("variant_id") or "")
+                    total_new_10m += float(self._new_listings_in_window(variant_key, _now(), 600))
+                points = [{"ts": now_iso, "value": total_new_10m}]
+            elif metric_name == "VOLATILITY":
+                values = []
+                for row in rows:
+                    src = self.variants.get(str(row.get("variant_id") or ""))
+                    if not src:
+                        continue
+                    mm = self._tz_signal_math_strict(src) if eff_mode == "tz_strict" else self._tz_signal_math(src)
+                    values.append(float(mm.get("volatility") or 0.0))
+                points = [{"ts": now_iso, "value": _safe_mean(values)}]
             else:
                 value = _safe_mean([float(r.get("score") or 0.0) for r in rows])
-            points = [{"ts": now_iso, "value": float(value)}]
+                points = [{"ts": now_iso, "value": float(value)}]
 
         else:  # MARKET
             overview = self.overview_v1(mode=eff_mode)
             market_summary = self.market_overview()
-            if metric_name == "MARKET_INDEX":
+            if metric_name == "SUPPLY_CHART":
+                points = []
+                for v in self.variants.values():
+                    variant_id = str(v.get("variant_id") or "")
+                    series = self._series_points_from_history(
+                        self.variant_history.get(variant_id, []),
+                        "active_listings",
+                        from_dt,
+                        to_dt,
+                        interval_sec,
+                        lim,
+                    )
+                    points.extend(series)
+                # Re-aggregate market by timestamp bucket (sum active listings).
+                re_buckets: dict[str, float] = {}
+                for p in points:
+                    ts = str(p.get("ts") or "")
+                    re_buckets[ts] = re_buckets.get(ts, 0.0) + float(p.get("value") or 0.0)
+                points = [{"ts": ts, "value": val} for ts, val in sorted(re_buckets.items())][-lim:]
+            elif metric_name == "MARKET_INDEX":
                 value = float(overview.get("market_index") or 0.0)
+                points = [{"ts": now_iso, "value": value}]
             elif metric_name == "TREND_SCORE":
                 avg_24h = float(market_summary.get("avg_change_24h") or 0.0)
                 value = _clamp((avg_24h + 100.0) / 200.0, 0.0, 1.0)
+                points = [{"ts": now_iso, "value": value}]
             elif metric_name == "FLOOR_REALTIME":
                 value = float(market_summary.get("floor_ton_median") or market_summary.get("floor_ton_min") or 0.0)
+                points = [{"ts": now_iso, "value": value}]
             elif metric_name == "LIQUIDITY_SCORE":
                 value = float((overview.get("key_metrics") or {}).get("avg_liquidity24h") or 0.0)
+                points = [{"ts": now_iso, "value": value}]
             elif metric_name == "VOLUME_VELOCITY":
-                value = 1.0
+                vals = []
+                for v in self.variants.values():
+                    mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
+                    vals.append(float(mm.get("volume_velocity") or 0.0))
+                value = _safe_mean(vals)
+                points = [{"ts": now_iso, "value": value}]
             elif metric_name == "ABSORPTION_RATE":
-                value = 1.0
+                vals = []
+                for v in self.variants.values():
+                    mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
+                    vals.append(float(mm.get("absorption_rate") or 0.0))
+                value = _safe_mean(vals)
+                points = [{"ts": now_iso, "value": value}]
             elif metric_name == "LISTING_VELOCITY":
                 value = float(market_summary.get("active_listings") or 0.0)
+                points = [{"ts": now_iso, "value": value}]
+            elif metric_name == "NEW_LISTINGS_REALTIME":
+                total_new_10m = 0.0
+                now_dt = _now()
+                for v in self.variants.values():
+                    total_new_10m += float(self._new_listings_in_window(str(v.get("variant_id") or ""), now_dt, 600))
+                points = [{"ts": now_iso, "value": total_new_10m}]
             elif metric_name == "VELOCITY_SCORE":
                 value = float(overview.get("market_index") or 0.0)
+                points = [{"ts": now_iso, "value": value}]
+            elif metric_name == "VOLATILITY":
+                vals = []
+                for v in self.variants.values():
+                    mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
+                    vals.append(float(mm.get("volatility") or 0.0))
+                points = [{"ts": now_iso, "value": _safe_mean(vals)}]
             else:
                 value = 0.0
-            points = [{"ts": now_iso, "value": float(value)}]
+                points = [{"ts": now_iso, "value": float(value)}]
 
         if not points:
             points = [{"ts": now_iso, "value": 0.0}]
