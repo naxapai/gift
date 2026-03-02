@@ -1255,7 +1255,7 @@ def _tonconnect_manifest(handler: BaseHTTPRequestHandler) -> None:
     payload = {
         "url": origin,
         "name": "GiftMarketZone",
-        "iconUrl": f"{origin}/assets/logo-mask.svg",
+        "iconUrl": f"{origin}/assets/favicon.png",
         "termsOfUseUrl": f"{origin}/index.html",
         "privacyPolicyUrl": f"{origin}/index.html",
     }

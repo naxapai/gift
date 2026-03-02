@@ -61,7 +61,7 @@ button {
 .logo-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 0;
 }
 
 .logo-img {
@@ -72,6 +72,16 @@ button {
   border: 1px solid var(--line);
   background: #fff;
   padding: 2px;
+}
+
+.logo-img-wordmark {
+  width: clamp(180px, 22vw, 290px);
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  object-fit: contain;
 }
 
 .logo {
@@ -1814,6 +1824,10 @@ select:focus-visible {
   .logo-img {
     width: 30px;
     height: 30px;
+  }
+  .logo-img-wordmark {
+    width: clamp(150px, 44vw, 220px);
+    height: auto;
   }
   .side-nav {
     display: none;
