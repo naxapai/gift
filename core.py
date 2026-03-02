@@ -7,6 +7,7 @@ import ssl
 import threading
 import time
 import uuid
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -394,11 +395,145 @@ class StarsRateService:
         }
 
 
+class RealtimeStore:
+    @staticmethod
+    def _env_int(name: str, default: int, min_value: int) -> int:
+        raw = os.getenv(name, str(default))
+        try:
+            val = int(str(raw).strip())
+        except Exception:
+            val = int(default)
+        return max(int(min_value), val)
+
+    @staticmethod
+    def _env_bool(name: str, default: bool = False) -> bool:
+        raw = str(os.getenv(name, "true" if default else "false") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def __init__(self) -> None:
+        self.redis_url = str(os.getenv("REDIS_URL", "") or "").strip()
+        self.enabled = bool(self.redis_url)
+        self.stream_maxlen = self._env_int("REDIS_STREAM_MAXLEN", 5000, 500)
+        self.pubsub_enabled = self._env_bool("REDIS_ENABLE_PUBSUB", default=False)
+        self.kv_overview_ttl_sec = self._env_int("REDIS_KV_OVERVIEW_TTL_SEC", 5, 2)
+        self.kv_signals_ttl_sec = self._env_int("REDIS_KV_SIGNALS_TTL_SEC", 5, 2)
+        self.kv_variant_ttl_sec = self._env_int("REDIS_KV_VARIANT_TTL_SEC", 15, 5)
+        self.kv_collection_ttl_sec = self._env_int("REDIS_KV_COLLECTION_TTL_SEC", 10, 5)
+        self.kv_collection_series_ttl_sec = self._env_int("REDIS_KV_COLLECTION_SERIES_TTL_SEC", 30, 5)
+        self.kv_variant_listings_ttl_sec = self._env_int("REDIS_KV_VARIANT_LISTINGS_TTL_SEC", 15, 5)
+        self.kv_metric_last_ttl_sec = self._env_int("REDIS_KV_METRIC_LAST_TTL_SEC", 60, 10)
+        self.dedupe_signal_ttl_sec = self._env_int("REDIS_DEDUPE_SIGNAL_TTL_SEC", 600, 30)
+        self.seen_listings_ttl_sec = self._env_int("REDIS_SEEN_LISTINGS_TTL_SEC", 604800, 60)
+        self.seen_sales_ttl_sec = self._env_int("REDIS_SEEN_SALES_TTL_SEC", 604800, 60)
+        self._client = None
+        self._lock = threading.Lock()
+
+    def _redis(self):
+        if not self.enabled:
+            return None
+        if self._client is not None:
+            return self._client
+        with self._lock:
+            if self._client is not None:
+                return self._client
+            try:
+                import redis  # type: ignore
+
+                self._client = redis.from_url(
+                    self.redis_url,
+                    decode_responses=True,
+                    socket_timeout=1.5,
+                    socket_connect_timeout=1.5,
+                )
+            except Exception:
+                self._client = None
+            return self._client
+
+    def xadd_event(self, stream: str, event_type: str, key: str, payload: dict, version: int = 1, trace_id: str | None = None) -> bool:
+        r = self._redis()
+        if r is None:
+            return False
+        fields = {
+            "type": str(event_type or ""),
+            "ts": _iso(_now()),
+            "key": str(key or ""),
+            "version": str(max(1, int(version or 1))),
+            "trace_id": str(trace_id or uuid.uuid4()),
+            "payload": json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":")),
+        }
+        try:
+            r.xadd(str(stream), fields, maxlen=self.stream_maxlen, approximate=True)
+            return True
+        except Exception:
+            return False
+
+    def publish(self, channel: str, payload: dict) -> bool:
+        if not self.pubsub_enabled:
+            return False
+        r = self._redis()
+        if r is None:
+            return False
+        try:
+            r.publish(str(channel), json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":")))
+            return True
+        except Exception:
+            return False
+
+    def set_json(self, key: str, payload, ttl_sec: int) -> bool:
+        r = self._redis()
+        if r is None:
+            return False
+        try:
+            r.setex(str(key), max(1, int(ttl_sec)), json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            return True
+        except Exception:
+            return False
+
+    def dedupe_signal(self, variant_id: str, signal_type: str, signature: str) -> bool:
+        r = self._redis()
+        if r is None:
+            return True
+        key = f"dedupe:signals:{variant_id}:{signal_type}"
+        try:
+            prev = r.get(key)
+            if prev == signature:
+                return False
+            r.setex(key, self.dedupe_signal_ttl_sec, signature)
+            return True
+        except Exception:
+            return True
+
+    def seen_listing(self, variant_id: str, listing_key: str) -> bool:
+        r = self._redis()
+        if r is None:
+            return True
+        key = f"seen:listings:{variant_id}"
+        try:
+            added = int(r.sadd(key, listing_key))
+            r.expire(key, self.seen_listings_ttl_sec)
+            return bool(added)
+        except Exception:
+            return True
+
+    def seen_sale(self, variant_id: str, sale_key: str) -> bool:
+        r = self._redis()
+        if r is None:
+            return True
+        key = f"seen:sales:{variant_id}"
+        try:
+            added = int(r.sadd(key, sale_key))
+            r.expire(key, self.seen_sales_ttl_sec)
+            return bool(added)
+        except Exception:
+            return True
+
+
 class GiftAnalyticsService:
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.fragment = FragmentClient()
         self.stars = StarsRateService()
+        self.realtime_store = RealtimeStore()
         # Fail-closed by default: always use verified snapshot unless explicitly disabled.
         self.verified_only = os.getenv("VERIFIED_ONLY", "true").strip().lower() in {"1", "true", "yes", "on"}
         self.ingest_interval_sec = int(os.getenv("INGEST_INTERVAL_SEC", "300"))
@@ -471,6 +606,10 @@ class GiftAnalyticsService:
         self.listing_mt_api_token_prefix = str(os.getenv("LISTING_MT_API_TOKEN_PREFIX", "Bearer ") or "")
         self.listing_mt_api_timeout_sec = max(3.0, float(os.getenv("LISTING_MT_API_TIMEOUT_SEC", "8")))
         self.listing_mt_cache_ttl_sec = max(1.0, float(os.getenv("LISTING_MT_CACHE_TTL_SEC", "2")))
+        self.redis_collections_publish_limit = max(1, min(int(os.getenv("REDIS_COLLECTIONS_PUBLISH_LIMIT", "24")), 200))
+        self.redis_collection_floor_series_limit = max(1, min(int(os.getenv("REDIS_COLLECTION_FLOOR_SERIES_LIMIT", "200")), 1000))
+        self.redis_variant_listings_head_limit = max(1, min(int(os.getenv("REDIS_VARIANT_LISTINGS_HEAD_LIMIT", "50")), 500))
+        self.redis_variant_new_listings_tail_limit = max(1, min(int(os.getenv("REDIS_VARIANT_NEW_LISTINGS_TAIL_LIMIT", "100")), 1000))
         self._listing_mt_runtime_cache: dict = {
             "fetched_mono": 0.0,
             "rows": [],
@@ -559,6 +698,7 @@ class GiftAnalyticsService:
         self.state["last_error"] = "RESTORED_FROM_LOCAL_SNAPSHOT"
         self.state["ingest_in_progress"] = False
         self._save_state()
+        self._publish_realtime_snapshot(mode=self.v1_signal_engine_mode)
 
     def _start_ingest_loop(self) -> None:
         def loop() -> None:
@@ -654,6 +794,7 @@ class GiftAnalyticsService:
         if derived_stars:
             self.stars.set_derived_rate(float(derived_stars))
 
+        should_publish = False
         with self.lock:
             if not events or not bases:
                 # Fragment can occasionally return an empty temporary window.
@@ -681,6 +822,9 @@ class GiftAnalyticsService:
             self.state["last_error"] = None
             self.state["ingest_in_progress"] = False
             self._save_state()
+            should_publish = True
+        if should_publish:
+            self._publish_realtime_snapshot(mode=self.v1_signal_engine_mode)
         _log_ingest(f"ingest done events={len(events)} bases={len(bases)}")
 
     def _fetch_with_timeout(self) -> Tuple[List[ListingEvent], List[BaseInfo]]:
@@ -843,6 +987,7 @@ class GiftAnalyticsService:
             if not events or not bases:
                 return
             now = _now()
+            should_publish = False
             with self.lock:
                 self.bases = {b.base_id: b for b in bases}
                 self._process_listings(events, now)
@@ -853,6 +998,9 @@ class GiftAnalyticsService:
                 self.state["last_error"] = "RESTORED_FROM_LOCAL_SNAPSHOT"
                 self.state["ingest_in_progress"] = False
                 self._save_state()
+                should_publish = True
+            if should_publish:
+                self._publish_realtime_snapshot(mode=self.v1_signal_engine_mode)
             _log_ingest(f"bootstrap from file: events={len(events)} bases={len(bases)}")
         except Exception as exc:
             _log_ingest(f"bootstrap from file failed: {exc}")
@@ -3323,7 +3471,13 @@ class GiftAnalyticsService:
             "payload": payload,
         }
 
-    def stream_events_v1(self, types: set[str] | None = None, mode: str | None = None) -> list[dict]:
+    def stream_events_v1(
+        self,
+        types: set[str] | None = None,
+        mode: str | None = None,
+        variant_id: str | None = None,
+        collection_id: str | None = None,
+    ) -> list[dict]:
         wanted = set(types or [])
         all_types = {"signal.created", "metric.updated", "listing.event", "variant.updated", "collection.updated", "provider.health"}
         if not wanted:
@@ -3451,7 +3605,205 @@ class GiftAnalyticsService:
                     "payload": provider,
                 }
             )
-        return out
+        variant_filter = str(variant_id or "").strip()
+        collection_filter = str(collection_id or "").strip()
+        if not variant_filter and not collection_filter:
+            return out
+
+        filtered: list[dict] = []
+        for ev in out:
+            payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+            ev_variant_id = str(payload.get("variant_id") or "")
+            ev_collection_id = str(payload.get("collection_id") or "")
+            key = str(ev.get("key") or "")
+            match_variant = (not variant_filter) or (ev_variant_id == variant_filter) or (key == variant_filter)
+            match_collection = (not collection_filter) or (ev_collection_id == collection_filter) or (key == collection_filter)
+            if match_variant and match_collection:
+                filtered.append(ev)
+        return filtered
+
+    def _signal_signature(self, signal: dict) -> str:
+        sig = signal if isinstance(signal, dict) else {}
+        stype = str(sig.get("type") or "")
+        variant = str(sig.get("variant_id") or "")
+        score = round(float(sig.get("score100") or 0.0), 1)
+        price = round(float(sig.get("price_ton") or 0.0), 4)
+        fair = round(float(sig.get("fair_ton") or 0.0), 4)
+        raw = f"{stype}|{variant}|{score}|{price}|{fair}"
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+    def _publish_realtime_snapshot(self, mode: str | None = None) -> None:
+        store = self.realtime_store
+        if not store.enabled:
+            return
+        try:
+            overview = self.overview_v1(mode=mode)
+            store.set_json("market:overview", overview, store.kv_overview_ttl_sec)
+
+            signals = self.signals_v1(limit=100, mode=mode).get("items") or []
+            buy = [s for s in signals if str(s.get("type") or "") == "BUY"][:20]
+            sell = [s for s in signals if str(s.get("type") or "") == "SELL"][:20]
+            store.set_json("market:top_signals:BUY", buy, store.kv_signals_ttl_sec)
+            store.set_json("market:top_signals:SELL", sell, store.kv_signals_ttl_sec)
+
+            for ev in self.stream_events_v1(types={"metric.updated", "provider.health"}, mode=mode):
+                etype = str(ev.get("type") or "")
+                key = str(ev.get("key") or "")
+                payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+                version = int(ev.get("version") or 1)
+                trace_id = str(ev.get("trace_id") or "")
+                if etype == "metric.updated":
+                    store.xadd_event("stream:metrics", etype, key, payload, version=version, trace_id=trace_id)
+                    store.publish("pub:metrics", ev)
+                    metric = str(payload.get("metric") or "").upper()
+                    scope = str(payload.get("scope") or "MARKET").upper()
+                    metric_id = "MARKET"
+                    if scope == "COLLECTION":
+                        metric_id = str(payload.get("collection_id") or key or "MARKET")
+                    elif scope == "VARIANT":
+                        metric_id = str(payload.get("variant_id") or key or "MARKET")
+                    point = payload.get("point") if isinstance(payload.get("point"), dict) else {}
+                    metric_last = {
+                        "ts": str(point.get("ts") or ev.get("ts") or _iso(_now())),
+                        "value": float(point.get("value") or 0.0),
+                        "extra": point.get("extra") if isinstance(point.get("extra"), dict) else {},
+                    }
+                    if metric:
+                        store.set_json(
+                            f"metric:{scope}:{metric_id}:{metric}:last",
+                            metric_last,
+                            store.kv_metric_last_ttl_sec,
+                        )
+                elif etype == "provider.health":
+                    store.xadd_event("stream:provider", etype, key, payload, version=version, trace_id=trace_id)
+                    store.publish("pub:provider", ev)
+
+            for sig in signals:
+                variant_id = str(sig.get("variant_id") or "")
+                if not variant_id:
+                    continue
+                sig_type = str(sig.get("type") or "WATCH")
+                signature = self._signal_signature(sig)
+                if not store.dedupe_signal(variant_id, sig_type, signature):
+                    continue
+                env = self.build_signal_created_event_v1(sig)
+                env_payload = env.get("payload") if isinstance(env.get("payload"), dict) else {}
+                store.xadd_event(
+                    "stream:signals",
+                    "signal.created",
+                    variant_id,
+                    env_payload,
+                    version=int(env.get("version") or 1),
+                    trace_id=str(env.get("trace_id") or ""),
+                )
+                store.publish("pub:signals", env)
+                details = self.variant_details_v1(variant_id, mode=mode) or {}
+                variant_agg = details.get("variant") if isinstance(details.get("variant"), dict) else sig
+                store.set_json(f"variant:{variant_id}:agg", variant_agg, store.kv_variant_ttl_sec)
+
+            collections = self.collections_v1(limit=5000).get("items") or []
+            collections = sorted(collections, key=lambda x: int(x.get("active_lots_total") or 0), reverse=True)
+            for col in collections[: self.redis_collections_publish_limit]:
+                collection_id = str(col.get("collection_id") or "")
+                if not collection_id:
+                    continue
+                store.set_json(f"collection:{collection_id}:agg", col, store.kv_collection_ttl_sec)
+                details = self.collection_details_v1(collection_id) or {}
+                floor_series = details.get("floor_series") if isinstance(details.get("floor_series"), list) else []
+                if floor_series:
+                    floor_series = floor_series[-self.redis_collection_floor_series_limit :]
+                store.set_json(
+                    f"collection:{collection_id}:floor:series",
+                    floor_series,
+                    store.kv_collection_series_ttl_sec,
+                )
+
+            listing_events = self.listings_events_v1(
+                limit=max(200, self.redis_variant_new_listings_tail_limit * 2),
+                new_window_sec=max(60, int(self.ingest_interval_sec * 2)),
+                include_relisted=True,
+            ).get("items") or []
+            selected_variant_ids: set[str] = {
+                str(s.get("variant_id") or "").strip()
+                for s in signals
+                if str(s.get("variant_id") or "").strip()
+            }
+            tail_by_variant: dict[str, list[dict]] = {}
+            for item in listing_events:
+                variant_id = str(item.get("variant_id") or "")
+                listing_key = str(item.get("listing_key") or "")
+                if not variant_id or not listing_key:
+                    continue
+                selected_variant_ids.add(variant_id)
+                topic = str(item.get("topic") or "")
+                if topic.endswith("sold") or topic.endswith("sale"):
+                    seen_ok = store.seen_sale(variant_id, listing_key)
+                else:
+                    seen_ok = store.seen_listing(variant_id, listing_key)
+                if not seen_ok:
+                    continue
+                env = self.build_listing_event_v1(item)
+                env_payload = env.get("payload") if isinstance(env.get("payload"), dict) else {}
+                store.xadd_event(
+                    "stream:listings",
+                    "listing.event",
+                    variant_id,
+                    env_payload,
+                    version=int(env.get("version") or 1),
+                    trace_id=str(env.get("trace_id") or ""),
+                )
+                store.publish("pub:listings", env)
+
+                price_ton = None
+                if str(item.get("resell_currency") or "").upper() == "TON":
+                    try:
+                        price_ton = float(item.get("resell_amount"))
+                    except Exception:
+                        price_ton = None
+                if price_ton is not None:
+                    tail_by_variant.setdefault(variant_id, []).append(
+                        {
+                            "listing_id": listing_key,
+                            "price_ton": price_ton,
+                            "ts": str(item.get("ts") or _iso(_now())),
+                        }
+                    )
+
+            if selected_variant_ids:
+                selected_variant_ids = set(list(selected_variant_ids)[: max(1, self.redis_collections_publish_limit * 8)])
+                listings_head_by_variant: dict[str, list[dict]] = {}
+                for listing_id, row in self.listing_state.items():
+                    if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
+                        continue
+                    variant_id = str((row or {}).get("variant_id") or "")
+                    if not variant_id or variant_id not in selected_variant_ids:
+                        continue
+                    listings_head_by_variant.setdefault(variant_id, []).append(
+                        {
+                            "listing_id": str(listing_id),
+                            "price_ton": float((row or {}).get("price_ton") or 0.0),
+                            "price_stars": None,
+                            "status": str((row or {}).get("status") or "ACTIVE"),
+                            "observed_at": str((row or {}).get("last_seen") or _iso(_now())),
+                        }
+                    )
+                for variant_id, rows in listings_head_by_variant.items():
+                    rows.sort(key=lambda x: float(x.get("price_ton") or 0.0))
+                    store.set_json(
+                        f"variant:{variant_id}:listings:head",
+                        rows[: self.redis_variant_listings_head_limit],
+                        store.kv_variant_listings_ttl_sec,
+                    )
+
+            for variant_id, rows in tail_by_variant.items():
+                rows.sort(key=lambda x: str(x.get("ts") or ""))
+                store.set_json(
+                    f"variant:{variant_id}:new_listings:tail",
+                    rows[-self.redis_variant_new_listings_tail_limit :],
+                    store.kv_variant_listings_ttl_sec,
+                )
+        except Exception as exc:
+            _log_ingest(f"realtime publish skipped: {exc}")
 
     def metrics_definitions_v1(self) -> list[dict]:
         return list(METRIC_DEFINITIONS_V1)
