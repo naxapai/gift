@@ -105,25 +105,25 @@ METRIC_DEFINITIONS_V1: list[dict] = [
 
 METRIC_ALLOWED_SCOPES: dict[str, set[str]] = {
     "FLOOR_REALTIME": {"MARKET", "COLLECTION", "VARIANT"},
-    "FLOOR_HISTORY": {"COLLECTION", "VARIANT"},
+    "FLOOR_HISTORY": {"MARKET", "COLLECTION", "VARIANT"},
     "NEW_LISTINGS_REALTIME": {"MARKET", "COLLECTION", "VARIANT"},
-    "LISTING_FEED": {"VARIANT"},
+    "LISTING_FEED": {"MARKET", "COLLECTION", "VARIANT"},
     "LISTING_VELOCITY": {"MARKET", "COLLECTION", "VARIANT"},
     "LISTING_PRESSURE": {"VARIANT"},
     "FAIR_PRICE": {"VARIANT"},
     "UNDERVALUE": {"VARIANT"},
     "EXPECTED_PROFIT": {"VARIANT"},
     "LIQUIDITY_SCORE": {"MARKET", "COLLECTION", "VARIANT"},
-    "LIQUIDITY_HEATMAP": {"VARIANT"},
-    "LIQUIDITY_CHART": {"VARIANT"},
-    "VOLUME_CHART": {"VARIANT"},
+    "LIQUIDITY_HEATMAP": {"MARKET", "COLLECTION", "VARIANT"},
+    "LIQUIDITY_CHART": {"MARKET", "COLLECTION", "VARIANT"},
+    "VOLUME_CHART": {"MARKET", "COLLECTION", "VARIANT"},
     "VOLUME_VELOCITY": {"MARKET", "COLLECTION", "VARIANT"},
     "VELOCITY_SCORE": {"MARKET"},
     "ABSORPTION_RATE": {"MARKET", "COLLECTION", "VARIANT"},
-    "MARKET_DEPTH": {"VARIANT"},
-    "BUY_WALL_SCORE": {"VARIANT"},
-    "WHALE_RATIO": {"VARIANT"},
-    "WHALE_IMPULSE": {"VARIANT"},
+    "MARKET_DEPTH": {"MARKET", "COLLECTION", "VARIANT"},
+    "BUY_WALL_SCORE": {"COLLECTION", "VARIANT"},
+    "WHALE_RATIO": {"MARKET", "COLLECTION", "VARIANT"},
+    "WHALE_IMPULSE": {"MARKET", "COLLECTION", "VARIANT"},
     "RARITY_SCORE": {"VARIANT"},
     "VOLATILITY": {"MARKET", "COLLECTION", "VARIANT"},
     "SUPPLY_CHART": {"MARKET", "COLLECTION", "VARIANT"},
@@ -1338,6 +1338,149 @@ class GiftAnalyticsService:
                 count += 1
                 volume += float(ev.get("price_ton") or 0)
         return count, volume
+
+    def _trades_in_window_multi(self, now: datetime, seconds: int, variant_ids: set[str] | None = None) -> Tuple[int, float]:
+        cutoff = now - timedelta(seconds=seconds)
+        count = 0
+        volume = 0.0
+        for ev in self.trade_events:
+            variant_id = str(ev.get("variant_id") or "")
+            if variant_ids is not None and variant_id not in variant_ids:
+                continue
+            ts = _parse_ts(ev.get("ts"))
+            if ts < cutoff:
+                continue
+            try:
+                price = float(ev.get("price_ton") or 0.0)
+            except Exception:
+                continue
+            if price <= 0:
+                continue
+            count += 1
+            volume += price
+        return count, volume
+
+    def _new_listings_in_window_multi(self, now: datetime, seconds: int, variant_ids: set[str] | None = None) -> int:
+        cutoff = now - timedelta(seconds=seconds)
+        count = 0
+        if variant_ids is None:
+            source = self.variant_history.items()
+        else:
+            source = [(variant_id, self.variant_history.get(variant_id, [])) for variant_id in variant_ids]
+        for _, history in source:
+            for row in history or []:
+                ts = _parse_ts(row.get("ts"))
+                if ts >= cutoff and row.get("new_listings"):
+                    count += int(row.get("new_listings") or 0)
+        return count
+
+    def _market_depth_for_variants(self, floor_ton: float, variant_ids: set[str] | None = None) -> tuple[int, float]:
+        if floor_ton <= 0:
+            return 0, 0.0
+        band_hi = floor_ton * 1.05
+        depth_count = 0
+        depth_ton = 0.0
+        for row in self.listing_state.values():
+            if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
+                continue
+            variant_id = str((row or {}).get("variant_id") or "")
+            if variant_ids is not None and variant_id not in variant_ids:
+                continue
+            try:
+                price = float((row or {}).get("price_ton") or 0.0)
+            except Exception:
+                continue
+            if floor_ton <= price <= band_hi:
+                depth_count += 1
+                depth_ton += price
+        return depth_count, depth_ton
+
+    def _buy_wall_score_for_variant(self, variant_id: str, floor_ton: float, now: datetime) -> float:
+        if floor_ton <= 0:
+            return 0.0
+        band_hi = floor_ton * 1.02
+        near_floor_listings = 0
+        for row in self.listing_state.values():
+            if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
+                continue
+            if str((row or {}).get("variant_id") or "") != variant_id:
+                continue
+            try:
+                price = float((row or {}).get("price_ton") or 0.0)
+            except Exception:
+                continue
+            if 0 < price <= band_hi:
+                near_floor_listings += 1
+        cutoff = now - timedelta(seconds=1800)
+        near_floor_sales = 0
+        for ev in self.trade_events:
+            if str(ev.get("variant_id") or "") != variant_id:
+                continue
+            if _parse_ts(ev.get("ts")) < cutoff:
+                continue
+            try:
+                price = float(ev.get("price_ton") or 0.0)
+            except Exception:
+                continue
+            if 0 < price <= band_hi:
+                near_floor_sales += 1
+        return near_floor_sales / max(near_floor_listings, 1)
+
+    def _whale_ratio_and_impulse(self, now: datetime, variant_ids: set[str] | None = None) -> tuple[float, float, float]:
+        lookback_7d = now - timedelta(seconds=WINDOWS["7d"])
+        prices_7d: list[float] = []
+        for ev in self.trade_events:
+            variant_id = str(ev.get("variant_id") or "")
+            if variant_ids is not None and variant_id not in variant_ids:
+                continue
+            ts = _parse_ts(ev.get("ts"))
+            if ts < lookback_7d:
+                continue
+            try:
+                price = float(ev.get("price_ton") or 0.0)
+            except Exception:
+                continue
+            if price > 0:
+                prices_7d.append(price)
+        if not prices_7d:
+            return 0.0, 0.0, 0.0
+        whale_thr = _percentile(prices_7d, 0.95)
+
+        def _ratio(start_dt: datetime, end_dt: datetime) -> float:
+            total = 0.0
+            whale = 0.0
+            for ev in self.trade_events:
+                variant_id = str(ev.get("variant_id") or "")
+                if variant_ids is not None and variant_id not in variant_ids:
+                    continue
+                ts = _parse_ts(ev.get("ts"))
+                if ts < start_dt or ts >= end_dt:
+                    continue
+                try:
+                    price = float(ev.get("price_ton") or 0.0)
+                except Exception:
+                    continue
+                if price <= 0:
+                    continue
+                total += price
+                if price >= whale_thr:
+                    whale += price
+            return whale / total if total > 0 else 0.0
+
+        now_24 = now - timedelta(seconds=WINDOWS["24h"])
+        prev_24 = now - timedelta(seconds=2 * WINDOWS["24h"])
+        ratio_now = _ratio(now_24, now)
+        ratio_prev = _ratio(prev_24, now_24)
+        return _clamp(ratio_now, 0.0, 1.0), _clamp(ratio_now - ratio_prev, -1.0, 1.0), float(whale_thr)
+
+    def _liquidity_heat(self, now: datetime, variant_ids: set[str] | None = None) -> list[dict]:
+        heat = []
+        for label, seconds in (("1h", WINDOWS["1h"]), ("6h", WINDOWS["6h"]), ("24h", WINDOWS["24h"])):
+            sales_count, _ = self._trades_in_window_multi(now, seconds, variant_ids=variant_ids)
+            per_day_equivalent = sales_count * (86400.0 / max(1, seconds))
+            liq_score = _clamp(per_day_equivalent / 1000.0, 0.0, 1.0)
+            heat.append({"bucket": label, "sales": int(sales_count), "value": round(liq_score, 6)})
+        return heat
 
     def _new_listings_in_window(self, variant_id: str, now: datetime, seconds: int) -> int:
         cutoff = now - timedelta(seconds=seconds)
@@ -3870,6 +4013,107 @@ class GiftAnalyticsService:
             out = out[-limit:]
         return out
 
+    def _aggregate_variant_series_for_market(
+        self,
+        field: str,
+        from_dt: datetime | None,
+        to_dt: datetime | None,
+        interval_sec: int,
+        limit: int,
+        reducer: str = "median",
+    ) -> list[dict]:
+        buckets: dict[int, list[float]] = {}
+        for v in self.variants.values():
+            variant_id = str(v.get("variant_id") or "")
+            hist = self.variant_history.get(variant_id, [])
+            for row in hist:
+                ts = _parse_ts(row.get("ts"))
+                if from_dt and ts < from_dt:
+                    continue
+                if to_dt and ts > to_dt:
+                    continue
+                try:
+                    val = float(row.get(field))
+                except Exception:
+                    continue
+                if not math.isfinite(val):
+                    continue
+                bucket = int(ts.timestamp() // max(1, interval_sec)) * max(1, interval_sec)
+                buckets.setdefault(bucket, []).append(val)
+        out: list[dict] = []
+        for bucket, values in sorted(buckets.items()):
+            if not values:
+                continue
+            if reducer == "sum":
+                value = float(sum(values))
+            elif reducer == "mean":
+                value = _safe_mean(values)
+            else:
+                value = _safe_median(values)
+            out.append({"ts": _iso(datetime.fromtimestamp(bucket, tz=timezone.utc)), "value": float(value)})
+        if limit > 0 and len(out) > limit:
+            out = out[-limit:]
+        return out
+
+    def _trade_series_for_variants(
+        self,
+        variant_ids: set[str] | None,
+        from_dt: datetime | None,
+        to_dt: datetime | None,
+        interval_sec: int,
+        limit: int,
+        value_mode: str = "volume",
+    ) -> list[dict]:
+        buckets: dict[int, float] = {}
+        for ev in self.trade_events:
+            variant_id = str(ev.get("variant_id") or "")
+            if variant_ids is not None and variant_id not in variant_ids:
+                continue
+            ts = _parse_ts(ev.get("ts"))
+            if from_dt and ts < from_dt:
+                continue
+            if to_dt and ts > to_dt:
+                continue
+            try:
+                price = float(ev.get("price_ton") or 0.0)
+            except Exception:
+                continue
+            if price <= 0:
+                continue
+            bucket = int(ts.timestamp() // max(1, interval_sec)) * max(1, interval_sec)
+            if value_mode == "count":
+                buckets[bucket] = buckets.get(bucket, 0.0) + 1.0
+            else:
+                buckets[bucket] = buckets.get(bucket, 0.0) + price
+        out = [{"ts": _iso(datetime.fromtimestamp(bucket, tz=timezone.utc)), "value": float(value)} for bucket, value in sorted(buckets.items())]
+        if limit > 0 and len(out) > limit:
+            out = out[-limit:]
+        return out
+
+    def _volatility_from_points(self, points: list[dict]) -> float:
+        values: list[float] = []
+        for row in points:
+            try:
+                val = float(row.get("value") or 0.0)
+            except Exception:
+                continue
+            if val > 0:
+                values.append(val)
+        if len(values) < 2:
+            return 0.0
+        log_returns: list[float] = []
+        for idx in range(1, len(values)):
+            prev = values[idx - 1]
+            cur = values[idx]
+            if prev > 0 and cur > 0:
+                try:
+                    log_returns.append(math.log(cur / prev))
+                except Exception:
+                    continue
+        if len(log_returns) < 2:
+            return 0.0
+        return float(_safe_pstdev(log_returns) * math.sqrt(len(log_returns)))
+
     def _series_points_from_history(
         self,
         history: list[dict],
@@ -3925,7 +4169,8 @@ class GiftAnalyticsService:
         interval_sec = self._metric_interval_to_seconds(interval)
         lim = max(1, min(int(limit or 500), 5000))
         eff_mode = self._effective_v1_mode(mode)
-        now_iso = _iso(_now())
+        now_dt = _now()
+        now_iso = _iso(now_dt)
         points: list[dict] = []
 
         if scope_name == "VARIANT":
@@ -3940,41 +4185,42 @@ class GiftAnalyticsService:
                 raise ValueError("variant_not_found")
             mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
             hist = self.variant_history.get(variant_key, [])
+            variant_ids = {variant_key}
             if metric_name == "FLOOR_HISTORY":
                 points = self._series_points_from_history(hist, "floor_ton", from_dt, to_dt, interval_sec, lim)
             elif metric_name == "VOLUME_CHART":
-                points = self._series_points_from_history(hist, "vwap_ton", from_dt, to_dt, interval_sec, lim)
+                points = self._trade_series_for_variants(variant_ids, from_dt, to_dt, interval_sec, lim, value_mode="volume")
             elif metric_name == "SUPPLY_CHART":
                 points = self._series_points_from_history(hist, "active_listings", from_dt, to_dt, interval_sec, lim)
             elif metric_name == "LIQUIDITY_CHART":
-                lv = float(mm.get("liq_score") or 0.0)
-                points = self._series_points_from_history(hist, "floor_ton", from_dt, to_dt, interval_sec, lim)
-                for p in points:
-                    p["value"] = lv
+                sales_series = self._trade_series_for_variants(variant_ids, from_dt, to_dt, interval_sec, lim, value_mode="count")
+                points = []
+                for p in sales_series:
+                    sales_bucket = float(p.get("value") or 0.0)
+                    per_day_equivalent = sales_bucket * (86400.0 / max(1, interval_sec))
+                    liq_score = _clamp(per_day_equivalent / 1000.0, 0.0, 1.0)
+                    points.append({"ts": str(p.get("ts") or now_iso), "value": liq_score, "extra": {"sales": int(sales_bucket)}})
             elif metric_name == "LIQUIDITY_HEATMAP":
-                lv = float(mm.get("liq_score") or 0.0)
-                points = [{"ts": now_iso, "value": lv, "extra": {"heat": [{"bucket": "24h", "value": lv}]}}]
+                heat = self._liquidity_heat(now_dt, variant_ids=variant_ids)
+                points = [{"ts": now_iso, "value": float((heat[-1] if heat else {}).get("value") or 0.0), "extra": {"heat": heat}}]
             elif metric_name == "LISTING_FEED":
-                events = self.listings_events_v1(limit=50, since=from_ts, include_relisted=True).get("items") or []
+                raw_events = self.listings_events_v1(limit=max(50, lim), since=from_ts, include_relisted=True).get("items") or []
+                events = [e for e in raw_events if str((e or {}).get("variant_id") or "") == variant_key]
                 points = [{"ts": now_iso, "value": float(len(events)), "extra": {"items": events[:50]}}]
             elif metric_name == "MARKET_DEPTH":
                 floor = float(mm.get("floor_ton") or 0.0)
-                band_hi = floor * 1.05 if floor > 0 else 0.0
-                depth_count = 0
-                depth_ton = 0.0
-                for row in self.listing_state.values():
-                    if str((row or {}).get("variant_id") or "") != variant_key:
-                        continue
-                    price = float((row or {}).get("price_ton") or 0.0)
-                    if floor > 0 and price >= floor and price <= band_hi:
-                        depth_count += 1
-                        depth_ton += price
+                depth_count, depth_ton = self._market_depth_for_variants(floor, variant_ids=variant_ids)
                 points = [{"ts": now_iso, "value": float(depth_count), "extra": {"depth_count": depth_count, "depth_ton": round(depth_ton, 6)}}]
             else:
+                whale_ratio = 0.0
+                whale_impulse = 0.0
+                if metric_name in {"WHALE_RATIO", "WHALE_IMPULSE"}:
+                    whale_ratio, whale_impulse, _ = self._whale_ratio_and_impulse(now_dt, variant_ids=variant_ids)
+                buy_wall = self._buy_wall_score_for_variant(variant_key, float(mm.get("floor_ton") or 0.0), now_dt) if metric_name == "BUY_WALL_SCORE" else 0.0
                 value_map = {
                     "FLOOR_REALTIME": float(mm.get("floor_ton") or 0.0),
-                    "NEW_LISTINGS_REALTIME": float(self._new_listings_in_window(variant_key, _now(), 600)),
-                    "LISTING_VELOCITY": float(mm.get("new_listings_30m") or 0.0),
+                    "NEW_LISTINGS_REALTIME": float(self._new_listings_in_window(variant_key, now_dt, 600)),
+                    "LISTING_VELOCITY": float(self._new_listings_in_window(variant_key, now_dt, 600)),
                     "LISTING_PRESSURE": float(mm.get("listing_pressure") or 0.0),
                     "FAIR_PRICE": float(mm.get("fair_ton") or 0.0),
                     "UNDERVALUE": float(mm.get("undervalue") or 0.0),
@@ -3986,9 +4232,9 @@ class GiftAnalyticsService:
                     "EDGE_SCORE": float(mm.get("score") or 0.0),
                     "BUY_SCORE": float(mm.get("score100") or 0.0) if str(mm.get("action_hint") or "") == "BUY" else max(0.0, float(mm.get("score100") or 0.0) * 0.5),
                     "SELL_SCORE": float(100.0 - float(mm.get("score100") or 0.0)),
-                    "BUY_WALL_SCORE": _clamp(float(mm.get("absorption_rate") or 0.0), 0.0, 2.0),
-                    "WHALE_RATIO": 0.0,
-                    "WHALE_IMPULSE": 0.0,
+                    "BUY_WALL_SCORE": float(buy_wall),
+                    "WHALE_RATIO": float(whale_ratio),
+                    "WHALE_IMPULSE": float(whale_impulse),
                     "RARITY_SCORE": _clamp(1.0 / max(1, int(mm.get("active_lots") or 1)), 0.0, 1.0),
                 }
                 points = [{"ts": now_iso, "value": float(value_map.get(metric_name, 0.0))}]
@@ -4000,6 +4246,7 @@ class GiftAnalyticsService:
             rows = self.variants_v1(collection_id=col_id, limit=5000, mode=eff_mode).get("items") or []
             if not rows:
                 raise ValueError("collection_not_found")
+            variant_ids = {str(row.get("variant_id") or "") for row in rows if str(row.get("variant_id") or "")}
             if metric_name == "FLOOR_HISTORY":
                 points = self._aggregate_variant_series_for_collection(
                     collection_id=col_id,
@@ -4020,6 +4267,23 @@ class GiftAnalyticsService:
                     limit=lim,
                     reducer="sum",
                 )
+            elif metric_name == "VOLUME_CHART":
+                points = self._trade_series_for_variants(variant_ids, from_dt, to_dt, interval_sec, lim, value_mode="volume")
+            elif metric_name == "LIQUIDITY_CHART":
+                sales_series = self._trade_series_for_variants(variant_ids, from_dt, to_dt, interval_sec, lim, value_mode="count")
+                points = []
+                for p in sales_series:
+                    sales_bucket = float(p.get("value") or 0.0)
+                    per_day_equivalent = sales_bucket * (86400.0 / max(1, interval_sec))
+                    liq_score = _clamp(per_day_equivalent / 1000.0, 0.0, 1.0)
+                    points.append({"ts": str(p.get("ts") or now_iso), "value": liq_score, "extra": {"sales": int(sales_bucket)}})
+            elif metric_name == "LIQUIDITY_HEATMAP":
+                heat = self._liquidity_heat(now_dt, variant_ids=variant_ids)
+                points = [{"ts": now_iso, "value": float((heat[-1] if heat else {}).get("value") or 0.0), "extra": {"heat": heat}}]
+            elif metric_name == "LISTING_FEED":
+                raw_events = self.listings_events_v1(limit=max(50, lim), since=from_ts, include_relisted=True).get("items") or []
+                events = [e for e in raw_events if str((e or {}).get("gift_id") or "") == col_id]
+                points = [{"ts": now_iso, "value": float(len(events)), "extra": {"items": events[:50]}}]
             elif metric_name == "FLOOR_REALTIME":
                 value = _safe_median([float(r.get("floor_ton") or 0.0) for r in rows if float(r.get("floor_ton") or 0.0) > 0])
                 points = [{"ts": now_iso, "value": float(value)}]
@@ -4030,47 +4294,56 @@ class GiftAnalyticsService:
                 value = _safe_mean([float(r.get("trend_t") or 0.0) for r in rows])
                 points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "LIQUIDITY_SCORE":
-                value = _safe_mean([float(r.get("liq_score") or 0.0) for r in rows])
+                sales24h, _ = self._trades_in_window_multi(now_dt, WINDOWS["24h"], variant_ids=variant_ids)
+                value = _clamp(float(sales24h) / 1000.0, 0.0, 1.0)
                 points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "VOLUME_VELOCITY":
-                values = []
-                for row in rows:
-                    src = self.variants.get(str(row.get("variant_id") or ""))
-                    if not src:
-                        continue
-                    mm = self._tz_signal_math_strict(src) if eff_mode == "tz_strict" else self._tz_signal_math(src)
-                    values.append(float(mm.get("volume_velocity") or 0.0))
-                points = [{"ts": now_iso, "value": _safe_mean(values)}]
+                _, volume_10m = self._trades_in_window_multi(now_dt, 600, variant_ids=variant_ids)
+                _, volume_30m = self._trades_in_window_multi(now_dt, 1800, variant_ids=variant_ids)
+                denom = (volume_30m / 3.0) if volume_30m > 0 else 0.0
+                value = (volume_10m / denom) if denom > 0 else 0.0
+                points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "ABSORPTION_RATE":
-                values = []
-                for row in rows:
-                    src = self.variants.get(str(row.get("variant_id") or ""))
-                    if not src:
-                        continue
-                    mm = self._tz_signal_math_strict(src) if eff_mode == "tz_strict" else self._tz_signal_math(src)
-                    values.append(float(mm.get("absorption_rate") or 0.0))
-                points = [{"ts": now_iso, "value": _safe_mean(values)}]
+                sales_30m, _ = self._trades_in_window_multi(now_dt, 1800, variant_ids=variant_ids)
+                new_30m = self._new_listings_in_window_multi(now_dt, 1800, variant_ids=variant_ids)
+                value = sales_30m / max(new_30m, 1)
+                points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "NEW_LISTINGS_REALTIME":
-                total_new = 0.0
-                for row in rows:
-                    variant_key = str(row.get("variant_id") or "")
-                    total_new += float(self._new_listings_in_window(variant_key, _now(), 600))
-                points = [{"ts": now_iso, "value": total_new}]
+                total_new = float(self._new_listings_in_window_multi(now_dt, 600, variant_ids=variant_ids))
+                points = [{"ts": now_iso, "value": float(total_new)}]
             elif metric_name == "LISTING_VELOCITY":
-                total_new_10m = 0.0
+                total_new_10m = float(self._new_listings_in_window_multi(now_dt, 600, variant_ids=variant_ids))
+                points = [{"ts": now_iso, "value": float(total_new_10m)}]
+            elif metric_name == "MARKET_DEPTH":
+                floor = _safe_median([float(r.get("floor_ton") or 0.0) for r in rows if float(r.get("floor_ton") or 0.0) > 0])
+                depth_count, depth_ton = self._market_depth_for_variants(float(floor), variant_ids=variant_ids)
+                points = [{"ts": now_iso, "value": float(depth_count), "extra": {"depth_count": depth_count, "depth_ton": round(depth_ton, 6)}}]
+            elif metric_name == "WHALE_RATIO":
+                value, _, thr = self._whale_ratio_and_impulse(now_dt, variant_ids=variant_ids)
+                points = [{"ts": now_iso, "value": float(value), "extra": {"whale_thr_ton": round(float(thr), 6)}}]
+            elif metric_name == "WHALE_IMPULSE":
+                _, value, thr = self._whale_ratio_and_impulse(now_dt, variant_ids=variant_ids)
+                points = [{"ts": now_iso, "value": float(value), "extra": {"whale_thr_ton": round(float(thr), 6)}}]
+            elif metric_name == "BUY_WALL_SCORE":
+                vals: list[float] = []
                 for row in rows:
                     variant_key = str(row.get("variant_id") or "")
-                    total_new_10m += float(self._new_listings_in_window(variant_key, _now(), 600))
-                points = [{"ts": now_iso, "value": total_new_10m}]
-            elif metric_name == "VOLATILITY":
-                values = []
-                for row in rows:
-                    src = self.variants.get(str(row.get("variant_id") or ""))
-                    if not src:
+                    floor = float(row.get("floor_ton") or 0.0)
+                    if not variant_key or floor <= 0:
                         continue
-                    mm = self._tz_signal_math_strict(src) if eff_mode == "tz_strict" else self._tz_signal_math(src)
-                    values.append(float(mm.get("volatility") or 0.0))
-                points = [{"ts": now_iso, "value": _safe_mean(values)}]
+                    vals.append(self._buy_wall_score_for_variant(variant_key, floor, now_dt))
+                points = [{"ts": now_iso, "value": float(_safe_mean(vals))}]
+            elif metric_name == "VOLATILITY":
+                floor_points = self._aggregate_variant_series_for_collection(
+                    collection_id=col_id,
+                    field="floor_ton",
+                    from_dt=from_dt,
+                    to_dt=to_dt,
+                    interval_sec=interval_sec,
+                    limit=max(lim, 200),
+                    reducer="median",
+                )
+                points = [{"ts": now_iso, "value": float(self._volatility_from_points(floor_points))}]
             else:
                 value = _safe_mean([float(r.get("score") or 0.0) for r in rows])
                 points = [{"ts": now_iso, "value": float(value)}]
@@ -4078,25 +4351,59 @@ class GiftAnalyticsService:
         else:  # MARKET
             overview = self.overview_v1(mode=eff_mode)
             market_summary = self.market_overview()
+            variant_ids = {str(v.get("variant_id") or "") for v in self.variants.values() if str(v.get("variant_id") or "")}
             if metric_name == "SUPPLY_CHART":
+                points = self._aggregate_variant_series_for_market(
+                    field="active_listings",
+                    from_dt=from_dt,
+                    to_dt=to_dt,
+                    interval_sec=interval_sec,
+                    limit=lim,
+                    reducer="sum",
+                )
+            elif metric_name == "FLOOR_HISTORY":
+                points = self._aggregate_variant_series_for_market(
+                    field="floor_ton",
+                    from_dt=from_dt,
+                    to_dt=to_dt,
+                    interval_sec=interval_sec,
+                    limit=lim,
+                    reducer="median",
+                )
+            elif metric_name == "VOLUME_CHART":
+                points = self._trade_series_for_variants(variant_ids, from_dt, to_dt, interval_sec, lim, value_mode="volume")
+            elif metric_name == "LIQUIDITY_CHART":
+                sales_series = self._trade_series_for_variants(variant_ids, from_dt, to_dt, interval_sec, lim, value_mode="count")
                 points = []
-                for v in self.variants.values():
-                    variant_id = str(v.get("variant_id") or "")
-                    series = self._series_points_from_history(
-                        self.variant_history.get(variant_id, []),
-                        "active_listings",
-                        from_dt,
-                        to_dt,
-                        interval_sec,
-                        lim,
+                for p in sales_series:
+                    sales_bucket = float(p.get("value") or 0.0)
+                    per_day_equivalent = sales_bucket * (86400.0 / max(1, interval_sec))
+                    liq_score = _clamp(per_day_equivalent / 1000.0, 0.0, 1.0)
+                    points.append({"ts": str(p.get("ts") or now_iso), "value": liq_score, "extra": {"sales": int(sales_bucket)}})
+            elif metric_name == "LIQUIDITY_HEATMAP":
+                heat = self._liquidity_heat(now_dt, variant_ids=variant_ids)
+                points = [{"ts": now_iso, "value": float((heat[-1] if heat else {}).get("value") or 0.0), "extra": {"heat": heat}}]
+            elif metric_name == "LISTING_FEED":
+                events = self.listings_events_v1(limit=max(50, lim), since=from_ts, include_relisted=True).get("items") or []
+                points = [{"ts": now_iso, "value": float(len(events)), "extra": {"items": events[:50]}}]
+            elif metric_name == "MARKET_DEPTH":
+                floor = float(market_summary.get("floor_ton_median") or market_summary.get("floor_ton_min") or 0.0)
+                if floor <= 0:
+                    floor = _safe_median(
+                        [
+                            float((v.get("metrics") or {}).get("floor_ton") or 0.0)
+                            for v in self.variants.values()
+                            if float((v.get("metrics") or {}).get("floor_ton") or 0.0) > 0
+                        ]
                     )
-                    points.extend(series)
-                # Re-aggregate market by timestamp bucket (sum active listings).
-                re_buckets: dict[str, float] = {}
-                for p in points:
-                    ts = str(p.get("ts") or "")
-                    re_buckets[ts] = re_buckets.get(ts, 0.0) + float(p.get("value") or 0.0)
-                points = [{"ts": ts, "value": val} for ts, val in sorted(re_buckets.items())][-lim:]
+                depth_count, depth_ton = self._market_depth_for_variants(floor, variant_ids=variant_ids)
+                points = [{"ts": now_iso, "value": float(depth_count), "extra": {"depth_count": depth_count, "depth_ton": round(depth_ton, 6)}}]
+            elif metric_name == "WHALE_RATIO":
+                value, _, thr = self._whale_ratio_and_impulse(now_dt, variant_ids=variant_ids)
+                points = [{"ts": now_iso, "value": float(value), "extra": {"whale_thr_ton": round(float(thr), 6)}}]
+            elif metric_name == "WHALE_IMPULSE":
+                _, value, thr = self._whale_ratio_and_impulse(now_dt, variant_ids=variant_ids)
+                points = [{"ts": now_iso, "value": float(value), "extra": {"whale_thr_ton": round(float(thr), 6)}}]
             elif metric_name == "MARKET_INDEX":
                 value = float(overview.get("market_index") or 0.0)
                 points = [{"ts": now_iso, "value": value}]
@@ -4106,42 +4413,60 @@ class GiftAnalyticsService:
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "FLOOR_REALTIME":
                 value = float(market_summary.get("floor_ton_median") or market_summary.get("floor_ton_min") or 0.0)
+                if value <= 0:
+                    value = _safe_median(
+                        [
+                            float((v.get("metrics") or {}).get("floor_ton") or 0.0)
+                            for v in self.variants.values()
+                            if float((v.get("metrics") or {}).get("floor_ton") or 0.0) > 0
+                        ]
+                    )
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "LIQUIDITY_SCORE":
-                value = float((overview.get("key_metrics") or {}).get("avg_liquidity24h") or 0.0)
+                sales24h, _ = self._trades_in_window_multi(now_dt, WINDOWS["24h"], variant_ids=variant_ids)
+                value = _clamp(float(sales24h) / 1000.0, 0.0, 1.0)
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "VOLUME_VELOCITY":
-                vals = []
-                for v in self.variants.values():
-                    mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
-                    vals.append(float(mm.get("volume_velocity") or 0.0))
-                value = _safe_mean(vals)
+                _, volume_10m = self._trades_in_window_multi(now_dt, 600, variant_ids=variant_ids)
+                _, volume_30m = self._trades_in_window_multi(now_dt, 1800, variant_ids=variant_ids)
+                denom = (volume_30m / 3.0) if volume_30m > 0 else 0.0
+                value = (volume_10m / denom) if denom > 0 else 0.0
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "ABSORPTION_RATE":
-                vals = []
-                for v in self.variants.values():
-                    mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
-                    vals.append(float(mm.get("absorption_rate") or 0.0))
-                value = _safe_mean(vals)
+                sales_30m, _ = self._trades_in_window_multi(now_dt, 1800, variant_ids=variant_ids)
+                new_30m = self._new_listings_in_window_multi(now_dt, 1800, variant_ids=variant_ids)
+                value = sales_30m / max(new_30m, 1)
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "LISTING_VELOCITY":
-                value = float(market_summary.get("active_listings") or 0.0)
+                value = float(self._new_listings_in_window_multi(now_dt, 600, variant_ids=variant_ids))
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "NEW_LISTINGS_REALTIME":
-                total_new_10m = 0.0
-                now_dt = _now()
-                for v in self.variants.values():
-                    total_new_10m += float(self._new_listings_in_window(str(v.get("variant_id") or ""), now_dt, 600))
-                points = [{"ts": now_iso, "value": total_new_10m}]
+                total_new_10m = float(self._new_listings_in_window_multi(now_dt, 600, variant_ids=variant_ids))
+                points = [{"ts": now_iso, "value": float(total_new_10m)}]
             elif metric_name == "VELOCITY_SCORE":
-                value = float(overview.get("market_index") or 0.0)
+                new_10m = float(self._new_listings_in_window_multi(now_dt, 600, variant_ids=variant_ids))
+                lv_norm = _clamp(new_10m / 30.0, 0.0, 1.0)
+                _, volume_10m = self._trades_in_window_multi(now_dt, 600, variant_ids=variant_ids)
+                _, volume_30m = self._trades_in_window_multi(now_dt, 1800, variant_ids=variant_ids)
+                vv_denom = (volume_30m / 3.0) if volume_30m > 0 else 0.0
+                vv = (volume_10m / vv_denom) if vv_denom > 0 else 0.0
+                vv_norm = _clamp(vv / 2.0, 0.0, 1.0)
+                sales_30m, _ = self._trades_in_window_multi(now_dt, 1800, variant_ids=variant_ids)
+                new_30m = self._new_listings_in_window_multi(now_dt, 1800, variant_ids=variant_ids)
+                ar = sales_30m / max(new_30m, 1)
+                ar_norm = _clamp(ar / 2.0, 0.0, 1.0)
+                value = (0.4 * lv_norm + 0.3 * vv_norm + 0.3 * ar_norm) * 100.0
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "VOLATILITY":
-                vals = []
-                for v in self.variants.values():
-                    mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
-                    vals.append(float(mm.get("volatility") or 0.0))
-                points = [{"ts": now_iso, "value": _safe_mean(vals)}]
+                floor_points = self._aggregate_variant_series_for_market(
+                    field="floor_ton",
+                    from_dt=from_dt,
+                    to_dt=to_dt,
+                    interval_sec=interval_sec,
+                    limit=max(lim, 200),
+                    reducer="median",
+                )
+                points = [{"ts": now_iso, "value": float(self._volatility_from_points(floor_points))}]
             else:
                 value = 0.0
                 points = [{"ts": now_iso, "value": float(value)}]
