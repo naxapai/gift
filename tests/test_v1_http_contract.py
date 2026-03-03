@@ -118,12 +118,39 @@ class TestV1HttpContract(unittest.TestCase):
         payload = json.loads(cm.exception.read().decode("utf-8"))
         self.assertIn("unsupported_action", str(payload.get("error") or ""))
 
+    def test_variants_endpoint_rejects_invalid_sort_and_min_score(self) -> None:
+        with self.assertRaises(HTTPError) as cm_sort:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/variants?sort=floor_asc", timeout=10)
+        self.assertEqual(cm_sort.exception.code, 400)
+        payload_sort = json.loads(cm_sort.exception.read().decode("utf-8"))
+        self.assertIn("unsupported_sort", str(payload_sort.get("error") or ""))
+
+        with self.assertRaises(HTTPError) as cm_score:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/variants?min_score=1.1", timeout=10)
+        self.assertEqual(cm_score.exception.code, 400)
+        payload_score = json.loads(cm_score.exception.read().decode("utf-8"))
+        self.assertIn("invalid_min_score_range", str(payload_score.get("error") or ""))
+
     def test_signals_endpoint_rejects_invalid_type(self) -> None:
         with self.assertRaises(HTTPError) as cm:
             urlopen(f"http://127.0.0.1:{self.port}/v1/signals?type=LONG", timeout=10)
         self.assertEqual(cm.exception.code, 400)
         payload = json.loads(cm.exception.read().decode("utf-8"))
         self.assertIn("unsupported_signal_type", str(payload.get("error") or ""))
+
+    def test_signals_endpoint_rejects_invalid_min_score(self) -> None:
+        with self.assertRaises(HTTPError) as cm:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/signals?min_score=-0.1", timeout=10)
+        self.assertEqual(cm.exception.code, 400)
+        payload = json.loads(cm.exception.read().decode("utf-8"))
+        self.assertIn("invalid_min_score_range", str(payload.get("error") or ""))
+
+    def test_metrics_endpoint_rejects_unsupported_scope(self) -> None:
+        with self.assertRaises(HTTPError) as cm:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/metrics?metric=MARKET_INDEX&scope=WORLD", timeout=10)
+        self.assertEqual(cm.exception.code, 400)
+        payload = json.loads(cm.exception.read().decode("utf-8"))
+        self.assertIn("unsupported_scope", str(payload.get("error") or ""))
 
     def test_stream_endpoint_rejects_unknown_type(self) -> None:
         with self.assertRaises(HTTPError) as cm:
