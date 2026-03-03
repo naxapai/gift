@@ -60,6 +60,18 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertIn("points", payload)
         self.assertTrue(isinstance(payload.get("points"), list))
 
+    def test_metrics_endpoint_tz_strict_mode_success(self) -> None:
+        status, payload = self._get_json(
+            f"/v1/metrics?metric=EDGE_SCORE&scope=VARIANT&variant_id={quote('x|m|b|p')}&mode=tz_strict"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload.get("metric"), "EDGE_SCORE")
+        self.assertEqual(payload.get("scope"), "VARIANT")
+        self.assertEqual(payload.get("variant_id"), "x|m|b|p")
+        self.assertIn("points", payload)
+        self.assertTrue(isinstance(payload.get("points"), list))
+        self.assertGreaterEqual(len(payload.get("points") or []), 1)
+
     def test_metrics_endpoint_bad_request(self) -> None:
         with self.assertRaises(HTTPError) as cm:
             urlopen(f"http://127.0.0.1:{self.port}/v1/metrics?metric=UNKNOWN", timeout=10)
