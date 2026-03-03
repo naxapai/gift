@@ -2852,7 +2852,9 @@ class GiftAnalyticsService:
             "6h": 21600,
             "24h": 86400,
         }
-        return mapping.get(raw, 60)
+        if raw not in mapping:
+            raise ValueError(f"unsupported_interval:{raw}")
+        return mapping[raw]
 
     def _strict_formula_inputs(self, v: dict) -> dict:
         metrics = v.get("metrics") or {}
@@ -3595,6 +3597,19 @@ class GiftAnalyticsService:
         cursor: str | None = None,
         mode: str | None = None,
     ) -> dict:
+        allowed_actions = {"BUY", "SELL", "WATCH", "SKIP"}
+        allowed_sorts = {"score_desc", "undervalue_desc", "trend_desc", "lots_desc", "floor_change_24h_desc"}
+        if action is not None:
+            action = str(action).strip().upper()
+            if action and action not in allowed_actions:
+                raise ValueError(f"unsupported_action:{action}")
+            if not action:
+                action = None
+        sort = str(sort or "score_desc").strip().lower()
+        if sort not in allowed_sorts:
+            raise ValueError(f"unsupported_sort:{sort}")
+        if min_score is not None and not (0.0 <= float(min_score) <= 1.0):
+            raise ValueError("invalid_min_score_range")
         eff_mode = self._effective_v1_mode(mode)
         rows = []
         for v in self.variants.values():
@@ -3679,6 +3694,15 @@ class GiftAnalyticsService:
         cursor: str | None = None,
         mode: str | None = None,
     ) -> dict:
+        allowed_types = {"BUY", "SELL", "WATCH", "SKIP"}
+        if signal_type is not None:
+            signal_type = str(signal_type).strip().upper()
+            if signal_type and signal_type not in allowed_types:
+                raise ValueError(f"unsupported_signal_type:{signal_type}")
+            if not signal_type:
+                signal_type = None
+        if min_score is not None and not (0.0 <= float(min_score) <= 1.0):
+            raise ValueError("invalid_min_score_range")
         eff_mode = self._effective_v1_mode(mode)
         since_dt = _parse_ts(since) if since else None
         items = []
@@ -4247,6 +4271,8 @@ class GiftAnalyticsService:
         raw = str(scope or "").strip().upper()
         if raw in {"MARKET", "COLLECTION", "VARIANT"}:
             return raw
+        if raw:
+            raise ValueError(f"unsupported_scope:{raw}")
         if variant_id:
             return "VARIANT"
         if collection_id:

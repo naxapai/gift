@@ -11,14 +11,11 @@ from core import GiftAnalyticsService
 
 
 class TestV1HttpContract(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls._old_auth_required = server.AUTH_REQUIRED
-        cls._old_state = server._STATE
-        server.AUTH_REQUIRED = False
-
-        svc = GiftAnalyticsService()
-        svc.state["updated_at"] = "2026-02-26T00:00:00Z"
+    @staticmethod
+    def _seed_variant() -> None:
+        svc = server._STATE
+        if not isinstance(svc, GiftAnalyticsService):
+            return
         svc.variants["x|m|b|p"] = {
             "variant_id": "x|m|b|p",
             "base_id": "x",
@@ -31,7 +28,17 @@ class TestV1HttpContract(unittest.TestCase):
             "traits": {"model": {"name": "M"}, "background": {"name": "B"}, "pattern": {"name": "P"}},
             "updated_at": "2026-02-26T00:00:00Z",
         }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._old_auth_required = server.AUTH_REQUIRED
+        cls._old_state = server._STATE
+        server.AUTH_REQUIRED = False
+
+        svc = GiftAnalyticsService()
+        svc.state["updated_at"] = "2026-02-26T00:00:00Z"
         server._STATE = svc
+        cls._seed_variant()
 
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.RequestHandler)
         cls.port = cls.httpd.server_address[1]
@@ -46,6 +53,9 @@ class TestV1HttpContract(unittest.TestCase):
         finally:
             server.AUTH_REQUIRED = cls._old_auth_required
             server._STATE = cls._old_state
+
+    def setUp(self) -> None:
+        self._seed_variant()
 
     def _get_json(self, path: str, timeout: float = 10.0):
         with urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=timeout) as resp:
@@ -90,6 +100,30 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertEqual(cm.exception.code, 400)
         payload = json.loads(cm.exception.read().decode("utf-8"))
         self.assertIn("metric_scope_mismatch", str(payload.get("error") or ""))
+
+    def test_metrics_endpoint_rejects_unsupported_interval(self) -> None:
+        with self.assertRaises(HTTPError) as cm:
+            urlopen(
+                f"http://127.0.0.1:{self.port}/v1/metrics?metric=FLOOR_HISTORY&scope=MARKET&interval=30m",
+                timeout=10,
+            )
+        self.assertEqual(cm.exception.code, 400)
+        payload = json.loads(cm.exception.read().decode("utf-8"))
+        self.assertIn("unsupported_interval", str(payload.get("error") or ""))
+
+    def test_variants_endpoint_rejects_invalid_action(self) -> None:
+        with self.assertRaises(HTTPError) as cm:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/variants?action=HOLD", timeout=10)
+        self.assertEqual(cm.exception.code, 400)
+        payload = json.loads(cm.exception.read().decode("utf-8"))
+        self.assertIn("unsupported_action", str(payload.get("error") or ""))
+
+    def test_signals_endpoint_rejects_invalid_type(self) -> None:
+        with self.assertRaises(HTTPError) as cm:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/signals?type=LONG", timeout=10)
+        self.assertEqual(cm.exception.code, 400)
+        payload = json.loads(cm.exception.read().decode("utf-8"))
+        self.assertIn("unsupported_signal_type", str(payload.get("error") or ""))
 
     def test_stream_endpoint_rejects_unknown_type(self) -> None:
         with self.assertRaises(HTTPError) as cm:

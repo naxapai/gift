@@ -78,6 +78,23 @@ class TestV1MetricsContract(unittest.TestCase):
                 from_ts="2026-02-27T00:00:00Z",
                 to_ts="2026-02-26T00:00:00Z",
             )
+        with self.assertRaises(ValueError):
+            svc.metrics_v1(metric="FLOOR_HISTORY", scope="MARKET", interval="30m")
+        with self.assertRaises(ValueError):
+            svc.metrics_v1(metric="FLOOR_HISTORY", scope="WORLD")
+
+    def test_signals_and_variants_reject_invalid_enums(self) -> None:
+        svc = GiftAnalyticsService()
+        with self.assertRaises(ValueError):
+            svc.signals_v1(signal_type="LONG")
+        with self.assertRaises(ValueError):
+            svc.signals_v1(min_score=1.5)
+        with self.assertRaises(ValueError):
+            svc.variants_v1(action="LONG")
+        with self.assertRaises(ValueError):
+            svc.variants_v1(sort="floor_asc")
+        with self.assertRaises(ValueError):
+            svc.variants_v1(min_score=-0.1)
 
     def test_metrics_v1_variant_whale_and_buy_wall(self) -> None:
         svc = GiftAnalyticsService()
@@ -169,6 +186,123 @@ class TestV1MetricsContract(unittest.TestCase):
         payload = svc.metrics_v1(metric="LISTING_VELOCITY", scope="MARKET")
         value = float((payload.get("points") or [{}])[0].get("value") or 0.0)
         self.assertEqual(value, 7.0)
+
+    def test_metrics_v1_market_overview_metric_set_contract(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime.now(timezone.utc)
+        variant_id = "mkt|m|b|p"
+        svc.variants = {
+            variant_id: {
+                "variant_id": variant_id,
+                "base_id": "mkt",
+                "metrics": {"floor_ton": 10.0, "median_ton": 11.0, "trades_count_24h": 12, "active_listings": 8},
+                "traits": {},
+            }
+        }
+        svc.variant_history = {
+            variant_id: [
+                {"ts": (now - timedelta(minutes=8)).isoformat().replace("+00:00", "Z"), "floor_ton": 10.0, "active_listings": 8, "new_listings": 2},
+                {"ts": (now - timedelta(minutes=2)).isoformat().replace("+00:00", "Z"), "floor_ton": 10.5, "active_listings": 7, "new_listings": 1},
+            ]
+        }
+        svc.trade_events = [
+            {"ts": (now - timedelta(minutes=6)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": "mkt", "price_ton": 10.1},
+            {"ts": (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": "mkt", "price_ton": 11.0},
+        ]
+        svc.listing_state = {
+            "mx1": {"listing_id": "mx1", "base_id": "mkt", "variant_id": variant_id, "status": "ACTIVE", "price_ton": 10.3}
+        }
+        metrics = [
+            "FLOOR_REALTIME",
+            "NEW_LISTINGS_REALTIME",
+            "LISTING_VELOCITY",
+            "LISTING_FEED",
+            "VOLUME_VELOCITY",
+            "VOLUME_CHART",
+            "LIQUIDITY_SCORE",
+            "LIQUIDITY_CHART",
+            "LIQUIDITY_HEATMAP",
+            "VELOCITY_SCORE",
+            "ABSORPTION_RATE",
+            "MARKET_DEPTH",
+            "WHALE_RATIO",
+            "WHALE_IMPULSE",
+            "SUPPLY_CHART",
+            "FLOOR_HISTORY",
+            "VOLATILITY",
+            "MARKET_INDEX",
+            "TREND_SCORE",
+        ]
+        for metric in metrics:
+            payload = svc.metrics_v1(metric=metric, scope="MARKET", limit=10)
+            self.assertEqual(payload["metric"], metric)
+            self.assertEqual(payload["scope"], "MARKET")
+            self.assertTrue(isinstance(payload.get("points"), list))
+            self.assertTrue(len(payload.get("points") or []) >= 1)
+
+    def test_metrics_v1_market_liquidity_heatmap_contains_6h_bucket(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime.now(timezone.utc)
+        variant_id = "liq|m|b|p"
+        svc.variants = {
+            variant_id: {
+                "variant_id": variant_id,
+                "base_id": "liq",
+                "metrics": {"floor_ton": 10.0, "median_ton": 11.0, "trades_count_24h": 12, "active_listings": 5},
+                "traits": {},
+            }
+        }
+        svc.trade_events = [
+            {"ts": (now - timedelta(minutes=20)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": "liq", "price_ton": 10.2},
+            {"ts": (now - timedelta(hours=3)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": "liq", "price_ton": 10.4},
+            {"ts": (now - timedelta(hours=10)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": "liq", "price_ton": 10.8},
+        ]
+        payload = svc.metrics_v1(metric="LIQUIDITY_HEATMAP", scope="MARKET")
+        points = payload.get("points") or []
+        first = points[0] if points and isinstance(points[0], dict) else {}
+        heat = ((first.get("extra") or {}).get("heat") or []) if isinstance(first.get("extra"), dict) else []
+        buckets = {str(p.get("bucket")) for p in heat if isinstance(p, dict)}
+        self.assertIn("1h", buckets)
+        self.assertIn("6h", buckets)
+        self.assertIn("24h", buckets)
+
+    def test_metrics_v1_collection_feed_filter_and_variant_id_resolution(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime.now(timezone.utc)
+        real_variant_id = "colx|m|b|p"
+        listing_id = "12345"
+        svc.variants = {
+            real_variant_id: {
+                "variant_id": real_variant_id,
+                "base_id": "COLX",
+                "metrics": {"floor_ton": 9.0, "median_ton": 10.0, "trades_count_24h": 5, "active_listings": 4},
+                "traits": {},
+            }
+        }
+        svc.listing_state = {
+            listing_id: {"listing_id": listing_id, "base_id": "COLX", "variant_id": real_variant_id, "status": "ACTIVE", "price_ton": 9.2}
+        }
+        svc.listing_tracker_state = {
+            "colx:12345": {
+                "listing_key": "colx:12345",
+                "variant_id": real_variant_id,
+                "base_id": "COLX",
+                "listing_id": listing_id,
+                "first_seen_at": (now - timedelta(minutes=3)).isoformat().replace("+00:00", "Z"),
+                "last_seen_at": now.isoformat().replace("+00:00", "Z"),
+                "last_relisted_at": "",
+                "relist_count": 0,
+                "last_price_ton": 9.2,
+            }
+        }
+        svc.bases = {"colx": type("B", (), {"name": "Col X"})()}
+        feed = svc.metrics_v1(metric="LISTING_FEED", scope="COLLECTION", collection_id="COLX")
+        self.assertEqual(feed["scope"], "COLLECTION")
+        self.assertEqual(feed["collection_id"], "COLX")
+        self.assertGreaterEqual(float((feed.get("points") or [{}])[0].get("value") or 0.0), 1.0)
+
+        variant_metric = svc.metrics_v1(metric="FLOOR_REALTIME", scope="VARIANT", variant_id=listing_id)
+        self.assertEqual(variant_metric["variant_id"], real_variant_id)
 
 
 if __name__ == "__main__":

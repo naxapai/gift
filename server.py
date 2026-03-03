@@ -1481,10 +1481,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             background = (params.get("background") or [None])[0]
             pattern = (params.get("pattern") or [None])[0]
             min_score_raw = (params.get("min_score") or [None])[0]
-            try:
-                min_score = float(min_score_raw) if min_score_raw not in (None, "") else None
-            except Exception:
+            if min_score_raw in (None, ""):
                 min_score = None
+            else:
+                try:
+                    min_score = float(min_score_raw)
+                except Exception:
+                    _json_response(self, {"ok": False, "error": "invalid_min_score"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                    return
             action = (params.get("action") or [None])[0]
             sort = (params.get("sort") or ["score_desc"])[0]
             mode = (params.get("mode") or [None])[0]
@@ -1493,19 +1497,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 limit = 50
             cursor = (params.get("cursor") or [None])[0]
-            data = _state().variants_v1(
-                collection_id=collection_id,
-                model=model,
-                background=background,
-                pattern=pattern,
-                min_score=min_score,
-                action=action,
-                sort=sort,
-                limit=limit,
-                cursor=cursor,
-                mode=mode,
-            )
-            _json_response(self, data, cache_control="no-store")
+            try:
+                data = _state().variants_v1(
+                    collection_id=collection_id,
+                    model=model,
+                    background=background,
+                    pattern=pattern,
+                    min_score=min_score,
+                    action=action,
+                    sort=sort,
+                    limit=limit,
+                    cursor=cursor,
+                    mode=mode,
+                )
+                _json_response(self, data, cache_control="no-store")
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             return
 
         if path.startswith("/v1/variants/") and path.count("/") == 3:
@@ -1523,10 +1530,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             signal_type = (params.get("type") or [None])[0]
             min_score_raw = (params.get("min_score") or [None])[0]
-            try:
-                min_score = float(min_score_raw) if min_score_raw not in (None, "") else None
-            except Exception:
+            if min_score_raw in (None, ""):
                 min_score = None
+            else:
+                try:
+                    min_score = float(min_score_raw)
+                except Exception:
+                    _json_response(self, {"ok": False, "error": "invalid_min_score"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                    return
             since = (params.get("since") or [None])[0]
             mode = (params.get("mode") or [None])[0]
             try:
@@ -1534,8 +1545,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 limit = 50
             cursor = (params.get("cursor") or [None])[0]
-            data = _state().signals_v1(signal_type=signal_type, min_score=min_score, since=since, limit=limit, cursor=cursor, mode=mode)
-            _json_response(self, data, cache_control="no-store")
+            try:
+                data = _state().signals_v1(signal_type=signal_type, min_score=min_score, since=since, limit=limit, cursor=cursor, mode=mode)
+                _json_response(self, data, cache_control="no-store")
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             return
 
         if path == "/v1/listings":
