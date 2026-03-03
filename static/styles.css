@@ -75,8 +75,9 @@ button {
 }
 
 .logo-img-wordmark {
-  width: clamp(180px, 22vw, 290px);
-  height: auto;
+  width: auto;
+  height: clamp(32px, 2.8vw, 40px);
+  max-width: min(56vw, 330px);
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1826,8 +1827,9 @@ select:focus-visible {
     height: 30px;
   }
   .logo-img-wordmark {
-    width: clamp(150px, 44vw, 220px);
-    height: auto;
+    width: auto;
+    height: clamp(28px, 7.2vw, 34px);
+    max-width: min(62vw, 250px);
   }
   .side-nav {
     display: none;
