@@ -131,6 +131,65 @@ class TestListingsV1(unittest.TestCase):
         self.assertEqual(row["variant_id"], "valentinebox|outline|french_blue|dragonfly")
         self.assertEqual(row["collection_id"], "valentinebox")
 
+    def test_normalize_mt_listing_item_resolves_noncanonical_variant_id(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime(2026, 2, 26, 0, 0, 0, tzinfo=timezone.utc)
+        canonical_variant_id = "berryboxes|clarity|black|baphomet"
+        svc.variants = {
+            canonical_variant_id: {
+                "variant_id": canonical_variant_id,
+                "base_id": "berryboxes",
+                "metrics": {},
+                "traits": {},
+            }
+        }
+        row = svc._normalize_mt_listing_item(  # noqa: SLF001
+            {
+                "gift_id": "5868595669182186720",
+                "unique_id": "6001201753654035501",
+                "variant_id": "5868595669182186720|Clarity|Black|Baphomet",
+                "slug": "BerryBoxes-456",
+                "title": "Berry Boxes",
+                "attributes": {"model": "Clarity", "background": "Black", "pattern": "Baphomet"},
+                "resell_amount_ton": 12.3,
+            },
+            now=now,
+            window_sec=120,
+        )
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["gift_id"], "berryboxes")
+        self.assertEqual(row["variant_id"], canonical_variant_id)
+
+    def test_get_variant_fallback_from_listing_sources(self) -> None:
+        svc = GiftAnalyticsService()
+        svc.variants = {}
+        variant_id = "berryboxes|clarity|black|baphomet"
+        svc._listing_mt_runtime_cache = {
+            "rows": [
+                {
+                    "variant_id": variant_id,
+                    "gift_id": "berryboxes",
+                    "collection_id": "berryboxes",
+                    "unique_id": "7890",
+                    "listing_id": "7890",
+                    "listing_key": "berryboxes:7890",
+                    "resell_amount_ton": 11.5,
+                    "status": "ACTIVE",
+                    "attributes": {"model": "Clarity", "background": "Black", "pattern": "Baphomet"},
+                    "preview_url": "https://example.com/gift.png",
+                    "last_seen_at": "2026-02-26T12:00:00Z",
+                }
+            ]
+        }
+
+        payload = svc.get_variant(variant_id)
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload.get("variant_id"), variant_id)
+        self.assertEqual(payload.get("base_id"), "berryboxes")
+        self.assertEqual(float(payload.get("metrics", {}).get("floor_ton") or 0.0), 11.5)
+
     def test_listings_events_v1_contract(self) -> None:
         svc = GiftAnalyticsService()
         payload = svc.listings_events_v1(limit=5, new_window_sec=3600)

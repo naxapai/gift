@@ -1939,12 +1939,13 @@ class GiftAnalyticsService:
         return out
 
     def get_variant(self, variant_id: str) -> dict | None:
-        if variant_id in self.variants:
-            v = self.variants[variant_id]
+        v_id = str(variant_id or "").strip()
+        if v_id in self.variants:
+            v = self.variants[v_id]
             payload = {
-                "variant_id": variant_id,
+                "variant_id": v_id,
                 "base_id": v["base_id"],
-                "fragment_url": self._variant_fragment_url(variant_id),
+                "fragment_url": self._variant_fragment_url(v_id),
                 "traits": v["traits"],
                 "preview_url": v["preview_url"],
                 "updated_at": v["updated_at"],
@@ -1954,10 +1955,149 @@ class GiftAnalyticsService:
             }
             payload["reco"] = self._ai_enrich_reco(payload, allow_live=True)
             return payload
-        mapping = self._listing_to_variant(variant_id)
+        mapping = self._listing_to_variant(v_id)
         if mapping and mapping in self.variants:
             return self.get_variant(mapping)
+        fallback = self._get_variant_from_listing_sources(v_id)
+        if fallback:
+            return fallback
         return None
+
+    def _iter_listing_rows_for_lookup(self) -> list[dict]:
+        rows: list[dict] = []
+        for listing_id, row in (self.listing_state or {}).items():
+            if not isinstance(row, dict):
+                continue
+            entry = dict(row)
+            lid = str(entry.get("listing_id") or listing_id or "").strip()
+            if lid:
+                entry.setdefault("listing_id", lid)
+                entry.setdefault("unique_id", lid)
+                if not entry.get("listing_key"):
+                    base_id = str(entry.get("base_id") or "").strip().lower()
+                    entry["listing_key"] = f"{base_id}:{lid}" if base_id else lid
+            rows.append(entry)
+
+        cache_rows = self._listing_mt_runtime_cache.get("rows") if isinstance(self._listing_mt_runtime_cache, dict) else []
+        if isinstance(cache_rows, list):
+            rows.extend([dict(x) for x in cache_rows if isinstance(x, dict)])
+
+        snap_items = self.mt_listings_snapshot.get("items") if isinstance(self.mt_listings_snapshot, dict) else []
+        if isinstance(snap_items, list):
+            rows.extend([dict(x) for x in snap_items if isinstance(x, dict)])
+        return rows
+
+    def _get_variant_from_listing_sources(self, entity_id: str) -> dict | None:
+        lookup = str(entity_id or "").strip()
+        if not lookup:
+            return None
+        rows = self._iter_listing_rows_for_lookup()
+        if not rows:
+            return None
+
+        def _ids_from_row(row: dict) -> set[str]:
+            out = set()
+            for k in ("variant_id", "listing_id", "unique_id", "listing_key"):
+                val = str((row or {}).get(k) or "").strip()
+                if val:
+                    out.add(val)
+            return out
+
+        matched = [row for row in rows if lookup in _ids_from_row(row)]
+        if not matched:
+            return None
+
+        preferred = next((str(row.get("variant_id") or "").strip() for row in matched if str(row.get("variant_id") or "").strip()), "")
+        resolved_variant_id = preferred or lookup
+        if "|" not in resolved_variant_id:
+            mapped = self._listing_to_variant(resolved_variant_id)
+            if mapped:
+                resolved_variant_id = mapped
+
+        same_variant_rows = [row for row in rows if str(row.get("variant_id") or "").strip() == resolved_variant_id]
+        source_rows = same_variant_rows or matched
+        base_row = min(
+            source_rows,
+            key=lambda r: float(r.get("resell_amount_ton") or r.get("price_ton") or 0.0) if float(r.get("resell_amount_ton") or r.get("price_ton") or 0.0) > 0 else float("inf"),
+        )
+
+        attrs = base_row.get("attributes") if isinstance(base_row.get("attributes"), dict) else {}
+        model_raw = str(attrs.get("model") or "").strip()
+        background_raw = str(attrs.get("background") or "").strip()
+        pattern_raw = str(attrs.get("pattern") or "").strip()
+        if not (model_raw and background_raw and pattern_raw):
+            m_slug, b_slug, p_slug = self._variant_attrs_from_id(resolved_variant_id)
+            model_raw = model_raw or _slug_to_name(m_slug)
+            background_raw = background_raw or _slug_to_name(b_slug)
+            pattern_raw = pattern_raw or _slug_to_name(p_slug)
+
+        prices = []
+        for row in source_rows:
+            try:
+                p = float(row.get("resell_amount_ton") or row.get("price_ton") or 0.0)
+            except Exception:
+                p = 0.0
+            if p > 0:
+                prices.append(p)
+        floor_ton = round(min(prices), 6) if prices else 0.0
+        median_ton = round(_safe_median(prices), 6) if prices else floor_ton
+
+        active_lots = 0
+        for row in source_rows:
+            status = str(row.get("status") or "ACTIVE").upper()
+            if status in {"ACTIVE", "NEW", "LISTED"}:
+                active_lots += 1
+        active_lots = max(active_lots, len(source_rows))
+
+        collection_id = str(base_row.get("collection_id") or base_row.get("gift_id") or "").strip().lower()
+        if not collection_id:
+            collection_id = str(base_row.get("base_id") or "").strip().lower()
+        if not collection_id:
+            collection_id = str(resolved_variant_id.split("|", 1)[0] if "|" in resolved_variant_id else "")
+
+        listing_id = str(base_row.get("unique_id") or base_row.get("listing_id") or "").strip()
+        if listing_id:
+            fragment_url = f"https://fragment.com/gift/{listing_id}?sort=price"
+        else:
+            fragment_url = self._variant_fragment_url(resolved_variant_id)
+
+        metrics = self._decorate_metrics(
+            {
+                "floor_ton": floor_ton,
+                "median_ton": median_ton,
+                "floor_change_pct_1h": 0.0,
+                "floor_change_pct_12h": 0.0,
+                "floor_change_pct_24h": 0.0,
+                "active_listings": active_lots,
+                "trades_count_24h": 0,
+                "volume_ton_24h": 0.0,
+                "liquidity_score_24h": 0.0,
+                "volatility_24h": 0.0,
+                "thin_market_risk_24h": 0.0,
+            }
+        )
+        return {
+            "variant_id": resolved_variant_id,
+            "base_id": collection_id,
+            "fragment_url": fragment_url,
+            "traits": {
+                "model": {"id": "", "name": model_raw or "Unknown"},
+                "background": {"id": "", "name": background_raw or "Unknown"},
+                "pattern": {"id": "", "name": pattern_raw or "Unknown"},
+            },
+            "preview_url": str(base_row.get("preview_url") or ""),
+            "updated_at": str(base_row.get("last_seen_at") or self.state.get("updated_at") or _iso(_now())),
+            "metrics": metrics,
+            "reco": {
+                "action": "HOLD",
+                "reco_score": 0.0,
+                "confidence": 0,
+                "summary": "Недостаточно данных для прогноза по этому листингу.",
+                "reasons": [],
+                "risks": [],
+            },
+            "stars_rate": self.stars_rate(),
+        }
 
     def _ai_enrich_reco(self, variant_payload: dict, allow_live: bool = True) -> dict:
         base_reco = dict(variant_payload.get("reco") or {})
@@ -4172,6 +4312,8 @@ class GiftAnalyticsService:
         now_dt = _now()
         now_iso = _iso(now_dt)
         points: list[dict] = []
+        resolved_collection_id: str | None = None
+        resolved_variant_id: str | None = None
 
         if scope_name == "VARIANT":
             variant_key = str(variant_id or "").strip()
@@ -4183,6 +4325,7 @@ class GiftAnalyticsService:
                     variant_key = mapped
             if not v:
                 raise ValueError("variant_not_found")
+            resolved_variant_id = variant_key
             mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
             hist = self.variant_history.get(variant_key, [])
             variant_ids = {variant_key}
@@ -4243,6 +4386,7 @@ class GiftAnalyticsService:
             col_id = str(collection_id or "").strip()
             if not col_id:
                 raise ValueError("collection_id_required")
+            resolved_collection_id = col_id
             rows = self.variants_v1(collection_id=col_id, limit=5000, mode=eff_mode).get("items") or []
             if not rows:
                 raise ValueError("collection_not_found")
@@ -4282,7 +4426,8 @@ class GiftAnalyticsService:
                 points = [{"ts": now_iso, "value": float((heat[-1] if heat else {}).get("value") or 0.0), "extra": {"heat": heat}}]
             elif metric_name == "LISTING_FEED":
                 raw_events = self.listings_events_v1(limit=max(50, lim), since=from_ts, include_relisted=True).get("items") or []
-                events = [e for e in raw_events if str((e or {}).get("gift_id") or "") == col_id]
+                col_id_norm = col_id.strip().lower()
+                events = [e for e in raw_events if str((e or {}).get("gift_id") or "").strip().lower() == col_id_norm]
                 points = [{"ts": now_iso, "value": float(len(events)), "extra": {"items": events[:50]}}]
             elif metric_name == "FLOOR_REALTIME":
                 value = _safe_median([float(r.get("floor_ton") or 0.0) for r in rows if float(r.get("floor_ton") or 0.0) > 0])
@@ -4477,8 +4622,8 @@ class GiftAnalyticsService:
             "metric": metric_name,
             "scope": scope_name,
             "market": bool(scope_name == "MARKET"),
-            "collection_id": collection_id if scope_name == "COLLECTION" else None,
-            "variant_id": variant_id if scope_name == "VARIANT" else None,
+            "collection_id": resolved_collection_id if scope_name == "COLLECTION" else None,
+            "variant_id": resolved_variant_id if scope_name == "VARIANT" else None,
             "unit": METRIC_UNITS.get(metric_name, "JSON"),
             "points": points,
             "stale": self.is_stale(),
@@ -4606,9 +4751,30 @@ class GiftAnalyticsService:
             except Exception:
                 stars_est = self._stars_est(ton)
         listing_key = str(raw.get("listing_key") or f"{gift_id}:{unique_id}")
-        variant_id = str(raw.get("variant_id") or "").strip()
+        variant_fallback = f"{gift_id}|{_slug_text(model)}|{_slug_text(background)}|{_slug_text(pattern)}"
+        raw_variant_id = str(raw.get("variant_id") or "").strip()
+        variant_id = raw_variant_id
+        if raw_variant_id and raw_variant_id in self.variants:
+            variant_id = raw_variant_id
+        else:
+            if raw_variant_id and "|" in raw_variant_id:
+                parts = str(raw_variant_id).split("|")
+                if len(parts) >= 4:
+                    normalized_raw = f"{_slug_text(parts[0])}|{_slug_text(parts[1])}|{_slug_text(parts[2])}|{_slug_text(parts[3])}"
+                    normalized_base = f"{gift_id}|{_slug_text(parts[1])}|{_slug_text(parts[2])}|{_slug_text(parts[3])}"
+                    if normalized_raw in self.variants:
+                        variant_id = normalized_raw
+                    elif normalized_base in self.variants:
+                        variant_id = normalized_base
+                    else:
+                        variant_id = variant_fallback
+                else:
+                    variant_id = variant_fallback
+            else:
+                mapped = self._listing_to_variant(raw_variant_id) if raw_variant_id else None
+                variant_id = mapped or variant_fallback
         if (not variant_id) or ("|unknown|unknown|unknown" in variant_id.lower()):
-            variant_id = f"{gift_id}|{_slug_text(model)}|{_slug_text(background)}|{_slug_text(pattern)}"
+            variant_id = variant_fallback
         return {
             "listing_key": listing_key,
             "gift_id": gift_id,
@@ -5251,9 +5417,22 @@ class GiftAnalyticsService:
         return {"action": action, "reco_score": round(avg, 1), "confidence": int(_clamp(avg, 0, 100))}
 
     def _listing_to_variant(self, listing_id: str) -> str | None:
-        listing = self.listing_state.get(listing_id)
+        lid = str(listing_id or "").strip()
+        if not lid:
+            return None
+        listing = self.listing_state.get(lid)
         if listing:
             return listing.get("variant_id")
+        for row in self._iter_listing_rows_for_lookup():
+            if lid not in {
+                str((row or {}).get("listing_id") or "").strip(),
+                str((row or {}).get("unique_id") or "").strip(),
+                str((row or {}).get("listing_key") or "").strip(),
+            }:
+                continue
+            variant_id = str((row or {}).get("variant_id") or "").strip()
+            if variant_id:
+                return variant_id
         return None
 
 
