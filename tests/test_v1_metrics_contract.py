@@ -59,6 +59,27 @@ class TestV1MetricsContract(unittest.TestCase):
         self.assertEqual(payload["unit"], "TON")
         self.assertTrue(len(payload.get("points", [])) >= 1)
 
+    def test_metrics_v1_variant_trend_score_is_not_stub_zero(self) -> None:
+        svc = GiftAnalyticsService()
+        variant_id = "x|m|b|p"
+        svc.variants[variant_id] = {
+            "variant_id": variant_id,
+            "base_id": "x",
+            "metrics": {
+                "floor_ton": 5.0,
+                "median_ton": 7.0,
+                "trades_count_24h": 10,
+                "active_listings": 15,
+                "floor_change_pct_1h": 8.0,
+            },
+            "traits": {"model": {"name": "M"}, "background": {"name": "B"}, "pattern": {"name": "P"}},
+            "updated_at": "2026-02-26T00:00:00Z",
+        }
+        payload = svc.metrics_v1(metric="TREND_SCORE", variant_id=variant_id, scope="VARIANT", mode="tz")
+        value = float((payload.get("points") or [{}])[0].get("value") or 0.0)
+        self.assertGreater(value, 0.0)
+        self.assertLessEqual(value, 1.0)
+
     def test_metrics_v1_errors_for_missing_ids(self) -> None:
         svc = GiftAnalyticsService()
         with self.assertRaises(ValueError):

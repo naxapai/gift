@@ -4307,6 +4307,7 @@ class GiftAnalyticsService:
             "MARKET_INDEX": (0.0, 100.0),
             "BUY_SCORE": (0.0, 100.0),
             "SELL_SCORE": (0.0, 100.0),
+            "TREND_SCORE": (0.0, 1.0),
         }
         base_by_metric: dict[str, dict] = {}
         scoped_defs: dict[tuple[str, str], dict] = {}
@@ -4642,6 +4643,7 @@ class GiftAnalyticsService:
                     "WHALE_RATIO": float(whale_ratio),
                     "WHALE_IMPULSE": float(whale_impulse),
                     "RARITY_SCORE": float(self._rarity_score_for_variant(v)),
+                    "TREND_SCORE": float(mm.get("trend_t") or 0.0),
                 }
                 points = [{"ts": now_iso, "value": float(value_map.get(metric_name, 0.0))}]
 
