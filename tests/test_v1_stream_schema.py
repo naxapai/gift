@@ -55,6 +55,80 @@ class TestV1StreamSchema(unittest.TestCase):
         self.assertIn("ts", payload["point"])
         self.assertIn("value", payload["point"])
 
+    def test_signal_created_event_schema_has_no_unexpected_fields(self) -> None:
+        svc = GiftAnalyticsService()
+        signal = {
+            "signal_id": "11111111-1111-1111-1111-111111111111",
+            "ts": "2026-02-26T00:00:00Z",
+            "type": "BUY",
+            "variant_id": "c|m|b|p",
+            "collection_id": "c",
+            "collection": "Collection",
+            "model": "M",
+            "background": "B",
+            "pattern": "P",
+            "score100": 82.0,
+            "conf_pct": 71.0,
+            "price_ton": 9.0,
+            "floor_ton": 9.0,
+            "fair_ton": 10.0,
+            "undervalue": 0.1,
+            "expected_profit_pct": 0.12,
+            "forecast24h_pct_min": -5.0,
+            "forecast24h_pct_max": 7.0,
+            "active_lots": 22,
+            "liquidity24h": 0.55,
+            "reasons": ["r1"],
+            "risk_flags": ["x1"],
+        }
+        ev = svc.build_signal_created_event_v1(signal)
+        allowed_top = {"type", "ts", "key", "version", "trace_id", "payload"}
+        self.assertEqual(set(ev.keys()), allowed_top)
+        allowed_payload = {
+            "signal_id",
+            "ts",
+            "type",
+            "variant_id",
+            "collection_id",
+            "collection",
+            "model",
+            "background",
+            "pattern",
+            "score100",
+            "conf_pct",
+            "price_ton",
+            "floor_ton",
+            "fair_ton",
+            "undervalue",
+            "expected_profit_pct",
+            "forecast24h_pct_min",
+            "forecast24h_pct_max",
+            "active_lots",
+            "liquidity24h",
+            "reasons",
+            "risk_flags",
+        }
+        self.assertEqual(set(ev["payload"].keys()), allowed_payload)
+
+    def test_metric_updated_event_schema_has_no_unexpected_fields(self) -> None:
+        svc = GiftAnalyticsService()
+        ev = svc.build_metric_updated_event_v1(
+            metric="FLOOR_REALTIME",
+            scope="VARIANT",
+            value=10.5,
+            unit="TON",
+            market=False,
+            collection_id="c",
+            variant_id="c|m|b|p",
+            extra={"source": "test"},
+        )
+        allowed_top = {"type", "ts", "key", "version", "trace_id", "payload"}
+        self.assertEqual(set(ev.keys()), allowed_top)
+        payload = ev["payload"]
+        allowed_payload = {"metric", "scope", "market", "collection_id", "variant_id", "unit", "point", "stale"}
+        self.assertEqual(set(payload.keys()), allowed_payload)
+        self.assertEqual(set(payload["point"].keys()), {"ts", "value", "extra"})
+
     def test_stream_events_filtering(self) -> None:
         svc = GiftAnalyticsService()
         events = svc.stream_events_v1(types={"metric.updated"})
