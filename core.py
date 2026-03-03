@@ -5420,6 +5420,16 @@ class GiftAnalyticsService:
         sort_by: str | None = None,
         sort_dir: str | None = None,
     ) -> dict:
+        if signal_type is not None:
+            signal_type = str(signal_type).strip().upper()
+            allowed_types = {"BUY", "SELL", "WATCH", "SKIP"}
+            if signal_type and signal_type not in allowed_types:
+                raise ValueError(f"unsupported_signal_type:{signal_type}")
+            if not signal_type:
+                signal_type = None
+        if min_score is not None and not (0.0 <= float(min_score) <= 1.0):
+            raise ValueError("invalid_min_score_range")
+
         eff_mode = self._effective_v1_mode(mode)
         events_payload = self.listings_events_v1(
             limit=5000,
@@ -5509,7 +5519,6 @@ class GiftAnalyticsService:
 
         sort_field = str(sort_by or "ts").strip().lower()
         sort_direction = str(sort_dir or "desc").strip().lower()
-        reverse = sort_direction != "asc"
         allowed_sort_fields = {
             "ts",
             "score100",
@@ -5520,7 +5529,10 @@ class GiftAnalyticsService:
             "forecast24h_pct_max",
         }
         if sort_field not in allowed_sort_fields:
-            sort_field = "ts"
+            raise ValueError(f"unsupported_sort_field:{sort_field}")
+        if sort_direction not in {"asc", "desc"}:
+            raise ValueError(f"unsupported_sort_dir:{sort_direction}")
+        reverse = sort_direction != "asc"
 
         def _sort_key(row: dict):
             if sort_field == "score100":

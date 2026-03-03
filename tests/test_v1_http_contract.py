@@ -414,6 +414,67 @@ class TestV1HttpContract(unittest.TestCase):
             content_type = str(resp.headers.get("Content-Type") or "")
             self.assertIn("text/event-stream", content_type)
 
+    def test_listings_endpoints_success_contract(self) -> None:
+        status_listings, payload_listings = self._get_json("/v1/listings?limit=5")
+        self.assertEqual(status_listings, 200)
+        self.assertIn("items", payload_listings)
+        self.assertIn("source", payload_listings)
+        self.assertIn("source_error", payload_listings)
+
+        status_summary, payload_summary = self._get_json("/v1/listings/summary")
+        self.assertEqual(status_summary, 200)
+        self.assertIn("active_total", payload_summary)
+        self.assertIn("new_total", payload_summary)
+        self.assertIn("source", payload_summary)
+        self.assertIn("source_error", payload_summary)
+
+        status_events, payload_events = self._get_json("/v1/listings/events?limit=5")
+        self.assertEqual(status_events, 200)
+        self.assertIn("items", payload_events)
+        self.assertIn("source", payload_events)
+        self.assertIn("source_error", payload_events)
+
+        status_signals, payload_signals = self._get_json("/v1/listings/signals?limit=5")
+        self.assertEqual(status_signals, 200)
+        self.assertIn("items", payload_signals)
+        self.assertIn("source", payload_signals)
+        self.assertIn("source_error", payload_signals)
+        self.assertIn("engine_mode", payload_signals)
+
+        status_source, payload_source = self._get_json("/api/listing/source-status")
+        self.assertEqual(status_source, 200)
+        self.assertIn("source", payload_source)
+        self.assertIn("degraded", payload_source)
+
+    def test_listings_endpoints_validation(self) -> None:
+        with self.assertRaises(HTTPError) as cm_list_limit:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings?limit=0", timeout=10)
+        self.assertEqual(cm_list_limit.exception.code, 400)
+
+        with self.assertRaises(HTTPError) as cm_events_limit:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/events?limit=999", timeout=10)
+        self.assertEqual(cm_events_limit.exception.code, 400)
+
+        with self.assertRaises(HTTPError) as cm_summary_window:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/summary?new_window_sec=bad", timeout=10)
+        self.assertEqual(cm_summary_window.exception.code, 400)
+
+        with self.assertRaises(HTTPError) as cm_signals_type:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/signals?type=LONG", timeout=10)
+        self.assertEqual(cm_signals_type.exception.code, 400)
+        payload_signals_type = json.loads(cm_signals_type.exception.read().decode("utf-8"))
+        self.assertIn("unsupported_signal_type", str(payload_signals_type.get("error") or ""))
+
+        with self.assertRaises(HTTPError) as cm_signals_sort:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/signals?sort_by=price", timeout=10)
+        self.assertEqual(cm_signals_sort.exception.code, 400)
+        payload_signals_sort = json.loads(cm_signals_sort.exception.read().decode("utf-8"))
+        self.assertIn("unsupported_sort_field", str(payload_signals_sort.get("error") or ""))
+
+        with self.assertRaises(HTTPError) as cm_signals_score:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/signals?min_score=abc", timeout=10)
+        self.assertEqual(cm_signals_score.exception.code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

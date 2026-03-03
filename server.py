@@ -1585,13 +1585,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 limit = int((params.get("limit") or ["100"])[0])
             except Exception:
-                limit = 100
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             cursor = (params.get("cursor") or [None])[0]
             only_new = ((params.get("only_new") or ["0"])[0]).strip().lower() in {"1", "true", "yes", "on"}
             try:
                 new_window_sec = int((params.get("new_window_sec") or ["120"])[0])
             except Exception:
-                new_window_sec = 120
+                _json_response(self, {"ok": False, "error": "invalid_new_window_sec"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             collection_q = (params.get("collection_q") or [""])[0]
             model_q = (params.get("model_q") or [""])[0]
             background_q = (params.get("background_q") or [""])[0]
@@ -1614,7 +1619,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 new_window_sec = int((params.get("new_window_sec") or ["120"])[0])
             except Exception:
-                new_window_sec = 120
+                _json_response(self, {"ok": False, "error": "invalid_new_window_sec"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             _json_response(self, _state().listings_summary_v1(new_window_sec=new_window_sec), cache_control="no-store")
             return
 
@@ -1623,13 +1629,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 limit = int((params.get("limit") or ["100"])[0])
             except Exception:
-                limit = 100
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             cursor = (params.get("cursor") or [None])[0]
             since = (params.get("since") or [None])[0]
             try:
                 new_window_sec = int((params.get("new_window_sec") or ["120"])[0])
             except Exception:
-                new_window_sec = 120
+                _json_response(self, {"ok": False, "error": "invalid_new_window_sec"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             include_relisted = ((params.get("include_relisted") or ["1"])[0]).strip().lower() in {"1", "true", "yes", "on"}
             _json_response(
                 self,
@@ -1651,47 +1662,58 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 min_score = float(min_score_raw) if min_score_raw not in (None, "") else None
             except Exception:
-                min_score = None
+                _json_response(self, {"ok": False, "error": "invalid_min_score"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             since = (params.get("since") or [None])[0]
             mode = (params.get("mode") or [None])[0]
             try:
                 limit = int((params.get("limit") or ["50"])[0])
             except Exception:
-                limit = 50
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             cursor = (params.get("cursor") or [None])[0]
             try:
                 new_window_sec = int((params.get("new_window_sec") or ["120"])[0])
             except Exception:
-                new_window_sec = 120
+                _json_response(self, {"ok": False, "error": "invalid_new_window_sec"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             include_relisted = ((params.get("include_relisted") or ["1"])[0]).strip().lower() in {"1", "true", "yes", "on"}
             try:
                 page = int((params.get("page") or [None])[0]) if (params.get("page") or [None])[0] not in (None, "") else None
             except Exception:
-                page = None
+                _json_response(self, {"ok": False, "error": "invalid_page"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             try:
                 page_size = int((params.get("page_size") or [None])[0]) if (params.get("page_size") or [None])[0] not in (None, "") else None
             except Exception:
-                page_size = None
+                _json_response(self, {"ok": False, "error": "invalid_page_size"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             sort_by = (params.get("sort_by") or [None])[0]
             sort_dir = (params.get("sort_dir") or [None])[0]
-            _json_response(
-                self,
-                _state().listings_signals_v1(
-                    limit=limit,
-                    cursor=cursor,
-                    since=since,
-                    new_window_sec=new_window_sec,
-                    include_relisted=include_relisted,
-                    signal_type=signal_type,
-                    min_score=min_score,
-                    mode=mode,
-                    page=page,
-                    page_size=page_size,
-                    sort_by=sort_by,
-                    sort_dir=sort_dir,
-                ),
-                cache_control="no-store",
-            )
+            try:
+                _json_response(
+                    self,
+                    _state().listings_signals_v1(
+                        limit=limit,
+                        cursor=cursor,
+                        since=since,
+                        new_window_sec=new_window_sec,
+                        include_relisted=include_relisted,
+                        signal_type=signal_type,
+                        min_score=min_score,
+                        mode=mode,
+                        page=page,
+                        page_size=page_size,
+                        sort_by=sort_by,
+                        sort_dir=sort_dir,
+                    ),
+                    cache_control="no-store",
+                )
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             return
 
         if path == "/v1/listings/stream":
