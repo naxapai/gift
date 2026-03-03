@@ -16,6 +16,7 @@ class TestListingsV1(unittest.TestCase):
             self.assertIn("listing_key", row)
             self.assertIn("gift_id", row)
             self.assertIn("unique_id", row)
+            self.assertIn("preview_url", row)
             self.assertIn("attributes", row)
             self.assertIn("model", row["attributes"])
             self.assertIn("background", row["attributes"])
@@ -214,6 +215,7 @@ class TestListingsV1(unittest.TestCase):
             self.assertIn("type", row)
             self.assertIn("score100", row)
             self.assertIn("conf_pct", row)
+            self.assertIn("preview_url", row)
 
     def test_listings_signals_v1_pagination_and_sort(self) -> None:
         svc = GiftAnalyticsService()

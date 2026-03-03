@@ -1219,6 +1219,12 @@ body.booting #staleBanner {
   font-size: 0.8rem;
 }
 
+.gift-icon-fallback-img {
+  object-fit: contain;
+  padding: 2px;
+  background: #ffffff;
+}
+
 .field {
   display: grid;
   gap: 8px;

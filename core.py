@@ -3189,6 +3189,7 @@ class GiftAnalyticsService:
             "variant_id": str(v.get("variant_id") or ""),
             "collection_id": base_id,
             "collection_name": base_name,
+            "preview_url": str(v.get("preview_url") or ""),
             "model": str((traits.get("model") or {}).get("name") or ""),
             "background": str((traits.get("background") or {}).get("name") or ""),
             "pattern": str((traits.get("pattern") or {}).get("name") or ""),
@@ -3249,6 +3250,7 @@ class GiftAnalyticsService:
             "variant_id": variant.get("variant_id"),
             "collection_id": variant.get("collection_id"),
             "collection": variant.get("collection_name"),
+            "preview_url": variant.get("preview_url"),
             "model": variant.get("model"),
             "background": variant.get("background"),
             "pattern": variant.get("pattern"),
@@ -3313,6 +3315,9 @@ class GiftAnalyticsService:
                 continue
             price = float((row or {}).get("price_ton") or 0.0)
             ts = str((row or {}).get("last_seen") or self.state.get("updated_at") or _iso(_now()))
+            variant_payload = self.variants.get(variant_id)
+            variant_preview = str((variant_payload or {}).get("preview_url") or "") if isinstance(variant_payload, dict) else ""
+            row_preview = str((row or {}).get("preview_url") or variant_preview or "")
             bucket = by_variant.setdefault(
                 variant_id,
                 {
@@ -3321,6 +3326,7 @@ class GiftAnalyticsService:
                     "floor_ton": price,
                     "active_lots": 0,
                     "ts": ts,
+                    "preview_url": row_preview,
                 },
             )
             bucket["active_lots"] = int(bucket.get("active_lots") or 0) + 1
@@ -3329,6 +3335,8 @@ class GiftAnalyticsService:
                 bucket["floor_ton"] = price
             if ts > str(bucket.get("ts") or ""):
                 bucket["ts"] = ts
+            if not str(bucket.get("preview_url") or "").strip():
+                bucket["preview_url"] = row_preview
 
         items: List[dict] = []
         for variant_id, agg in by_variant.items():
@@ -3356,6 +3364,7 @@ class GiftAnalyticsService:
                     "variant_id": variant_id,
                     "collection_id": collection_id,
                     "collection": collection,
+                    "preview_url": str(agg.get("preview_url") or ""),
                     "model": _slug_to_name(model_slug),
                     "background": _slug_to_name(background_slug),
                     "pattern": _slug_to_name(pattern_slug),
@@ -4661,11 +4670,14 @@ class GiftAnalyticsService:
             pattern_name = str(((traits.get("pattern") or {}).get("name")) or pattern_name)
             collection_id = str((row or {}).get("base_id") or "").strip().lower()
             collection_name = self.bases.get(collection_id).name if collection_id in self.bases else _slug_to_name(collection_id)
+            base_payload = self.bases.get(collection_id) if collection_id in self.bases else None
+            base_preview = str(getattr(base_payload, "preview_url", "") or "")
             first_seen_at = str(entry.get("first_seen_at") or (row or {}).get("last_seen") or _iso(now))
             last_seen_at = str(entry.get("last_seen_at") or (row or {}).get("last_seen") or _iso(now))
             relisted_at = str(entry.get("last_relisted_at") or "")
             is_new = self._is_listing_new(now, first_seen_at, relisted_at, window_sec)
             price_ton = float((row or {}).get("price_ton") or 0.0)
+            preview_url = str((row or {}).get("preview_url") or v.get("preview_url") or base_preview or "")
             rows.append(
                 {
                     "listing_key": key,
@@ -4688,7 +4700,7 @@ class GiftAnalyticsService:
                     },
                     "status": str((row or {}).get("status") or "ACTIVE"),
                     "sale_type": str((row or {}).get("sale_type") or "FIXED"),
-                    "preview_url": str((row or {}).get("preview_url") or ""),
+                    "preview_url": preview_url,
                     "ts_detected": first_seen_at,
                     "first_seen_at": first_seen_at,
                     "last_seen_at": last_seen_at,
@@ -4781,6 +4793,15 @@ class GiftAnalyticsService:
                 variant_id = mapped or variant_fallback
         if (not variant_id) or ("|unknown|unknown|unknown" in variant_id.lower()):
             variant_id = variant_fallback
+        preview_url = str(raw.get("preview_url") or "")
+        if not preview_url:
+            variant_payload = self.variants.get(variant_id) if variant_id else None
+            if isinstance(variant_payload, dict):
+                preview_url = str(variant_payload.get("preview_url") or "")
+        if not preview_url:
+            base_payload = self.bases.get(gift_id)
+            if base_payload is not None:
+                preview_url = str(getattr(base_payload, "preview_url", "") or "")
         return {
             "listing_key": listing_key,
             "gift_id": gift_id,
@@ -4799,7 +4820,7 @@ class GiftAnalyticsService:
             "attributes": {"model": model, "background": background, "pattern": pattern},
             "status": str(raw.get("status") or "ACTIVE"),
             "sale_type": str(raw.get("sale_type") or "FIXED"),
-            "preview_url": str(raw.get("preview_url") or ""),
+            "preview_url": preview_url,
             "ts_detected": first_seen_at,
             "first_seen_at": first_seen_at,
             "last_seen_at": last_seen_at,
@@ -5091,6 +5112,7 @@ class GiftAnalyticsService:
                         "title": str(row.get("title") or row.get("collection") or ""),
                         "listing_key": str(row.get("listing_key") or ""),
                         "variant_id": str(row.get("variant_id") or ""),
+                        "preview_url": str(row.get("preview_url") or ""),
                         "resell_currency": str(row.get("resell_currency") or "STARS"),
                         "resell_amount": row.get("resell_amount_stars_est")
                         if str(row.get("resell_currency") or "").upper() == "STARS"
@@ -5156,6 +5178,7 @@ class GiftAnalyticsService:
                 sig_type_val = str(base_sig.get("type") or "WATCH")
                 score100 = float(base_sig.get("score100") or 0.0)
                 conf_pct = float(base_sig.get("conf_pct") or 0.0)
+                preview_url = str(base_sig.get("preview_url") or v.get("preview_url") or "")
                 forecast_min = float(base_sig.get("forecast24h_pct_min") or 0.0)
                 forecast_max = float(base_sig.get("forecast24h_pct_max") or 0.0)
                 expected_profit_pct = float(base_sig.get("expected_profit_pct") or 0.0)
@@ -5177,6 +5200,11 @@ class GiftAnalyticsService:
                 price_ton = None
                 fair_ton = None
                 floor_ton = None
+                preview_url = str(ev.get("preview_url") or "")
+                if not preview_url:
+                    cid = str(ev.get("gift_id") or "").strip().lower()
+                    if cid and cid in self.bases:
+                        preview_url = str(getattr(self.bases[cid], "preview_url", "") or "")
                 reasons = ["Вариант пока прогревается в аналитике, используется быстрый listing-сигнал."]
                 risks = ["WARMUP_VARIANT_METRICS"]
 
@@ -5196,6 +5224,7 @@ class GiftAnalyticsService:
                     "variant_id": variant_id,
                     "collection_id": ev.get("gift_id"),
                     "collection": ev.get("title") or ev.get("gift_id"),
+                    "preview_url": preview_url,
                     "model": ((ev.get("attributes") or {}).get("model") if isinstance(ev.get("attributes"), dict) else None),
                     "background": ((ev.get("attributes") or {}).get("background") if isinstance(ev.get("attributes"), dict) else None),
                     "pattern": ((ev.get("attributes") or {}).get("pattern") if isinstance(ev.get("attributes"), dict) else None),

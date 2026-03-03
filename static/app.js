@@ -407,10 +407,9 @@ function starsFromTon(ton) {
 
 function renderGiftIcon(url, title, cls = "gift-icon") {
   const safeUrl = (url || "").trim();
-  if (!safeUrl) {
-    return `<span class="${cls} gift-icon-fallback" aria-hidden="true">?</span>`;
-  }
-  return `<img class="${cls}" src="${safeUrl}" alt="${title || "подарок"}" loading="lazy" decoding="async" />`;
+  const src = safeUrl || "/assets/favicon.png";
+  const fallbackCls = safeUrl ? "" : " gift-icon-fallback-img";
+  return `<img class="${cls}${fallbackCls}" src="${src}" alt="${title || "подарок"}" loading="lazy" decoding="async" />`;
 }
 
 function escapeHtml(value) {
@@ -2086,7 +2085,7 @@ function renderListingSignals() {
     const label = (s?.model && s?.background && s?.pattern)
       ? `${s.collection || s.collection_id || "-"} • ${s.model} • ${s.background} • ${s.pattern}`
       : (s?.variant_id || s?.listing_key || "-");
-    const icon = renderGiftIcon("", label, "gift-icon-sm");
+    const icon = renderGiftIcon(s?.preview_url, label, "gift-icon-sm");
     const minF = Number(s?.forecast24h_pct_min || 0);
     const maxF = Number(s?.forecast24h_pct_max || 0);
     const src = String(s?.source || state.listingFeed.signalsSource || "-");
