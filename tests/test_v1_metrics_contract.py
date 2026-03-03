@@ -274,6 +274,91 @@ class TestV1MetricsContract(unittest.TestCase):
             self.assertTrue(isinstance(payload.get("points"), list))
             self.assertTrue(len(payload.get("points") or []) >= 1)
 
+    def test_metrics_v1_variant_metric_set_contract(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime.now(timezone.utc)
+        variant_id = "var|m|b|p"
+        svc.variants = {
+            variant_id: {
+                "variant_id": variant_id,
+                "base_id": "var",
+                "metrics": {
+                    "floor_ton": 8.0,
+                    "median_ton": 9.0,
+                    "trades_count_24h": 20,
+                    "active_listings": 12,
+                    "serial_no": 7,
+                },
+                "traits": {
+                    "model": {"id": "m", "name": "M"},
+                    "background": {"id": "b", "name": "B"},
+                    "pattern": {"id": "p", "name": "P"},
+                },
+            }
+        }
+        svc.variant_history = {
+            variant_id: [
+                {"ts": (now - timedelta(minutes=25)).isoformat().replace("+00:00", "Z"), "floor_ton": 7.9, "active_listings": 13, "new_listings": 2},
+                {"ts": (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z"), "floor_ton": 8.0, "active_listings": 12, "new_listings": 1},
+            ]
+        }
+        svc.trade_events = [
+            {"ts": (now - timedelta(minutes=20)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": "var", "price_ton": 8.1},
+            {"ts": (now - timedelta(minutes=10)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": "var", "price_ton": 8.2},
+            {"ts": (now - timedelta(minutes=2)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": "var", "price_ton": 8.3},
+        ]
+        svc.listing_state = {
+            "v1": {"listing_id": "v1", "base_id": "var", "variant_id": variant_id, "status": "ACTIVE", "price_ton": 8.0},
+            "v2": {"listing_id": "v2", "base_id": "var", "variant_id": variant_id, "status": "ACTIVE", "price_ton": 8.1},
+        }
+        svc.listing_tracker_state = {
+            "var:v1": {
+                "listing_key": "var:v1",
+                "variant_id": variant_id,
+                "base_id": "var",
+                "listing_id": "v1",
+                "first_seen_at": (now - timedelta(minutes=4)).isoformat().replace("+00:00", "Z"),
+                "last_seen_at": now.isoformat().replace("+00:00", "Z"),
+                "last_relisted_at": "",
+                "relist_count": 0,
+                "last_price_ton": 8.0,
+            }
+        }
+        variant_metrics = [
+            "FLOOR_REALTIME",
+            "NEW_LISTINGS_REALTIME",
+            "LISTING_VELOCITY",
+            "LISTING_PRESSURE",
+            "LISTING_FEED",
+            "FAIR_PRICE",
+            "UNDERVALUE",
+            "EXPECTED_PROFIT",
+            "LIQUIDITY_SCORE",
+            "LIQUIDITY_HEATMAP",
+            "LIQUIDITY_CHART",
+            "VOLUME_VELOCITY",
+            "VOLUME_CHART",
+            "ABSORPTION_RATE",
+            "MARKET_DEPTH",
+            "WHALE_RATIO",
+            "WHALE_IMPULSE",
+            "BUY_WALL_SCORE",
+            "FLOOR_HISTORY",
+            "VOLATILITY",
+            "RARITY_SCORE",
+            "SUPPLY_CHART",
+            "EDGE_SCORE",
+            "BUY_SCORE",
+            "SELL_SCORE",
+        ]
+        for metric in variant_metrics:
+            payload = svc.metrics_v1(metric=metric, scope="VARIANT", variant_id=variant_id, limit=10)
+            self.assertEqual(payload["metric"], metric)
+            self.assertEqual(payload["scope"], "VARIANT")
+            self.assertEqual(payload["variant_id"], variant_id)
+            self.assertTrue(isinstance(payload.get("points"), list))
+            self.assertTrue(len(payload.get("points") or []) >= 1)
+
     def test_metrics_v1_market_liquidity_heatmap_contains_6h_bucket(self) -> None:
         svc = GiftAnalyticsService()
         now = datetime.now(timezone.utc)
