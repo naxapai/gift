@@ -2085,12 +2085,16 @@ function renderListingSignals() {
     const label = (s?.model && s?.background && s?.pattern)
       ? `${s.collection || s.collection_id || "-"} • ${s.model} • ${s.background} • ${s.pattern}`
       : (s?.variant_id || s?.listing_key || "-");
+    const variantId = String(s?.variant_id || s?.listing_id || s?.listing_key || "").trim();
     const icon = renderGiftIcon(s?.preview_url, label, "gift-icon-sm");
+    const giftCell = variantId
+      ? `<button class="btn ghost open-variant gift-cell" data-variant="${variantId}">${icon}<span>${label}</span></button>`
+      : `<span class="gift-cell">${icon}<span>${label}</span></span>`;
     const minF = Number(s?.forecast24h_pct_min || 0);
     const maxF = Number(s?.forecast24h_pct_max || 0);
     const src = String(s?.source || state.listingFeed.signalsSource || "-");
     return `<tr>
-      <td><span class="gift-cell">${icon}<span>${label}</span></span></td>
+      <td>${giftCell}</td>
       <td><span class="chip ${(action || "watch").toLowerCase()}">${actionLabel(action)}</span></td>
       <td>${Number(s?.score100 || 0).toFixed(1)}</td>
       <td>${Number(s?.conf_pct || 0).toFixed(1)}%</td>
@@ -2862,14 +2866,20 @@ async function loadAlerts() {
 }
 
 async function openVariant(variantId) {
-  state.selectedVariantId = variantId;
-  localStorage.setItem(STORAGE_VARIANT_KEY, variantId);
+  const safeVariantId = String(variantId || "").trim();
+  if (!safeVariantId) {
+    showToast("Вариант не найден в данных листинга");
+    return;
+  }
+  const encodedVariantId = encodeURIComponent(safeVariantId);
+  state.selectedVariantId = safeVariantId;
+  localStorage.setItem(STORAGE_VARIANT_KEY, safeVariantId);
   setPage("variant-details");
   try {
     const [variant, listings, series] = await Promise.all([
-      fetchJson(`/api/variants/${variantId}`),
-      fetchJson(`/api/variants/${variantId}/listings`),
-      fetchJson(`/api/variants/${variantId}/timeseries?metric=floor&period=${state.chart.period}`),
+      fetchJson(`/api/variants/${encodedVariantId}`),
+      fetchJson(`/api/variants/${encodedVariantId}/listings`),
+      fetchJson(`/api/variants/${encodedVariantId}/timeseries?metric=floor&period=${state.chart.period}`),
     ]);
     renderVariantDetails(variant, listings, series);
   } catch (e) {
