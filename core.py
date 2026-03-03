@@ -34,7 +34,10 @@ LISTING_TRACKER_STATE_FILE = DATA_DIR / "listing_tracker_state.json"
 MT_LISTINGS_SNAPSHOT_FILE = DATA_DIR / "mt_listings_snapshot.json"
 
 WINDOWS = {
+    "10m": 10 * 60,
+    "30m": 30 * 60,
     "1h": 60 * 60,
+    "6h": 6 * 60 * 60,
     "12h": 12 * 60 * 60,
     "24h": 24 * 60 * 60,
     "7d": 7 * 24 * 60 * 60,
