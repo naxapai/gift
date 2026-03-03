@@ -1992,8 +1992,6 @@ class GiftAnalyticsService:
         if not lookup:
             return None
         rows = self._iter_listing_rows_for_lookup()
-        if not rows:
-            return None
 
         def _ids_from_row(row: dict) -> set[str]:
             out = set()
@@ -2004,6 +2002,14 @@ class GiftAnalyticsService:
             return out
 
         matched = [row for row in rows if lookup in _ids_from_row(row)]
+        if not matched:
+            try:
+                mt_rows, _ = self._refresh_mt_listing_source(force=False, window_sec=self.listing_new_window_sec)
+            except Exception:
+                mt_rows = []
+            if isinstance(mt_rows, list) and mt_rows:
+                rows.extend([dict(x) for x in mt_rows if isinstance(x, dict)])
+                matched = [row for row in rows if lookup in _ids_from_row(row)]
         if not matched:
             return None
 
