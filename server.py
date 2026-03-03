@@ -1837,13 +1837,21 @@ class RequestHandler(BaseHTTPRequestHandler):
             for row in _state().alerts_list():
                 rid = str(row.get("id") or "")
                 rule_json = row.get("rule_json") or {}
+                enabled = bool(row.get("enabled", rule_json.get("enabled", True)))
+                created_at = (
+                    row.get("created_at")
+                    or rule_json.get("created_at")
+                    or row.get("last_fired_at")
+                    or _state().state.get("updated_at")
+                    or datetime.now(timezone.utc).isoformat()
+                )
                 items.append(
                     {
                         "rule_id": rid,
-                        "name": str(rule_json.get("name") or rid or "alert"),
+                        "name": str(rule_json.get("name") or row.get("name") or rid or "alert"),
                         "rule_json": rule_json,
-                        "enabled": True,
-                        "created_at": row.get("last_fired_at") or _state().state.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+                        "enabled": enabled,
+                        "created_at": created_at,
                     }
                 )
             _json_response(self, {"items": items}, cache_control="no-store")

@@ -2744,7 +2744,15 @@ class GiftAnalyticsService:
 
     def alerts_create(self, rule: dict) -> dict:
         rule_id = rule.get("id") or f"alert_{int(time.time())}"
-        record = {"id": rule_id, "rule_json": rule, "last_fired_at": None, "last_payload_json": None}
+        now_iso = _iso(_now())
+        record = {
+            "id": rule_id,
+            "rule_json": rule,
+            "enabled": bool(rule.get("enabled", True)),
+            "created_at": now_iso,
+            "last_fired_at": None,
+            "last_payload_json": None,
+        }
         self.alert_rules.append(record)
         self._save_alerts()
         return record
@@ -2753,6 +2761,9 @@ class GiftAnalyticsService:
         for r in self.alert_rules:
             if r.get("id") == alert_id:
                 r["rule_json"] = rule
+                r["enabled"] = bool(rule.get("enabled", r.get("enabled", True)))
+                if not r.get("created_at"):
+                    r["created_at"] = _iso(_now())
                 self._save_alerts()
                 return r
         return None

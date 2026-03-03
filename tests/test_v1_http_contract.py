@@ -247,6 +247,28 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertIn("enabled", items_a[0])
         self.assertIn("created_at", items_a[0])
 
+    def test_alerts_enabled_roundtrip_and_created_at(self) -> None:
+        status_create, payload_create = self._post_json(
+            "/v1/alerts",
+            {
+                "name": "disabled-alert",
+                "rule_json": {"entity": {"type": "VARIANT", "id": "x|m|b|p"}},
+                "enabled": False,
+            },
+        )
+        self.assertEqual(status_create, 200)
+        self.assertTrue(bool(payload_create.get("ok")))
+
+        status_get, payload_get = self._get_json("/v1/alerts")
+        self.assertEqual(status_get, 200)
+        items = payload_get.get("items") or []
+        self.assertTrue(items)
+        target = next((x for x in items if str(x.get("name") or "") == "disabled-alert"), None)
+        self.assertIsNotNone(target)
+        assert target is not None
+        self.assertFalse(bool(target.get("enabled")))
+        self.assertTrue(bool(str(target.get("created_at") or "").strip()))
+
     def test_stream_endpoint_rejects_unknown_type(self) -> None:
         with self.assertRaises(HTTPError) as cm:
             urlopen(f"http://127.0.0.1:{self.port}/v1/stream?types=bad.type", timeout=10)
