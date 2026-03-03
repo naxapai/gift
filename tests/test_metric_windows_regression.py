@@ -91,6 +91,7 @@ class TestMetricWindowsRegression(unittest.TestCase):
 
     def test_market_floor_realtime_uses_median_of_collection_floors(self) -> None:
         svc = GiftAnalyticsService()
+        svc.listing_state = {}
         svc.variants = {
             "c1|m1|b|p": {"variant_id": "c1|m1|b|p", "base_id": "c1", "metrics": {"floor_ton": 1.0, "active_listings": 1, "trades_count_24h": 1, "median_ton": 1.0}, "traits": {}},
             "c1|m2|b|p": {"variant_id": "c1|m2|b|p", "base_id": "c1", "metrics": {"floor_ton": 100.0, "active_listings": 1, "trades_count_24h": 1, "median_ton": 100.0}, "traits": {}},
@@ -105,6 +106,22 @@ class TestMetricWindowsRegression(unittest.TestCase):
         self.assertTrue(points)
         value = float(points[0].get("value") or 0.0)
         self.assertEqual(value, 2.0)
+
+    def test_market_floor_realtime_prefers_active_listing_based_collection_floors(self) -> None:
+        svc = GiftAnalyticsService()
+        svc.variants = {
+            "c1|m|b|p": {"variant_id": "c1|m|b|p", "base_id": "c1", "metrics": {"floor_ton": 50.0, "active_listings": 1, "trades_count_24h": 1, "median_ton": 50.0}, "traits": {}},
+            "c2|m|b|p": {"variant_id": "c2|m|b|p", "base_id": "c2", "metrics": {"floor_ton": 60.0, "active_listings": 1, "trades_count_24h": 1, "median_ton": 60.0}, "traits": {}},
+        }
+        svc.listing_state = {
+            "l1": {"listing_id": "l1", "base_id": "c1", "variant_id": "c1|m|b|p", "status": "ACTIVE", "price_ton": 3.0},
+            "l2": {"listing_id": "l2", "base_id": "c1", "variant_id": "c1|m|b|p", "status": "ACTIVE", "price_ton": 8.0},
+            "l3": {"listing_id": "l3", "base_id": "c2", "variant_id": "c2|m|b|p", "status": "ACTIVE", "price_ton": 9.0},
+        }
+        payload = svc.metrics_v1(metric="FLOOR_REALTIME", scope="MARKET")
+        value = float((payload.get("points") or [{}])[0].get("value") or 0.0)
+        # F_collection from active listings: c1=3.0, c2=9.0 => median=6.0
+        self.assertEqual(value, 6.0)
 
     def test_strict_edge_score_matches_tz_example_corridor(self) -> None:
         svc = GiftAnalyticsService()

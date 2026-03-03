@@ -2946,7 +2946,10 @@ class GiftAnalyticsService:
         metrics = v.get("metrics") or {}
         variant_id = str(v.get("variant_id") or "")
         now = _now()
-        floor_ton = float(metrics.get("floor_ton") or 0.0)
+        floor_ton = self._variant_floor_realtime(
+            variant_id=variant_id,
+            fallback=float(metrics.get("floor_ton") or 0.0),
+        )
         price_ton = floor_ton
         median_24h = float(metrics.get("median_ton") or 0.0)
         if median_24h <= 0:
@@ -3043,6 +3046,64 @@ class GiftAnalyticsService:
             "volume10m_ton": round(volume10m, 6),
             "volume30m_ton": round(volume30m, 6),
         }
+
+    def _active_listing_prices(
+        self,
+        variant_id: str | None = None,
+        collection_id: str | None = None,
+    ) -> list[float]:
+        variant_filter = str(variant_id or "").strip()
+        collection_filter = str(collection_id or "").strip().lower()
+        prices: list[float] = []
+        for row in self.listing_state.values():
+            if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
+                continue
+            row_variant = str((row or {}).get("variant_id") or "").strip()
+            row_collection = str((row or {}).get("base_id") or (row or {}).get("gift_id") or "").strip().lower()
+            if variant_filter and row_variant != variant_filter:
+                continue
+            if collection_filter and row_collection != collection_filter:
+                continue
+            try:
+                price = float((row or {}).get("price_ton") or (row or {}).get("resell_amount_ton") or 0.0)
+            except Exception:
+                price = 0.0
+            if price > 0:
+                prices.append(price)
+        return prices
+
+    def _variant_floor_realtime(self, variant_id: str, fallback: float = 0.0) -> float:
+        prices = self._active_listing_prices(variant_id=variant_id)
+        if prices:
+            return float(min(prices))
+        return float(max(0.0, fallback))
+
+    def _collection_floor_realtime(self, collection_id: str, fallback: float = 0.0) -> float:
+        prices = self._active_listing_prices(collection_id=collection_id)
+        if prices:
+            return float(min(prices))
+        return float(max(0.0, fallback))
+
+    def _market_floor_realtime(self, fallback: float = 0.0) -> float:
+        by_collection: dict[str, float] = {}
+        for row in self.listing_state.values():
+            if str((row or {}).get("status") or "ACTIVE").upper() != "ACTIVE":
+                continue
+            cid = str((row or {}).get("base_id") or (row or {}).get("gift_id") or "").strip().lower()
+            if not cid:
+                continue
+            try:
+                price = float((row or {}).get("price_ton") or (row or {}).get("resell_amount_ton") or 0.0)
+            except Exception:
+                price = 0.0
+            if price <= 0:
+                continue
+            prev = by_collection.get(cid)
+            if prev is None or price < prev:
+                by_collection[cid] = price
+        if by_collection:
+            return float(_safe_median(by_collection.values()))
+        return float(max(0.0, fallback))
 
     def _tz_signal_math_strict(self, v: dict) -> dict:
         mm = self._strict_formula_inputs(v)
@@ -4589,7 +4650,9 @@ class GiftAnalyticsService:
             if not v:
                 raise ValueError("variant_not_found")
             resolved_variant_id = variant_key
-            mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
+            # Metrics contract follows TZ formula set regardless of signal engine mode.
+            # This keeps /v1/metrics deterministic and comparable in calibration.
+            mm = self._strict_formula_inputs(v)
             hist = self.variant_history.get(variant_key, [])
             variant_ids = {variant_key}
             if metric_name == "FLOOR_HISTORY":
@@ -4624,7 +4687,10 @@ class GiftAnalyticsService:
                     whale_ratio, whale_impulse, _ = self._whale_ratio_and_impulse(now_dt, variant_ids=variant_ids)
                 buy_wall = self._buy_wall_score_for_variant(variant_key, float(mm.get("floor_ton") or 0.0), now_dt) if metric_name == "BUY_WALL_SCORE" else 0.0
                 value_map = {
-                    "FLOOR_REALTIME": float(mm.get("floor_ton") or 0.0),
+                    "FLOOR_REALTIME": self._variant_floor_realtime(
+                        variant_id=variant_key,
+                        fallback=float(mm.get("floor_ton") or 0.0),
+                    ),
                     "NEW_LISTINGS_REALTIME": float(self._new_listings_in_window(variant_key, now_dt, 600)),
                     "LISTING_VELOCITY": float(self._new_listings_in_window(variant_key, now_dt, 600)),
                     "LISTING_PRESSURE": float(mm.get("listing_pressure") or 0.0),
@@ -4636,7 +4702,7 @@ class GiftAnalyticsService:
                     "ABSORPTION_RATE": float(mm.get("absorption_rate") or 0.0),
                     "VOLATILITY": float(mm.get("volatility") or 0.0),
                     "EDGE_SCORE": float(mm.get("score") or 0.0),
-                    "BUY_SCORE": float(mm.get("score100") or 0.0) if str(mm.get("action_hint") or "") == "BUY" else max(0.0, float(mm.get("score100") or 0.0) * 0.5),
+                    "BUY_SCORE": float(mm.get("score100") or 0.0),
                     "SELL_SCORE": float(100.0 - float(mm.get("score100") or 0.0)),
                     "BUY_WALL_SCORE": float(buy_wall),
                     "WHALE_RATIO": float(whale_ratio),
@@ -4651,10 +4717,14 @@ class GiftAnalyticsService:
             if not col_id:
                 raise ValueError("collection_id_required")
             resolved_collection_id = col_id
-            rows = self.variants_v1(collection_id=col_id, limit=5000, mode=eff_mode).get("items") or []
-            if not rows:
+            variants_in_collection = [
+                v for v in self.variants.values() if str(v.get("base_id") or "") == col_id
+            ]
+            if not variants_in_collection:
                 raise ValueError("collection_not_found")
-            variant_ids = {str(row.get("variant_id") or "") for row in rows if str(row.get("variant_id") or "")}
+            rows = self.variants_v1(collection_id=col_id, limit=5000, mode=eff_mode).get("items") or []
+            strict_rows = [self._strict_formula_inputs(v) for v in variants_in_collection]
+            variant_ids = {str(v.get("variant_id") or "") for v in variants_in_collection if str(v.get("variant_id") or "")}
             if metric_name == "FLOOR_HISTORY":
                 points = self._aggregate_variant_series_for_collection(
                     collection_id=col_id,
@@ -4694,15 +4764,15 @@ class GiftAnalyticsService:
                 events = [e for e in raw_events if str((e or {}).get("gift_id") or "").strip().lower() == col_id_norm]
                 points = [{"ts": now_iso, "value": float(len(events)), "extra": {"items": events[:50]}}]
             elif metric_name == "FLOOR_REALTIME":
-                # Collection floor is defined as the minimum active listing price in the collection.
-                floors = [float(r.get("floor_ton") or 0.0) for r in rows if float(r.get("floor_ton") or 0.0) > 0]
-                value = min(floors) if floors else 0.0
+                strict_floors = [float(r.get("floor_ton") or 0.0) for r in strict_rows if float(r.get("floor_ton") or 0.0) > 0]
+                fallback_floor = min(strict_floors) if strict_floors else 0.0
+                value = self._collection_floor_realtime(collection_id=col_id, fallback=float(fallback_floor))
                 points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "MARKET_INDEX":
-                value = _safe_mean([float(r.get("score100") or 0.0) for r in rows])
+                value = _safe_mean([float(r.get("score100") or 0.0) for r in strict_rows])
                 points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "TREND_SCORE":
-                value = _safe_mean([float(r.get("trend_t") or 0.0) for r in rows])
+                value = _safe_mean([float(r.get("trend_t") or 0.0) for r in strict_rows])
                 points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "LIQUIDITY_SCORE":
                 sales24h, _ = self._trades_in_window_multi(now_dt, WINDOWS["24h"], variant_ids=variant_ids)
@@ -4763,6 +4833,7 @@ class GiftAnalyticsService:
             overview = self.overview_v1(mode=eff_mode)
             market_summary = self.market_overview()
             variant_ids = {str(v.get("variant_id") or "") for v in self.variants.values() if str(v.get("variant_id") or "")}
+            strict_rows = [self._strict_formula_inputs(v) for v in self.variants.values()]
             if metric_name == "SUPPLY_CHART":
                 points = self._aggregate_variant_series_for_market(
                     field="active_listings",
@@ -4816,20 +4887,19 @@ class GiftAnalyticsService:
                 _, value, thr = self._whale_ratio_and_impulse(now_dt, variant_ids=variant_ids)
                 points = [{"ts": now_iso, "value": float(value), "extra": {"whale_thr_ton": round(float(thr), 6)}}]
             elif metric_name == "MARKET_INDEX":
-                value = float(overview.get("market_index") or 0.0)
+                value = _safe_mean([float(r.get("score100") or 0.0) for r in strict_rows]) if strict_rows else float(overview.get("market_index") or 0.0)
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "TREND_SCORE":
-                avg_24h = float(market_summary.get("avg_change_24h") or 0.0)
-                value = _clamp((avg_24h + 100.0) / 200.0, 0.0, 1.0)
+                value = _safe_mean([float(r.get("trend_t") or 0.0) for r in strict_rows]) if strict_rows else 0.0
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "FLOOR_REALTIME":
-                # TZ formula: F_market = median(F_collection), where F_collection is collection floor.
+                # TZ formula: F_market = median(F_collection), with real-time floor from active listings.
                 collection_floors = [
                     float((base.get("metrics") or {}).get("floor_ton") or 0.0)
                     for base in self.list_bases()
                     if float((base.get("metrics") or {}).get("floor_ton") or 0.0) > 0
                 ]
-                value = _safe_median(collection_floors)
+                value = self._market_floor_realtime(fallback=_safe_median(collection_floors))
                 if value <= 0:
                     value = float(market_summary.get("floor_ton_median") or market_summary.get("floor_ton_min") or 0.0)
                 if value <= 0:

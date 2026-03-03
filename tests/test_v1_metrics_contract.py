@@ -78,9 +78,9 @@ class TestV1MetricsContract(unittest.TestCase):
         svc.variants[variant_id] = variant
         payload = svc.metrics_v1(metric="TREND_SCORE", variant_id=variant_id, scope="VARIANT", mode="tz")
         value = float((payload.get("points") or [{}])[0].get("value") or 0.0)
-        expected = float(svc._tz_signal_math(variant).get("trend_t") or 0.0)  # noqa: SLF001
+        expected = float(svc._strict_formula_inputs(variant).get("trend_t") or 0.0)  # noqa: SLF001
         self.assertAlmostEqual(value, expected, places=6)
-        self.assertGreater(value, 0.0)
+        self.assertGreaterEqual(value, 0.0)
         self.assertLessEqual(value, 1.0)
 
     def test_metrics_v1_errors_for_missing_ids(self) -> None:
@@ -226,6 +226,7 @@ class TestV1MetricsContract(unittest.TestCase):
 
     def test_metrics_v1_floor_realtime_matches_tz_collection_and_market_formula(self) -> None:
         svc = GiftAnalyticsService()
+        svc.listing_state = {}
         svc.variants = {
             "c1|m1|b|p": {
                 "variant_id": "c1|m1|b|p",
@@ -331,6 +332,61 @@ class TestV1MetricsContract(unittest.TestCase):
             self.assertTrue(isinstance(payload.get("points"), list))
             self.assertTrue(len(payload.get("points") or []) >= 1)
 
+    def test_metrics_v1_market_index_and_trend_use_strict_formula_rows(self) -> None:
+        svc = GiftAnalyticsService()
+        svc.variants = {
+            "a|m|b|p": {
+                "variant_id": "a|m|b|p",
+                "base_id": "a",
+                "metrics": {"floor_ton": 8.0, "median_ton": 10.0, "trades_count_24h": 20, "active_listings": 60},
+                "traits": {},
+            },
+            "b|m|b|p": {
+                "variant_id": "b|m|b|p",
+                "base_id": "b",
+                "metrics": {"floor_ton": 6.0, "median_ton": 7.0, "trades_count_24h": 15, "active_listings": 30},
+                "traits": {},
+            },
+        }
+        strict_rows = [svc._strict_formula_inputs(v) for v in svc.variants.values()]  # noqa: SLF001
+        expected_index = sum(float(r.get("score100") or 0.0) for r in strict_rows) / len(strict_rows)
+        expected_trend = sum(float(r.get("trend_t") or 0.0) for r in strict_rows) / len(strict_rows)
+
+        market_index = svc.metrics_v1(metric="MARKET_INDEX", scope="MARKET")
+        trend_score = svc.metrics_v1(metric="TREND_SCORE", scope="MARKET")
+        market_index_v = float((market_index.get("points") or [{}])[0].get("value") or 0.0)
+        trend_v = float((trend_score.get("points") or [{}])[0].get("value") or 0.0)
+        self.assertAlmostEqual(market_index_v, expected_index, places=6)
+        self.assertAlmostEqual(trend_v, expected_trend, places=6)
+
+    def test_metrics_v1_collection_index_and_trend_use_strict_formula_rows(self) -> None:
+        svc = GiftAnalyticsService()
+        collection_id = "col"
+        svc.variants = {
+            f"{collection_id}|m1|b|p": {
+                "variant_id": f"{collection_id}|m1|b|p",
+                "base_id": collection_id,
+                "metrics": {"floor_ton": 8.0, "median_ton": 10.0, "trades_count_24h": 20, "active_listings": 60},
+                "traits": {},
+            },
+            f"{collection_id}|m2|b|p": {
+                "variant_id": f"{collection_id}|m2|b|p",
+                "base_id": collection_id,
+                "metrics": {"floor_ton": 6.0, "median_ton": 7.0, "trades_count_24h": 15, "active_listings": 30},
+                "traits": {},
+            },
+        }
+        strict_rows = [svc._strict_formula_inputs(v) for v in svc.variants.values()]  # noqa: SLF001
+        expected_index = sum(float(r.get("score100") or 0.0) for r in strict_rows) / len(strict_rows)
+        expected_trend = sum(float(r.get("trend_t") or 0.0) for r in strict_rows) / len(strict_rows)
+
+        collection_index = svc.metrics_v1(metric="MARKET_INDEX", scope="COLLECTION", collection_id=collection_id)
+        collection_trend = svc.metrics_v1(metric="TREND_SCORE", scope="COLLECTION", collection_id=collection_id)
+        index_v = float((collection_index.get("points") or [{}])[0].get("value") or 0.0)
+        trend_v = float((collection_trend.get("points") or [{}])[0].get("value") or 0.0)
+        self.assertAlmostEqual(index_v, expected_index, places=6)
+        self.assertAlmostEqual(trend_v, expected_trend, places=6)
+
     def test_metrics_v1_variant_metric_set_contract(self) -> None:
         svc = GiftAnalyticsService()
         now = datetime.now(timezone.utc)
@@ -415,6 +471,42 @@ class TestV1MetricsContract(unittest.TestCase):
             self.assertEqual(payload["variant_id"], variant_id)
             self.assertTrue(isinstance(payload.get("points"), list))
             self.assertTrue(len(payload.get("points") or []) >= 1)
+
+    def test_metrics_v1_variant_floor_realtime_prefers_active_listing_min(self) -> None:
+        svc = GiftAnalyticsService()
+        variant_id = "floor|m|b|p"
+        svc.variants = {
+            variant_id: {
+                "variant_id": variant_id,
+                "base_id": "floor",
+                "metrics": {"floor_ton": 99.0, "median_ton": 100.0, "trades_count_24h": 10, "active_listings": 2},
+                "traits": {},
+            }
+        }
+        svc.listing_state = {
+            "a": {"listing_id": "a", "base_id": "floor", "variant_id": variant_id, "status": "ACTIVE", "price_ton": 7.5},
+            "b": {"listing_id": "b", "base_id": "floor", "variant_id": variant_id, "status": "ACTIVE", "price_ton": 8.0},
+        }
+        payload = svc.metrics_v1(metric="FLOOR_REALTIME", scope="VARIANT", variant_id=variant_id)
+        value = float((payload.get("points") or [{}])[0].get("value") or 0.0)
+        self.assertEqual(value, 7.5)
+
+    def test_metrics_v1_buy_score_equals_edge_score100(self) -> None:
+        svc = GiftAnalyticsService()
+        variant_id = "score|m|b|p"
+        svc.variants = {
+            variant_id: {
+                "variant_id": variant_id,
+                "base_id": "score",
+                "metrics": {"floor_ton": 9.0, "median_ton": 11.0, "trades_count_24h": 20, "active_listings": 15},
+                "traits": {},
+            }
+        }
+        buy = svc.metrics_v1(metric="BUY_SCORE", scope="VARIANT", variant_id=variant_id)
+        edge = svc.metrics_v1(metric="EDGE_SCORE", scope="VARIANT", variant_id=variant_id)
+        buy_v = float((buy.get("points") or [{}])[0].get("value") or 0.0)
+        edge_v = float((edge.get("points") or [{}])[0].get("value") or 0.0)
+        self.assertAlmostEqual(buy_v, round(edge_v * 100.0, 1), places=6)
 
     def test_metrics_v1_market_liquidity_heatmap_contains_6h_bucket(self) -> None:
         svc = GiftAnalyticsService()
