@@ -4,7 +4,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.parse import quote
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import server
 from core import GiftAnalyticsService
@@ -59,6 +59,17 @@ class TestV1HttpContract(unittest.TestCase):
 
     def _get_json(self, path: str, timeout: float = 10.0):
         with urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            return resp.status, json.loads(body)
+
+    def _post_json(self, path: str, payload: dict, timeout: float = 10.0):
+        req = Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
             return resp.status, json.loads(body)
 
@@ -151,6 +162,44 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertEqual(cm.exception.code, 400)
         payload = json.loads(cm.exception.read().decode("utf-8"))
         self.assertIn("unsupported_scope", str(payload.get("error") or ""))
+
+    def test_endpoint_limit_validation_ranges(self) -> None:
+        with self.assertRaises(HTTPError) as cm_col:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/collections?limit=201", timeout=10)
+        self.assertEqual(cm_col.exception.code, 400)
+        payload_col = json.loads(cm_col.exception.read().decode("utf-8"))
+        self.assertIn("invalid_limit_range", str(payload_col.get("error") or ""))
+
+        with self.assertRaises(HTTPError) as cm_var:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/variants?limit=0", timeout=10)
+        self.assertEqual(cm_var.exception.code, 400)
+        payload_var = json.loads(cm_var.exception.read().decode("utf-8"))
+        self.assertIn("invalid_limit_range", str(payload_var.get("error") or ""))
+
+        with self.assertRaises(HTTPError) as cm_sig:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/signals?limit=999", timeout=10)
+        self.assertEqual(cm_sig.exception.code, 400)
+        payload_sig = json.loads(cm_sig.exception.read().decode("utf-8"))
+        self.assertIn("invalid_limit_range", str(payload_sig.get("error") or ""))
+
+        with self.assertRaises(HTTPError) as cm_met:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/metrics?metric=MARKET_INDEX&scope=MARKET&limit=9000", timeout=10)
+        self.assertEqual(cm_met.exception.code, 400)
+        payload_met = json.loads(cm_met.exception.read().decode("utf-8"))
+        self.assertIn("invalid_limit_range", str(payload_met.get("error") or ""))
+
+    def test_alerts_endpoint_requires_name_and_rule_json(self) -> None:
+        with self.assertRaises(HTTPError) as cm_name:
+            self._post_json("/v1/alerts", {"rule_json": {"foo": "bar"}})
+        self.assertEqual(cm_name.exception.code, 400)
+        payload_name = json.loads(cm_name.exception.read().decode("utf-8"))
+        self.assertIn("name_required", str(payload_name.get("error") or ""))
+
+        with self.assertRaises(HTTPError) as cm_rule:
+            self._post_json("/v1/alerts", {"name": "my-alert", "rule_json": "bad"})
+        self.assertEqual(cm_rule.exception.code, 400)
+        payload_rule = json.loads(cm_rule.exception.read().decode("utf-8"))
+        self.assertIn("rule_json_required", str(payload_rule.get("error") or ""))
 
     def test_stream_endpoint_rejects_unknown_type(self) -> None:
         with self.assertRaises(HTTPError) as cm:

@@ -2856,6 +2856,82 @@ class GiftAnalyticsService:
             raise ValueError(f"unsupported_interval:{raw}")
         return mapping[raw]
 
+    def _extract_serial_number(self, variant: dict) -> int | None:
+        metrics = variant.get("metrics") if isinstance(variant, dict) else {}
+        traits = variant.get("traits") if isinstance(variant, dict) else {}
+        candidates = [
+            (metrics or {}).get("serial"),
+            (metrics or {}).get("serial_no"),
+            (metrics or {}).get("serial_num"),
+            (metrics or {}).get("number"),
+            (traits or {}).get("serial"),
+            (traits or {}).get("number"),
+        ]
+        for raw in candidates:
+            if raw in (None, ""):
+                continue
+            try:
+                return int(raw)
+            except Exception:
+                digits = "".join(ch for ch in str(raw) if ch.isdigit())
+                if digits:
+                    try:
+                        return int(digits)
+                    except Exception:
+                        continue
+        return None
+
+    def _serial_bonus(self, variant: dict) -> float:
+        serial = self._extract_serial_number(variant)
+        if serial is None or serial <= 0:
+            return 0.0
+        if serial == 1:
+            return 0.8
+        if serial <= 3:
+            return 0.5
+        if serial <= 10:
+            return 0.25
+        return 0.0
+
+    def _trait_rarity_score(self, variant: dict) -> float:
+        base_id = str((variant or {}).get("base_id") or "")
+        if not base_id:
+            return 0.0
+        same_base = [row for row in self.variants.values() if str((row or {}).get("base_id") or "") == base_id]
+        total = len(same_base)
+        if total <= 1:
+            return 0.0
+        variant_traits = (variant or {}).get("traits") or {}
+        dims = ("model", "background", "pattern")
+        scores: list[float] = []
+        for dim in dims:
+            target_dim = variant_traits.get(dim) or {}
+            target_id = str(target_dim.get("id") or target_dim.get("name") or "").strip().lower()
+            if not target_id:
+                continue
+            freq = 0
+            for row in same_base:
+                row_dim = ((row or {}).get("traits") or {}).get(dim) or {}
+                row_id = str(row_dim.get("id") or row_dim.get("name") or "").strip().lower()
+                if row_id == target_id:
+                    freq += 1
+            score = 1.0 - ((max(1, freq) - 1.0) / max(1.0, float(total - 1)))
+            scores.append(_clamp(score, 0.0, 1.0))
+        return float(_safe_mean(scores)) if scores else 0.0
+
+    def _rarity_score_for_variant(self, variant: dict) -> float:
+        trait_score = self._trait_rarity_score(variant)
+        serial_bonus = self._serial_bonus(variant)
+        serial_norm = _clamp(serial_bonus / 0.8, 0.0, 1.0) if serial_bonus > 0 else 0.0
+        if trait_score > 0 and serial_norm > 0:
+            return _clamp(0.5 * trait_score + 0.5 * serial_norm, 0.0, 1.0)
+        if serial_norm > 0:
+            return serial_norm
+        if trait_score > 0:
+            return trait_score
+        active_lots = int(((variant or {}).get("metrics") or {}).get("active_listings") or 0)
+        return _clamp(1.0 / max(1.0, float(active_lots)), 0.0, 1.0)
+
     def _strict_formula_inputs(self, v: dict) -> dict:
         metrics = v.get("metrics") or {}
         variant_id = str(v.get("variant_id") or "")
@@ -4554,7 +4630,7 @@ class GiftAnalyticsService:
                     "BUY_WALL_SCORE": float(buy_wall),
                     "WHALE_RATIO": float(whale_ratio),
                     "WHALE_IMPULSE": float(whale_impulse),
-                    "RARITY_SCORE": _clamp(1.0 / max(1, int(mm.get("active_lots") or 1)), 0.0, 1.0),
+                    "RARITY_SCORE": float(self._rarity_score_for_variant(v)),
                 }
                 points = [{"ts": now_iso, "value": float(value_map.get(metric_name, 0.0))}]
 

@@ -1458,7 +1458,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 limit = int((params.get("limit") or ["50"])[0])
             except Exception:
-                limit = 50
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 200:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             cursor = (params.get("cursor") or [None])[0]
             _json_response(self, _state().collections_v1(q=q, limit=limit, cursor=cursor), cache_control="no-store")
             return
@@ -1495,7 +1499,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 limit = int((params.get("limit") or ["50"])[0])
             except Exception:
-                limit = 50
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 200:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             cursor = (params.get("cursor") or [None])[0]
             try:
                 data = _state().variants_v1(
@@ -1543,7 +1551,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 limit = int((params.get("limit") or ["50"])[0])
             except Exception:
-                limit = 50
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 200:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             cursor = (params.get("cursor") or [None])[0]
             try:
                 data = _state().signals_v1(signal_type=signal_type, min_score=min_score, since=since, limit=limit, cursor=cursor, mode=mode)
@@ -1770,7 +1782,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 limit = int((params.get("limit") or ["500"])[0])
             except Exception:
-                limit = 500
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 5000:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             try:
                 payload = _state().metrics_v1(
                     metric=metric,
@@ -2096,7 +2112,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             payload = _read_json_body(self)
             rule_id = payload.get("rule_id")
             name = str(payload.get("name") or "").strip() or "alert"
-            rule_json = payload.get("rule_json") if isinstance(payload.get("rule_json"), dict) else {}
+            if not str(payload.get("name") or "").strip():
+                _json_response(self, {"ok": False, "error": "name_required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if not isinstance(payload.get("rule_json"), dict):
+                _json_response(self, {"ok": False, "error": "rule_json_required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            rule_json = payload.get("rule_json") or {}
             enabled = bool(payload.get("enabled", True))
             rule_payload = {"id": rule_id, "name": name, "enabled": enabled, **rule_json}
             if rule_id:

@@ -128,6 +128,40 @@ class TestV1MetricsContract(unittest.TestCase):
         wall = svc.metrics_v1(metric="BUY_WALL_SCORE", scope="VARIANT", variant_id=variant_id)
         self.assertGreater(float((wall.get("points") or [{}])[0].get("value") or 0.0), 0.0)
 
+    def test_metrics_v1_rarity_score_uses_trait_frequency_and_serial_bonus(self) -> None:
+        svc = GiftAnalyticsService()
+        target_variant_id = "c|m1|b1|p1"
+        svc.variants = {
+            target_variant_id: {
+                "variant_id": target_variant_id,
+                "base_id": "c",
+                "metrics": {"floor_ton": 5.0, "median_ton": 6.0, "trades_count_24h": 4, "active_listings": 10, "serial_no": 1},
+                "traits": {"model": {"id": "m1"}, "background": {"id": "b1"}, "pattern": {"id": "p1"}},
+            },
+            "c|m1|b2|p2": {
+                "variant_id": "c|m1|b2|p2",
+                "base_id": "c",
+                "metrics": {"floor_ton": 5.1, "median_ton": 5.5, "trades_count_24h": 3, "active_listings": 5},
+                "traits": {"model": {"id": "m1"}, "background": {"id": "b2"}, "pattern": {"id": "p2"}},
+            },
+            "c|m2|b1|p3": {
+                "variant_id": "c|m2|b1|p3",
+                "base_id": "c",
+                "metrics": {"floor_ton": 5.2, "median_ton": 5.4, "trades_count_24h": 2, "active_listings": 4},
+                "traits": {"model": {"id": "m2"}, "background": {"id": "b1"}, "pattern": {"id": "p3"}},
+            },
+            "c|m3|b3|p3": {
+                "variant_id": "c|m3|b3|p3",
+                "base_id": "c",
+                "metrics": {"floor_ton": 5.3, "median_ton": 5.6, "trades_count_24h": 1, "active_listings": 3},
+                "traits": {"model": {"id": "m3"}, "background": {"id": "b3"}, "pattern": {"id": "p3"}},
+            },
+        }
+        payload = svc.metrics_v1(metric="RARITY_SCORE", scope="VARIANT", variant_id=target_variant_id)
+        rarity = float((payload.get("points") or [{}])[0].get("value") or 0.0)
+        # trait_score = mean([2/3, 2/3, 1]) = 0.777..., serial_norm(1)=1.0 => score ~ 0.8889
+        self.assertAlmostEqual(rarity, (0.7777777778 + 1.0) / 2.0, places=4)
+
     def test_metrics_v1_market_floor_history_and_depth(self) -> None:
         svc = GiftAnalyticsService()
         now = datetime.now(timezone.utc)
