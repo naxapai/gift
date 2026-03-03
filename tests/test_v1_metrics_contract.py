@@ -1,7 +1,7 @@
 import unittest
 from datetime import timedelta, timezone, datetime
 
-from core import GiftAnalyticsService
+from core import GiftAnalyticsService, METRIC_ALLOWED_SCOPES
 
 
 class TestV1MetricsContract(unittest.TestCase):
@@ -595,6 +595,57 @@ class TestV1MetricsContract(unittest.TestCase):
 
         variant_metric = svc.metrics_v1(metric="FLOOR_REALTIME", scope="VARIANT", variant_id=listing_id)
         self.assertEqual(variant_metric["variant_id"], real_variant_id)
+
+    def test_metrics_v1_all_allowed_metric_scope_combinations_are_queryable(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime.now(timezone.utc)
+        variant_id = "all|m|b|p"
+        collection_id = "all"
+        svc.variants = {
+            variant_id: {
+                "variant_id": variant_id,
+                "base_id": collection_id,
+                "metrics": {
+                    "floor_ton": 9.0,
+                    "median_ton": 11.0,
+                    "trades_count_24h": 20,
+                    "active_listings": 12,
+                    "serial_no": 3,
+                },
+                "traits": {
+                    "model": {"id": "m", "name": "M"},
+                    "background": {"id": "b", "name": "B"},
+                    "pattern": {"id": "p", "name": "P"},
+                },
+            }
+        }
+        svc.variant_history = {
+            variant_id: [
+                {"ts": (now - timedelta(minutes=30)).isoformat().replace("+00:00", "Z"), "floor_ton": 8.8, "active_listings": 13, "new_listings": 2},
+                {"ts": (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z"), "floor_ton": 9.0, "active_listings": 12, "new_listings": 1},
+            ]
+        }
+        svc.trade_events = [
+            {"ts": (now - timedelta(minutes=20)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": collection_id, "price_ton": 9.2},
+            {"ts": (now - timedelta(minutes=10)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": collection_id, "price_ton": 9.3},
+            {"ts": (now - timedelta(minutes=2)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": collection_id, "price_ton": 9.4},
+        ]
+        svc.listing_state = {
+            "all-1": {"listing_id": "all-1", "base_id": collection_id, "variant_id": variant_id, "status": "ACTIVE", "price_ton": 9.0},
+            "all-2": {"listing_id": "all-2", "base_id": collection_id, "variant_id": variant_id, "status": "ACTIVE", "price_ton": 9.1},
+        }
+        for metric, scopes in METRIC_ALLOWED_SCOPES.items():
+            for scope in sorted(scopes):
+                kwargs = {"metric": metric, "scope": scope, "limit": 10}
+                if scope == "COLLECTION":
+                    kwargs["collection_id"] = collection_id
+                elif scope == "VARIANT":
+                    kwargs["variant_id"] = variant_id
+                payload = svc.metrics_v1(**kwargs)
+                self.assertEqual(payload["metric"], metric)
+                self.assertEqual(payload["scope"], scope)
+                self.assertTrue(isinstance(payload.get("points"), list))
+                self.assertTrue(len(payload.get("points") or []) >= 1, f"no points for {metric}:{scope}")
 
 
 if __name__ == "__main__":

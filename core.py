@@ -609,6 +609,7 @@ class GiftAnalyticsService:
         self.listing_mt_api_token_prefix = str(os.getenv("LISTING_MT_API_TOKEN_PREFIX", "Bearer ") or "")
         self.listing_mt_api_timeout_sec = max(3.0, float(os.getenv("LISTING_MT_API_TIMEOUT_SEC", "8")))
         self.listing_mt_cache_ttl_sec = max(1.0, float(os.getenv("LISTING_MT_CACHE_TTL_SEC", "2")))
+        self.metrics_strict_exact_max_variants = max(50, int(os.getenv("METRICS_STRICT_EXACT_MAX_VARIANTS", "500")))
         self.redis_collections_publish_limit = max(1, min(int(os.getenv("REDIS_COLLECTIONS_PUBLISH_LIMIT", "24")), 200))
         self.redis_collection_floor_series_limit = max(1, min(int(os.getenv("REDIS_COLLECTION_FLOOR_SERIES_LIMIT", "200")), 1000))
         self.redis_variant_listings_head_limit = max(1, min(int(os.getenv("REDIS_VARIANT_LISTINGS_HEAD_LIMIT", "50")), 500))
@@ -3069,6 +3070,55 @@ class GiftAnalyticsService:
             "volume30m_ton": round(volume30m, 6),
         }
 
+    def _strict_index_trend_fast_inputs(self, v: dict) -> dict:
+        metrics = v.get("metrics") or {}
+        floor_ton = float(metrics.get("floor_ton") or 0.0)
+        median_24h = float(metrics.get("median_ton") or metrics.get("vwap_ton_24h") or metrics.get("vwap_ton") or floor_ton or 0.0)
+        fair_ton = (0.7 * median_24h + 0.3 * floor_ton) if (median_24h > 0 or floor_ton > 0) else 0.0
+        undervalue = ((fair_ton - floor_ton) / fair_ton) if fair_ton > 0 else 0.0
+
+        sales24h = int(metrics.get("trades_count_24h") or 0)
+        active_lots = int(metrics.get("active_listings") or 0)
+        liquidity_score = _clamp(float(sales24h) / 1000.0, 0.0, 1.0)
+        listing_pressure = active_lots / max(sales24h, 1)
+        listing_pressure_norm = _clamp(listing_pressure / 3.0, 0.0, 1.0)
+
+        volume_velocity = float(metrics.get("volume_velocity_24h") or metrics.get("volume_velocity") or 1.0)
+        volume_velocity_norm = _clamp(volume_velocity / 2.0, 0.0, 1.0)
+        if "volume_velocity_24h" not in metrics and "volume_velocity" not in metrics:
+            trades_1h = float(metrics.get("trades_count_1h") or 0.0)
+            volume_velocity_norm = 0.5 if trades_1h > 0 else 0.0
+
+        new_listings_24h = float(metrics.get("new_listings_24h") or 0.0)
+        sales_30m = float(sales24h) / 48.0
+        new_30m = new_listings_24h / 48.0
+        absorption_rate = sales_30m / max(new_30m, 1.0) if new_listings_24h > 0 else 0.0
+        absorption_rate_norm = _clamp(absorption_rate / 2.0, 0.0, 1.0)
+
+        edge_raw = (
+            0.45 * _clamp(undervalue, 0.0, 1.0)
+            + 0.25 * liquidity_score
+            + 0.15 * volume_velocity_norm
+            + 0.15 * absorption_rate_norm
+            - 0.2 * listing_pressure_norm
+        )
+        edge_score = _clamp(edge_raw, 0.0, 1.0)
+        return {
+            "score100": round(edge_score * 100.0, 1),
+            "trend_t": round(_clamp((volume_velocity_norm + absorption_rate_norm) / 2.0, 0.0, 1.0), 6),
+        }
+
+    def _strict_index_trend_rows(self, variants: list[dict], now_dt: datetime) -> list[dict]:
+        if not variants:
+            return []
+        if len(variants) > self.metrics_strict_exact_max_variants:
+            return [self._strict_index_trend_fast_inputs(v) for v in variants]
+        rows: list[dict] = []
+        for v in variants:
+            mm = self._strict_formula_inputs(v)
+            rows.append({"score100": float(mm.get("score100") or 0.0), "trend_t": float(mm.get("trend_t") or 0.0)})
+        return rows
+
     def _active_listing_prices(
         self,
         variant_id: str | None = None,
@@ -4745,7 +4795,7 @@ class GiftAnalyticsService:
             if not variants_in_collection:
                 raise ValueError("collection_not_found")
             rows = self.variants_v1(collection_id=col_id, limit=5000, mode=eff_mode).get("items") or []
-            strict_rows = [self._strict_formula_inputs(v) for v in variants_in_collection]
+            strict_rows: list[dict] | None = None
             variant_ids = {str(v.get("variant_id") or "") for v in variants_in_collection if str(v.get("variant_id") or "")}
             if metric_name == "FLOOR_HISTORY":
                 points = self._aggregate_variant_series_for_collection(
@@ -4786,14 +4836,18 @@ class GiftAnalyticsService:
                 events = [e for e in raw_events if str((e or {}).get("gift_id") or "").strip().lower() == col_id_norm]
                 points = [{"ts": now_iso, "value": float(len(events)), "extra": {"items": events[:50]}}]
             elif metric_name == "FLOOR_REALTIME":
-                strict_floors = [float(r.get("floor_ton") or 0.0) for r in strict_rows if float(r.get("floor_ton") or 0.0) > 0]
+                strict_floors = [float((v.get("metrics") or {}).get("floor_ton") or 0.0) for v in variants_in_collection if float((v.get("metrics") or {}).get("floor_ton") or 0.0) > 0]
                 fallback_floor = min(strict_floors) if strict_floors else 0.0
                 value = self._collection_floor_realtime(collection_id=col_id, fallback=float(fallback_floor))
                 points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "MARKET_INDEX":
+                if strict_rows is None:
+                    strict_rows = self._strict_index_trend_rows(variants_in_collection, now_dt)
                 value = _safe_mean([float(r.get("score100") or 0.0) for r in strict_rows])
                 points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "TREND_SCORE":
+                if strict_rows is None:
+                    strict_rows = self._strict_index_trend_rows(variants_in_collection, now_dt)
                 value = _safe_mean([float(r.get("trend_t") or 0.0) for r in strict_rows])
                 points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "LIQUIDITY_SCORE":
@@ -4855,7 +4909,7 @@ class GiftAnalyticsService:
             overview = self.overview_v1(mode=eff_mode)
             market_summary = self.market_overview()
             variant_ids = {str(v.get("variant_id") or "") for v in self.variants.values() if str(v.get("variant_id") or "")}
-            strict_rows = [self._strict_formula_inputs(v) for v in self.variants.values()]
+            strict_rows: list[dict] | None = None
             if metric_name == "SUPPLY_CHART":
                 points = self._aggregate_variant_series_for_market(
                     field="active_listings",
@@ -4909,9 +4963,13 @@ class GiftAnalyticsService:
                 _, value, thr = self._whale_ratio_and_impulse(now_dt, variant_ids=variant_ids)
                 points = [{"ts": now_iso, "value": float(value), "extra": {"whale_thr_ton": round(float(thr), 6)}}]
             elif metric_name == "MARKET_INDEX":
+                if strict_rows is None:
+                    strict_rows = self._strict_index_trend_rows(list(self.variants.values()), now_dt)
                 value = _safe_mean([float(r.get("score100") or 0.0) for r in strict_rows]) if strict_rows else float(overview.get("market_index") or 0.0)
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "TREND_SCORE":
+                if strict_rows is None:
+                    strict_rows = self._strict_index_trend_rows(list(self.variants.values()), now_dt)
                 value = _safe_mean([float(r.get("trend_t") or 0.0) for r in strict_rows]) if strict_rows else 0.0
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "FLOOR_REALTIME":
