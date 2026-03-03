@@ -2933,13 +2933,12 @@ class GiftAnalyticsService:
     def _rarity_score_for_variant(self, variant: dict) -> float:
         trait_score = self._trait_rarity_score(variant)
         serial_bonus = self._serial_bonus(variant)
-        serial_norm = _clamp(serial_bonus / 0.8, 0.0, 1.0) if serial_bonus > 0 else 0.0
-        if trait_score > 0 and serial_norm > 0:
-            return _clamp(0.5 * trait_score + 0.5 * serial_norm, 0.0, 1.0)
-        if serial_norm > 0:
-            return serial_norm
-        if trait_score > 0:
-            return trait_score
+        # TZ formula shape: rarity_score = serial_bonus + trait_score.
+        # Keep API unit contract SCORE_0_1 by scaling trait component to 0..0.2.
+        trait_component = _clamp(float(trait_score), 0.0, 1.0) * 0.2
+        rarity_score = _clamp(float(serial_bonus) + trait_component, 0.0, 1.0)
+        if rarity_score > 0:
+            return rarity_score
         active_lots = int(((variant or {}).get("metrics") or {}).get("active_listings") or 0)
         return _clamp(1.0 / max(1.0, float(active_lots)), 0.0, 1.0)
 

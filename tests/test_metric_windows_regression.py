@@ -179,6 +179,38 @@ class TestMetricWindowsRegression(unittest.TestCase):
         self.assertEqual(velocity_market.get("min_value"), 0.0)
         self.assertEqual(velocity_market.get("max_value"), 100.0)
 
+    def test_rarity_score_serial_bonus_tiers_affect_result(self) -> None:
+        svc = GiftAnalyticsService()
+        base_id = "rar"
+        svc.variants = {
+            f"{base_id}|m1|b1|p1": {
+                "variant_id": f"{base_id}|m1|b1|p1",
+                "base_id": base_id,
+                "metrics": {"floor_ton": 1.0, "active_listings": 1, "serial_no": 1},
+                "traits": {"model": {"id": "m1"}, "background": {"id": "b1"}, "pattern": {"id": "p1"}},
+            },
+            f"{base_id}|m1|b2|p2": {
+                "variant_id": f"{base_id}|m1|b2|p2",
+                "base_id": base_id,
+                "metrics": {"floor_ton": 1.0, "active_listings": 1, "serial_no": 5},
+                "traits": {"model": {"id": "m1"}, "background": {"id": "b2"}, "pattern": {"id": "p2"}},
+            },
+            f"{base_id}|m2|b3|p3": {
+                "variant_id": f"{base_id}|m2|b3|p3",
+                "base_id": base_id,
+                "metrics": {"floor_ton": 1.0, "active_listings": 1, "serial_no": 20},
+                "traits": {"model": {"id": "m2"}, "background": {"id": "b3"}, "pattern": {"id": "p3"}},
+            },
+        }
+        s1 = svc.metrics_v1(metric="RARITY_SCORE", scope="VARIANT", variant_id=f"{base_id}|m1|b1|p1")
+        s5 = svc.metrics_v1(metric="RARITY_SCORE", scope="VARIANT", variant_id=f"{base_id}|m1|b2|p2")
+        s20 = svc.metrics_v1(metric="RARITY_SCORE", scope="VARIANT", variant_id=f"{base_id}|m2|b3|p3")
+        v1 = float((s1.get("points") or [{}])[0].get("value") or 0.0)
+        v5 = float((s5.get("points") or [{}])[0].get("value") or 0.0)
+        v20 = float((s20.get("points") or [{}])[0].get("value") or 0.0)
+        self.assertGreater(v1, v5)
+        self.assertGreater(v5, v20)
+
 
 if __name__ == "__main__":
     unittest.main()

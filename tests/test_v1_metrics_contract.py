@@ -183,8 +183,9 @@ class TestV1MetricsContract(unittest.TestCase):
         }
         payload = svc.metrics_v1(metric="RARITY_SCORE", scope="VARIANT", variant_id=target_variant_id)
         rarity = float((payload.get("points") or [{}])[0].get("value") or 0.0)
-        # trait_score = mean([2/3, 2/3, 1]) = 0.777..., serial_norm(1)=1.0 => score ~ 0.8889
-        self.assertAlmostEqual(rarity, (0.7777777778 + 1.0) / 2.0, places=4)
+        # trait_score = mean([2/3, 2/3, 1]) = 0.777...
+        # TZ-aligned rarity in SCORE_0_1 contract: serial_bonus(1)=0.8 + 0.2*trait_score
+        self.assertAlmostEqual(rarity, 0.8 + (0.2 * 0.7777777778), places=4)
 
     def test_metrics_v1_market_floor_history_and_depth(self) -> None:
         svc = GiftAnalyticsService()
