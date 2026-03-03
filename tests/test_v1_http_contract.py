@@ -254,6 +254,19 @@ class TestV1HttpContract(unittest.TestCase):
         payload = json.loads(cm.exception.read().decode("utf-8"))
         self.assertEqual(payload.get("error"), "unsupported_stream_type")
 
+    def test_stream_endpoint_rejects_invalid_heartbeat(self) -> None:
+        with self.assertRaises(HTTPError) as cm_nonint:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/stream?heartbeat=abc", timeout=10)
+        self.assertEqual(cm_nonint.exception.code, 400)
+        payload_nonint = json.loads(cm_nonint.exception.read().decode("utf-8"))
+        self.assertEqual(payload_nonint.get("error"), "invalid_heartbeat")
+
+        with self.assertRaises(HTTPError) as cm_range:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/stream?heartbeat=1000", timeout=10)
+        self.assertEqual(cm_range.exception.code, 400)
+        payload_range = json.loads(cm_range.exception.read().decode("utf-8"))
+        self.assertEqual(payload_range.get("error"), "invalid_heartbeat_range")
+
     def test_stream_endpoint_metric_updated_envelope(self) -> None:
         with urlopen(
             f"http://127.0.0.1:{self.port}/v1/stream?types=metric.updated&heartbeat=5000",

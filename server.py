@@ -1265,6 +1265,22 @@ def _tonconnect_manifest(handler: BaseHTTPRequestHandler) -> None:
 class RequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    @staticmethod
+    def _is_benign_disconnect(exc: BaseException) -> bool:
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return True
+        if isinstance(exc, OSError):
+            return getattr(exc, "errno", None) in {32, 54, 104}
+        return False
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except BaseException as exc:
+            if self._is_benign_disconnect(exc):
+                return
+            raise
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
@@ -1854,8 +1870,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 heartbeat_ms = int((params.get("heartbeat") or ["15000"])[0])
             except Exception:
-                heartbeat_ms = 15000
-            heartbeat_ms = max(5000, min(60000, heartbeat_ms))
+                _json_response(self, {"ok": False, "error": "invalid_heartbeat"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if heartbeat_ms < 5000 or heartbeat_ms > 60000:
+                _json_response(self, {"ok": False, "error": "invalid_heartbeat_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             sleep_sec = max(1.0, heartbeat_ms / 1000.0)
 
             self.send_response(HTTPStatus.OK)
