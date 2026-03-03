@@ -1838,15 +1838,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             while time.time() < deadline:
                 overview = _state().overview_v1()
                 updated = str((_state().state or {}).get("updated_at") or "")
-                if updated != last_updated:
-                    last_updated = updated
-                    for ev in _state().stream_events_v1(types=types, mode=mode):
-                        ev_name = str(ev.get("type") or "provider.health")
-                        self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
-                        self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
-                else:
-                    self.wfile.write(b": keepalive\n\n")
-                self.wfile.flush()
+                try:
+                    if updated != last_updated:
+                        last_updated = updated
+                        for ev in _state().stream_events_v1(types=types, mode=mode):
+                            ev_name = str(ev.get("type") or "provider.health")
+                            self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
+                            self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
+                    else:
+                        self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    break
                 time.sleep(sleep_sec)
             return
 

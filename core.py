@@ -1496,13 +1496,35 @@ class GiftAnalyticsService:
 
     def _volatility(self, history: List[dict], now: datetime, seconds: int) -> float:
         cutoff = now - timedelta(seconds=seconds)
-        series = [h.get("floor_ton") for h in history if _parse_ts(h.get("ts")) >= cutoff and h.get("floor_ton")]
-        if not series:
+        series: list[tuple[datetime, float]] = []
+        for h in history:
+            ts = _parse_ts(h.get("ts"))
+            if ts < cutoff:
+                continue
+            try:
+                price = float(h.get("floor_ton") or 0.0)
+            except Exception:
+                continue
+            if price > 0 and math.isfinite(price):
+                series.append((ts, price))
+        if len(series) < 2:
             return 0.0
-        mean_val = _safe_mean(series)
-        if mean_val == 0:
+        series.sort(key=lambda x: x[0])
+        log_returns: list[float] = []
+        for idx in range(1, len(series)):
+            prev = series[idx - 1][1]
+            cur = series[idx][1]
+            if prev <= 0 or cur <= 0:
+                continue
+            try:
+                lr = math.log(cur / prev)
+            except Exception:
+                continue
+            if math.isfinite(lr):
+                log_returns.append(lr)
+        if len(log_returns) < 2:
             return 0.0
-        return _safe_pstdev(series) / mean_val
+        return float(_safe_pstdev(log_returns) * math.sqrt(len(log_returns)))
 
     def _floor_series(self, history: List[dict], now: datetime, seconds: int) -> List[float]:
         cutoff = now - timedelta(seconds=seconds)

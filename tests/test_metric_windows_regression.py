@@ -1,4 +1,5 @@
 import unittest
+import math
 from datetime import datetime, timedelta, timezone
 
 from core import GiftAnalyticsService
@@ -54,6 +55,27 @@ class TestMetricWindowsRegression(unittest.TestCase):
         self.assertIn("1h", buckets)
         self.assertIn("6h", buckets)
         self.assertIn("24h", buckets)
+
+    def test_volatility_uses_log_returns_scaled_by_sqrt_n(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime.now(timezone.utc)
+        history = [
+            {"ts": (now - timedelta(minutes=4)).isoformat().replace("+00:00", "Z"), "floor_ton": 10.0},
+            {"ts": (now - timedelta(minutes=3)).isoformat().replace("+00:00", "Z"), "floor_ton": 11.0},
+            {"ts": (now - timedelta(minutes=2)).isoformat().replace("+00:00", "Z"), "floor_ton": 10.5},
+            {"ts": (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"), "floor_ton": 11.5},
+        ]
+
+        got = float(svc._volatility(history, now, 600))  # noqa: SLF001
+        lrs = [
+            math.log(11.0 / 10.0),
+            math.log(10.5 / 11.0),
+            math.log(11.5 / 10.5),
+        ]
+        mean_lr = sum(lrs) / len(lrs)
+        variance = sum((x - mean_lr) ** 2 for x in lrs) / len(lrs)
+        expected = math.sqrt(variance) * math.sqrt(len(lrs))
+        self.assertAlmostEqual(got, expected, places=10)
 
 
 if __name__ == "__main__":
