@@ -2016,7 +2016,15 @@ function renderListingStats() {
   if (el.listingSourceNote) {
     const src = String(s.source || "fragment.verified_snapshot");
     const err = String(s.source_error || "");
-    el.listingSourceNote.textContent = err ? `Источник: ${src} (fallback, err: ${err})` : `Источник: ${src}`;
+    const activeTotal = Number(s.active_total || 0);
+    const transientUpstreamErr = /(HTTP Error 50\d|Bad Gateway|Gateway Timeout|Service Unavailable|upstream.*(?:timeout|unavailable))/i.test(err);
+    if (src === "fragment.verified_snapshot" && activeTotal > 0 && (!err || transientUpstreamErr)) {
+      el.listingSourceNote.textContent = "Источник: fragment.verified_snapshot (резервный режим)";
+    } else if (err) {
+      el.listingSourceNote.textContent = `Источник: ${src} (ошибка источника)`;
+    } else {
+      el.listingSourceNote.textContent = `Источник: ${src}`;
+    }
   }
 }
 
@@ -2843,7 +2851,6 @@ async function loadListingPage() {
   ]);
   const mergedSummary = { ...(summary || {}) };
   if (!mergedSummary.source && rows?.source) mergedSummary.source = rows.source;
-  if (!mergedSummary.source_error && rows?.source_error) mergedSummary.source_error = rows.source_error;
   state.listingFeed.summary = mergedSummary;
   state.listingFeed.items = Array.isArray(rows?.items) ? rows.items : [];
   state.listingFeed.signals = Array.isArray(listingSignals?.items) ? listingSignals.items : [];
