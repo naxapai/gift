@@ -62,7 +62,7 @@ class TestV1MetricsContract(unittest.TestCase):
     def test_metrics_v1_variant_trend_score_is_not_stub_zero(self) -> None:
         svc = GiftAnalyticsService()
         variant_id = "x|m|b|p"
-        svc.variants[variant_id] = {
+        variant = {
             "variant_id": variant_id,
             "base_id": "x",
             "metrics": {
@@ -75,8 +75,11 @@ class TestV1MetricsContract(unittest.TestCase):
             "traits": {"model": {"name": "M"}, "background": {"name": "B"}, "pattern": {"name": "P"}},
             "updated_at": "2026-02-26T00:00:00Z",
         }
+        svc.variants[variant_id] = variant
         payload = svc.metrics_v1(metric="TREND_SCORE", variant_id=variant_id, scope="VARIANT", mode="tz")
         value = float((payload.get("points") or [{}])[0].get("value") or 0.0)
+        expected = float(svc._tz_signal_math(variant).get("trend_t") or 0.0)  # noqa: SLF001
+        self.assertAlmostEqual(value, expected, places=6)
         self.assertGreater(value, 0.0)
         self.assertLessEqual(value, 1.0)
 

@@ -124,12 +124,20 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertIn("listings", payload_var_d)
         self.assertIn("breakdown", payload_var_d)
 
-        status_sig, payload_sig = self._get_json("/v1/signals?limit=1")
+        status_sig, payload_sig = self._get_json("/v1/signals?limit=20")
         self.assertEqual(status_sig, 200)
         self.assertIn("items", payload_sig)
         self.assertTrue(isinstance(payload_sig.get("items"), list))
-        if payload_sig.get("items"):
-            sig_id = str((payload_sig.get("items") or [{}])[0].get("signal_id") or "")
+        seeded_signal = next(
+            (
+                row
+                for row in (payload_sig.get("items") or [])
+                if str((row or {}).get("variant_id") or "") == "x|m|b|p"
+            ),
+            None,
+        )
+        if isinstance(seeded_signal, dict):
+            sig_id = str(seeded_signal.get("signal_id") or "")
             status_sig_d, payload_sig_d = self._get_json(f"/v1/signals/{quote(sig_id)}")
             self.assertEqual(status_sig_d, 200)
             self.assertEqual(str(payload_sig_d.get("signal_id") or ""), sig_id)

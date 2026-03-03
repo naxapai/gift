@@ -167,6 +167,7 @@ class TestMetricWindowsRegression(unittest.TestCase):
         market_index = by_pair.get(("MARKET_INDEX", "MARKET")) or {}
         trend_market = by_pair.get(("TREND_SCORE", "MARKET")) or {}
         trend_variant = by_pair.get(("TREND_SCORE", "VARIANT")) or {}
+        velocity_market = by_pair.get(("VELOCITY_SCORE", "MARKET")) or {}
         self.assertEqual(edge.get("min_value"), 0.0)
         self.assertEqual(edge.get("max_value"), 1.0)
         self.assertEqual(market_index.get("min_value"), 0.0)
@@ -175,6 +176,8 @@ class TestMetricWindowsRegression(unittest.TestCase):
         self.assertEqual(trend_market.get("max_value"), 1.0)
         self.assertEqual(trend_variant.get("min_value"), 0.0)
         self.assertEqual(trend_variant.get("max_value"), 1.0)
+        self.assertEqual(velocity_market.get("min_value"), 0.0)
+        self.assertEqual(velocity_market.get("max_value"), 100.0)
 
 
 if __name__ == "__main__":
