@@ -5133,6 +5133,8 @@ class GiftAnalyticsService:
             if rows:
                 source = "mtproto_snapshot"
                 updated_at = self.mt_listings_snapshot.get("updated_at") if isinstance(self.mt_listings_snapshot, dict) else None
+                # Snapshot is a valid degraded datasource; keep UI/API healthy without bubbling transient upstream errors.
+                error = ""
 
         cache.update(
             {

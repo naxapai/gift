@@ -110,6 +110,47 @@ class TestListingsV1(unittest.TestCase):
             # Even in mtproto mode system must remain available via runtime fallback.
             self.assertTrue(str(payload.get("source") or "").strip() != "")
 
+    def test_listings_summary_prefers_mtproto_snapshot_without_surface_error(self) -> None:
+        with patch.dict("os.environ", {"LISTING_PRIMARY_SOURCE": "mtproto", "LISTING_MT_API_URL": "http://127.0.0.1:9/never"}, clear=False):
+            svc = GiftAnalyticsService()
+            now_iso = "2026-02-26T00:00:00Z"
+            svc.mt_listings_snapshot = {
+                "updated_at": now_iso,
+                "items": [
+                    {
+                        "listing_key": "berryboxes:1",
+                        "gift_id": "berryboxes",
+                        "gift_type_id": "123",
+                        "unique_id": "1",
+                        "variant_id": "berryboxes|clarity|black|baphomet",
+                        "num": 1,
+                        "slug": "BerryBoxes-1",
+                        "title": "Berry Boxes",
+                        "collection": "Berry Boxes",
+                        "collection_id": "berryboxes",
+                        "resell_currency": "TON",
+                        "currency_mode": "TON_ONLY",
+                        "resell_amount_ton": 10.0,
+                        "resell_amount_stars_est": 5000,
+                        "attributes": {"model": "Clarity", "background": "Black", "pattern": "Baphomet"},
+                        "status": "ACTIVE",
+                        "sale_type": "FIXED",
+                        "preview_url": "",
+                        "ts_detected": now_iso,
+                        "first_seen_at": now_iso,
+                        "last_seen_at": now_iso,
+                        "relist_count": 0,
+                        "last_relisted_at": None,
+                        "is_new": True,
+                        "source": "mtproto_api",
+                    }
+                ],
+            }
+            summary = svc.listings_summary_v1(new_window_sec=3600)
+            self.assertEqual(str(summary.get("source") or ""), "mtproto_snapshot")
+            self.assertEqual(str(summary.get("source_error") or ""), "")
+            self.assertGreaterEqual(int(summary.get("active_total") or 0), 1)
+
     def test_normalize_mt_listing_item_builds_variant_from_attrs(self) -> None:
         svc = GiftAnalyticsService()
         now = datetime(2026, 2, 26, 0, 0, 0, tzinfo=timezone.utc)
