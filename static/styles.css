@@ -1584,7 +1584,7 @@ body.booting #staleBanner {
 .listing-grid > .listing-filters-card { grid-column: span 3; }
 .listing-grid > .listing-summary-card { grid-column: span 3; }
 .listing-grid > .list-card { grid-column: span 6; }
-.listing-grid > .listing-signals-card { grid-column: span 6; }
+.listing-grid > .listing-signals-card { grid-column: 1 / -1; }
 
 .listing-signals-controls {
   display: grid;
