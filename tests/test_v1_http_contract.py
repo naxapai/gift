@@ -299,6 +299,17 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertIn("enabled", items_a[0])
         self.assertIn("created_at", items_a[0])
 
+        with self.assertRaises(HTTPError) as cm_alert_test_bad:
+            self._post_json("/v1/alerts/test", {})
+        self.assertEqual(cm_alert_test_bad.exception.code, 400)
+        payload_alert_test_bad = json.loads(cm_alert_test_bad.exception.read().decode("utf-8"))
+        self.assertIn("rule_id_required", str(payload_alert_test_bad.get("error") or ""))
+
+        any_rule_id = str(items_a[0].get("rule_id") or "")
+        status_alert_test_ok, payload_alert_test_ok = self._post_json("/v1/alerts/test", {"rule_id": any_rule_id})
+        self.assertEqual(status_alert_test_ok, 200)
+        self.assertTrue(bool(payload_alert_test_ok.get("ok")))
+
     def test_alerts_enabled_roundtrip_and_created_at(self) -> None:
         status_create, payload_create = self._post_json(
             "/v1/alerts",
@@ -358,6 +369,13 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertEqual(str(updated.get("rule_id") or ""), rule_id)
         self.assertEqual(str(updated.get("name") or ""), "alert-v2")
         self.assertTrue(bool(updated.get("enabled")))
+
+    def test_favorites_delete_requires_variant_id(self) -> None:
+        with self.assertRaises(HTTPError) as cm:
+            self._delete_json("/v1/favorites")
+        self.assertEqual(cm.exception.code, 400)
+        payload = json.loads(cm.exception.read().decode("utf-8"))
+        self.assertIn("variant_id_required", str(payload.get("error") or ""))
 
     def test_stream_endpoint_rejects_unknown_type(self) -> None:
         with self.assertRaises(HTTPError) as cm:
