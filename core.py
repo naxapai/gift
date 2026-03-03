@@ -2992,6 +2992,7 @@ class GiftAnalyticsService:
         mm["forecast24h_pct_min"] = round(forecast_min * 100.0, 1)
         mm["forecast24h_pct_max"] = round(forecast_max * 100.0, 1)
         mm["forecast_confidence"] = round(conf, 6)
+        mm["engine_mode"] = "tz_strict"
         return mm
 
     def _tz_signal_math(self, v: dict) -> dict:
@@ -3176,6 +3177,7 @@ class GiftAnalyticsService:
                 action_hint = "SKIP"
 
         return {
+            "engine_mode": "tz",
             "active_lots": active_lots,
             "price_ton": round(price_ton, 6),
             "floor_ton": round(floor_ton, 6),
@@ -3652,7 +3654,12 @@ class GiftAnalyticsService:
                 }
             )
         listings.sort(key=lambda x: float(x.get("price_ton") or 0.0))
-        breakdown = self._tz_signal_math(v) if eff_mode == "tz" else {"engine_mode": "legacy"}
+        if eff_mode == "tz":
+            breakdown = self._tz_signal_math(v)
+        elif eff_mode == "tz_strict":
+            breakdown = self._tz_signal_math_strict(v)
+        else:
+            breakdown = {"engine_mode": "legacy"}
         return {"variant": summary, "listings": listings, "breakdown": breakdown}
 
     def signals_v1(

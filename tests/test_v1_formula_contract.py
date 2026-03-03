@@ -45,7 +45,17 @@ class TestV1FormulaContract(unittest.TestCase):
         self.assertLessEqual(mm["forecast24h_pct_min"], mm["forecast24h_pct_max"])
         self.assertIn(mm["action_hint"], {"BUY", "SELL", "WATCH", "SKIP"})
 
+    def test_variant_details_v1_uses_tz_strict_breakdown(self) -> None:
+        svc = GiftAnalyticsService()
+        if not svc.variants:
+            self.skipTest("No variants loaded")
+        variant_id = next(iter(svc.variants.keys()))
+        payload = svc.variant_details_v1(variant_id, mode="tz_strict")
+        self.assertIsNotNone(payload)
+        breakdown = (payload or {}).get("breakdown") or {}
+        self.assertEqual(str(breakdown.get("engine_mode") or ""), "tz_strict")
+        self.assertIn(str(breakdown.get("action_hint") or ""), {"BUY", "SELL", "WATCH", "SKIP"})
+
 
 if __name__ == "__main__":
     unittest.main()
-
