@@ -4693,7 +4693,9 @@ class GiftAnalyticsService:
                 events = [e for e in raw_events if str((e or {}).get("gift_id") or "").strip().lower() == col_id_norm]
                 points = [{"ts": now_iso, "value": float(len(events)), "extra": {"items": events[:50]}}]
             elif metric_name == "FLOOR_REALTIME":
-                value = _safe_median([float(r.get("floor_ton") or 0.0) for r in rows if float(r.get("floor_ton") or 0.0) > 0])
+                # Collection floor is defined as the minimum active listing price in the collection.
+                floors = [float(r.get("floor_ton") or 0.0) for r in rows if float(r.get("floor_ton") or 0.0) > 0]
+                value = min(floors) if floors else 0.0
                 points = [{"ts": now_iso, "value": float(value)}]
             elif metric_name == "MARKET_INDEX":
                 value = _safe_mean([float(r.get("score100") or 0.0) for r in rows])
@@ -4820,7 +4822,15 @@ class GiftAnalyticsService:
                 value = _clamp((avg_24h + 100.0) / 200.0, 0.0, 1.0)
                 points = [{"ts": now_iso, "value": value}]
             elif metric_name == "FLOOR_REALTIME":
-                value = float(market_summary.get("floor_ton_median") or market_summary.get("floor_ton_min") or 0.0)
+                # TZ formula: F_market = median(F_collection), where F_collection is collection floor.
+                collection_floors = [
+                    float((base.get("metrics") or {}).get("floor_ton") or 0.0)
+                    for base in self.list_bases()
+                    if float((base.get("metrics") or {}).get("floor_ton") or 0.0) > 0
+                ]
+                value = _safe_median(collection_floors)
+                if value <= 0:
+                    value = float(market_summary.get("floor_ton_median") or market_summary.get("floor_ton_min") or 0.0)
                 if value <= 0:
                     value = _safe_median(
                         [

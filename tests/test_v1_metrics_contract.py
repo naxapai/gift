@@ -199,6 +199,38 @@ class TestV1MetricsContract(unittest.TestCase):
         depth = svc.metrics_v1(metric="MARKET_DEPTH", scope="MARKET")
         self.assertGreaterEqual(float((depth.get("points") or [{}])[0].get("value") or 0.0), 1.0)
 
+    def test_metrics_v1_floor_realtime_matches_tz_collection_and_market_formula(self) -> None:
+        svc = GiftAnalyticsService()
+        svc.variants = {
+            "c1|m1|b|p": {
+                "variant_id": "c1|m1|b|p",
+                "base_id": "c1",
+                "metrics": {"floor_ton": 1.0, "median_ton": 2.0, "trades_count_24h": 1, "active_listings": 1},
+                "traits": {},
+            },
+            "c1|m2|b|p": {
+                "variant_id": "c1|m2|b|p",
+                "base_id": "c1",
+                "metrics": {"floor_ton": 100.0, "median_ton": 100.0, "trades_count_24h": 1, "active_listings": 1},
+                "traits": {},
+            },
+            "c2|m1|b|p": {
+                "variant_id": "c2|m1|b|p",
+                "base_id": "c2",
+                "metrics": {"floor_ton": 50.0, "median_ton": 55.0, "trades_count_24h": 1, "active_listings": 1},
+                "traits": {},
+            },
+        }
+
+        c1_floor = svc.metrics_v1(metric="FLOOR_REALTIME", scope="COLLECTION", collection_id="c1")
+        c1_value = float((c1_floor.get("points") or [{}])[0].get("value") or 0.0)
+        self.assertEqual(c1_value, 1.0)
+
+        market_floor = svc.metrics_v1(metric="FLOOR_REALTIME", scope="MARKET")
+        market_value = float((market_floor.get("points") or [{}])[0].get("value") or 0.0)
+        # Collection floors: c1=1.0, c2=50.0 => median = (1+50)/2 = 25.5
+        self.assertAlmostEqual(market_value, 25.5, places=6)
+
     def test_metrics_v1_market_listing_velocity_uses_new_listings_window(self) -> None:
         svc = GiftAnalyticsService()
         now = datetime.now(timezone.utc)
