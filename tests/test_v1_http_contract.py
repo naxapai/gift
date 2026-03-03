@@ -59,6 +59,10 @@ class TestV1HttpContract(unittest.TestCase):
         self._seed_variant()
         FAVORITES_FILE.write_text("{}", encoding="utf-8")
         ALERTS_FILE.write_text("[]", encoding="utf-8")
+        svc = server._STATE
+        if isinstance(svc, GiftAnalyticsService):
+            svc.alert_rules = []
+            svc.alert_events = []
 
     def _get_json(self, path: str, timeout: float = 10.0):
         with urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=timeout) as resp:
@@ -268,6 +272,44 @@ class TestV1HttpContract(unittest.TestCase):
         assert target is not None
         self.assertFalse(bool(target.get("enabled")))
         self.assertTrue(bool(str(target.get("created_at") or "").strip()))
+
+    def test_alerts_update_by_rule_id_without_duplicates(self) -> None:
+        status_create, payload_create = self._post_json(
+            "/v1/alerts",
+            {
+                "name": "alert-v1",
+                "rule_json": {"entity": {"type": "VARIANT", "id": "x|m|b|p"}},
+                "enabled": False,
+            },
+        )
+        self.assertEqual(status_create, 200)
+        self.assertTrue(bool(payload_create.get("ok")))
+
+        _, before = self._get_json("/v1/alerts")
+        before_items = before.get("items") or []
+        self.assertEqual(len(before_items), 1)
+        rule_id = str(before_items[0].get("rule_id") or "")
+        self.assertTrue(rule_id)
+
+        status_update, payload_update = self._post_json(
+            "/v1/alerts",
+            {
+                "rule_id": rule_id,
+                "name": "alert-v2",
+                "rule_json": {"entity": {"type": "VARIANT", "id": "x|m|b|p"}, "threshold": 10},
+                "enabled": True,
+            },
+        )
+        self.assertEqual(status_update, 200)
+        self.assertTrue(bool(payload_update.get("ok")))
+
+        _, after = self._get_json("/v1/alerts")
+        after_items = after.get("items") or []
+        self.assertEqual(len(after_items), 1)
+        updated = after_items[0]
+        self.assertEqual(str(updated.get("rule_id") or ""), rule_id)
+        self.assertEqual(str(updated.get("name") or ""), "alert-v2")
+        self.assertTrue(bool(updated.get("enabled")))
 
     def test_stream_endpoint_rejects_unknown_type(self) -> None:
         with self.assertRaises(HTTPError) as cm:
