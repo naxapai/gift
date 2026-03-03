@@ -56,6 +56,27 @@ class TestV1FormulaContract(unittest.TestCase):
         self.assertEqual(str(breakdown.get("engine_mode") or ""), "tz_strict")
         self.assertIn(str(breakdown.get("action_hint") or ""), {"BUY", "SELL", "WATCH", "SKIP"})
 
+    def test_variant_details_v1_normalizes_listing_statuses(self) -> None:
+        svc = GiftAnalyticsService()
+        if not svc.variants:
+            self.skipTest("No variants loaded")
+        variant_id = next(iter(svc.variants.keys()))
+        svc.listing_state = {
+            "lid-1": {
+                "listing_id": "lid-1",
+                "variant_id": variant_id,
+                "price_ton": 1.23,
+                "status": "LISTED",
+                "last_seen": "2026-03-03T00:00:00Z",
+            }
+        }
+        payload = svc.variant_details_v1(variant_id, mode="tz")
+        self.assertIsNotNone(payload)
+        listings = (payload or {}).get("listings") or []
+        self.assertTrue(listings)
+        self.assertIn(str(listings[0].get("status") or ""), {"ACTIVE", "SOLD", "CANCELED"})
+        self.assertEqual(str(listings[0].get("status") or ""), "ACTIVE")
+
 
 if __name__ == "__main__":
     unittest.main()

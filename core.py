@@ -3214,6 +3214,14 @@ class GiftAnalyticsService:
             return "tz"
         return "legacy"
 
+    def _normalize_v1_listing_status(self, status: str | None) -> str:
+        raw = str(status or "").strip().upper()
+        if raw in {"SOLD", "CANCELED"}:
+            return raw
+        if raw in {"ACTIVE", "NEW", "LISTED"}:
+            return "ACTIVE"
+        return "ACTIVE"
+
     def _v1_variant_summary(self, v: dict, mode: str | None = None) -> dict:
         traits = v.get("traits") or {}
         eff_mode = self._effective_v1_mode(mode)
@@ -3649,7 +3657,7 @@ class GiftAnalyticsService:
                     "listing_id": lid,
                     "price_ton": float(row.get("price_ton") or 0.0),
                     "price_stars": None,
-                    "status": str(row.get("status") or "ACTIVE"),
+                    "status": self._normalize_v1_listing_status(row.get("status")),
                     "observed_at": row.get("last_seen") or self.state.get("updated_at") or _iso(_now()),
                 }
             )
