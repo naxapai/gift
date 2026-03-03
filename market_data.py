@@ -567,7 +567,7 @@ def _apply_spot_price_to_series(series: List[dict], spot_ton: float | None, asof
     out = list(series)
     last = dict(out[-1])
     last_dt = str(last.get("dt", "")).strip()
-    today = (asof_day or "").strip() or datetime.utcnow().date().isoformat()
+    today = (asof_day or "").strip() or datetime.now(timezone.utc).date().isoformat()
     # Keep historical points intact; append a latest market snapshot (floor/spot).
     if last_dt != today:
         out.append(
@@ -587,7 +587,7 @@ def _apply_spot_price_to_series(series: List[dict], spot_ton: float | None, asof
 def _reconcile_dataset_spot_prices(dataset: Dict) -> None:
     if not isinstance(dataset, dict):
         return
-    asof_day = datetime.utcnow().date().isoformat()
+    asof_day = datetime.now(timezone.utc).date().isoformat()
     gifts = dataset.get("gifts")
     if not isinstance(gifts, list):
         return
