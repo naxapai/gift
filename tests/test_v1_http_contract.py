@@ -8,6 +8,7 @@ from urllib.request import Request, urlopen
 
 import server
 from core import GiftAnalyticsService
+from core import ALERTS_FILE, FAVORITES_FILE
 
 
 class TestV1HttpContract(unittest.TestCase):
@@ -56,6 +57,8 @@ class TestV1HttpContract(unittest.TestCase):
 
     def setUp(self) -> None:
         self._seed_variant()
+        FAVORITES_FILE.write_text("{}", encoding="utf-8")
+        ALERTS_FILE.write_text("[]", encoding="utf-8")
 
     def _get_json(self, path: str, timeout: float = 10.0):
         with urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=timeout) as resp:
@@ -69,6 +72,12 @@ class TestV1HttpContract(unittest.TestCase):
             method="POST",
             headers={"Content-Type": "application/json"},
         )
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            return resp.status, json.loads(body)
+
+    def _delete_json(self, path: str, timeout: float = 10.0):
+        req = Request(f"http://127.0.0.1:{self.port}{path}", method="DELETE")
         with urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
             return resp.status, json.loads(body)
@@ -200,6 +209,43 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertEqual(cm_rule.exception.code, 400)
         payload_rule = json.loads(cm_rule.exception.read().decode("utf-8"))
         self.assertIn("rule_json_required", str(payload_rule.get("error") or ""))
+
+    def test_favorites_and_alerts_success_contract(self) -> None:
+        status_f_get_1, payload_f_get_1 = self._get_json("/v1/favorites")
+        self.assertEqual(status_f_get_1, 200)
+        self.assertTrue(isinstance(payload_f_get_1.get("items"), list))
+
+        status_f_post, payload_f_post = self._post_json("/v1/favorites", {"variant_id": "x|m|b|p", "note": "watch"})
+        self.assertEqual(status_f_post, 200)
+        self.assertTrue(bool(payload_f_post.get("ok")))
+
+        status_f_get_2, payload_f_get_2 = self._get_json("/v1/favorites")
+        self.assertEqual(status_f_get_2, 200)
+        items_f = payload_f_get_2.get("items") or []
+        self.assertTrue(items_f)
+        self.assertIn("variant_id", items_f[0])
+        self.assertIn("created_at", items_f[0])
+
+        status_f_del, payload_f_del = self._delete_json(f"/v1/favorites?variant_id={quote('x|m|b|p')}")
+        self.assertEqual(status_f_del, 200)
+        self.assertTrue(bool(payload_f_del.get("ok")))
+
+        status_a_post, payload_a_post = self._post_json(
+            "/v1/alerts",
+            {"name": "my-alert", "rule_json": {"entity": {"type": "VARIANT", "id": "x|m|b|p"}}},
+        )
+        self.assertEqual(status_a_post, 200)
+        self.assertTrue(bool(payload_a_post.get("ok")))
+
+        status_a_get, payload_a_get = self._get_json("/v1/alerts")
+        self.assertEqual(status_a_get, 200)
+        items_a = payload_a_get.get("items") or []
+        self.assertTrue(items_a)
+        self.assertIn("rule_id", items_a[0])
+        self.assertIn("name", items_a[0])
+        self.assertIn("rule_json", items_a[0])
+        self.assertIn("enabled", items_a[0])
+        self.assertIn("created_at", items_a[0])
 
     def test_stream_endpoint_rejects_unknown_type(self) -> None:
         with self.assertRaises(HTTPError) as cm:
