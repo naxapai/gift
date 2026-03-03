@@ -4129,7 +4129,42 @@ class GiftAnalyticsService:
             _log_ingest(f"realtime publish skipped: {exc}")
 
     def metrics_definitions_v1(self) -> list[dict]:
-        return list(METRIC_DEFINITIONS_V1)
+        base_by_metric: dict[str, dict] = {}
+        scoped_defs: dict[tuple[str, str], dict] = {}
+        for row in METRIC_DEFINITIONS_V1:
+            if not isinstance(row, dict):
+                continue
+            metric = str(row.get("metric") or "").strip().upper()
+            scope = str(row.get("scope") or "").strip().upper()
+            if not metric or not scope:
+                continue
+            base_by_metric.setdefault(metric, dict(row))
+            scoped_defs[(metric, scope)] = dict(row)
+
+        scope_order = {"MARKET": 0, "COLLECTION": 1, "VARIANT": 2, "ANY": 3}
+        out: list[dict] = []
+        for metric in METRIC_UNITS.keys():
+            allowed_scopes = sorted(
+                METRIC_ALLOWED_SCOPES.get(metric, {"MARKET", "COLLECTION", "VARIANT"}),
+                key=lambda s: scope_order.get(str(s).upper(), 99),
+            )
+            base_row = base_by_metric.get(metric)
+            if not base_row:
+                base_row = {
+                    "metric": metric,
+                    "scope": "ANY",
+                    "title_ru": metric,
+                    "unit": METRIC_UNITS.get(metric, "RATIO"),
+                    "is_timeseries": False,
+                    "description": "",
+                }
+            for scope in allowed_scopes:
+                scoped = scoped_defs.get((metric, scope))
+                if scoped is None:
+                    scoped = dict(base_row)
+                    scoped["scope"] = scope
+                out.append(scoped)
+        return out
 
     def _resolve_metric_scope(self, scope: str | None, market: bool, collection_id: str | None, variant_id: str | None) -> str:
         if market:

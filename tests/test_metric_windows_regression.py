@@ -2,7 +2,7 @@ import unittest
 import math
 from datetime import datetime, timedelta, timezone
 
-from core import GiftAnalyticsService
+from core import GiftAnalyticsService, METRIC_ALLOWED_SCOPES
 
 
 class TestMetricWindowsRegression(unittest.TestCase):
@@ -76,6 +76,18 @@ class TestMetricWindowsRegression(unittest.TestCase):
         variance = sum((x - mean_lr) ** 2 for x in lrs) / len(lrs)
         expected = math.sqrt(variance) * math.sqrt(len(lrs))
         self.assertAlmostEqual(got, expected, places=10)
+
+    def test_metrics_definitions_cover_all_allowed_scopes(self) -> None:
+        svc = GiftAnalyticsService()
+        defs = svc.metrics_definitions_v1()
+        pairs = {
+            (str(row.get("metric") or "").upper(), str(row.get("scope") or "").upper())
+            for row in defs
+            if isinstance(row, dict)
+        }
+        for metric, scopes in METRIC_ALLOWED_SCOPES.items():
+            for scope in scopes:
+                self.assertIn((metric, scope), pairs)
 
 
 if __name__ == "__main__":
