@@ -94,6 +94,54 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertIn("points", payload)
         self.assertTrue(isinstance(payload.get("points"), list))
 
+    def test_collections_variants_signals_endpoints_success_and_404(self) -> None:
+        status_col, payload_col = self._get_json("/v1/collections?limit=1")
+        self.assertEqual(status_col, 200)
+        self.assertIn("items", payload_col)
+        self.assertTrue(isinstance(payload_col.get("items"), list))
+        self.assertTrue(payload_col.get("items"))
+        col_item = payload_col["items"][0]
+        self.assertIn("collection_id", col_item)
+
+        collection_id = str(col_item.get("collection_id") or "")
+        status_col_d, payload_col_d = self._get_json(f"/v1/collections/{quote(collection_id)}")
+        self.assertEqual(status_col_d, 200)
+        self.assertIn("collection", payload_col_d)
+        self.assertIn("top_variants", payload_col_d)
+        self.assertIn("floor_series", payload_col_d)
+
+        status_var, payload_var = self._get_json("/v1/variants?limit=1")
+        self.assertEqual(status_var, 200)
+        self.assertIn("items", payload_var)
+        self.assertTrue(payload_var.get("items"))
+        var_item = payload_var["items"][0]
+        self.assertIn("variant_id", var_item)
+
+        variant_id = str(var_item.get("variant_id") or "")
+        status_var_d, payload_var_d = self._get_json(f"/v1/variants/{quote(variant_id)}")
+        self.assertEqual(status_var_d, 200)
+        self.assertIn("variant", payload_var_d)
+        self.assertIn("listings", payload_var_d)
+        self.assertIn("breakdown", payload_var_d)
+
+        status_sig, payload_sig = self._get_json("/v1/signals?limit=1")
+        self.assertEqual(status_sig, 200)
+        self.assertIn("items", payload_sig)
+        self.assertTrue(isinstance(payload_sig.get("items"), list))
+        if payload_sig.get("items"):
+            sig_id = str((payload_sig.get("items") or [{}])[0].get("signal_id") or "")
+            status_sig_d, payload_sig_d = self._get_json(f"/v1/signals/{quote(sig_id)}")
+            self.assertEqual(status_sig_d, 200)
+            self.assertEqual(str(payload_sig_d.get("signal_id") or ""), sig_id)
+
+        with self.assertRaises(HTTPError) as cm_col_404:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/collections/does-not-exist", timeout=10)
+        self.assertEqual(cm_col_404.exception.code, 404)
+
+        with self.assertRaises(HTTPError) as cm_var_404:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/variants/does-not-exist", timeout=10)
+        self.assertEqual(cm_var_404.exception.code, 404)
+
     def test_metrics_endpoint_tz_strict_mode_success(self) -> None:
         status, payload = self._get_json(
             f"/v1/metrics?metric=EDGE_SCORE&scope=VARIANT&variant_id={quote('x|m|b|p')}&mode=tz_strict"
