@@ -61,6 +61,86 @@ class TestV1StreamSchema(unittest.TestCase):
         self.assertTrue(len(events) > 0)
         self.assertTrue(all(str(e.get("type")) == "metric.updated" for e in events))
 
+    def test_stream_events_filtering_by_variant_id(self) -> None:
+        svc = GiftAnalyticsService()
+        variant_id = "c|m|b|p"
+        collection_id = "c"
+
+        def _overview(mode=None):
+            return {
+                "market_index": 50.0,
+                "market_state": "флет",
+                "stale": False,
+                "top_signals": [
+                    {
+                        "signal_id": "s1",
+                        "ts": "2026-02-26T00:00:00Z",
+                        "type": "BUY",
+                        "variant_id": variant_id,
+                        "collection_id": collection_id,
+                        "collection": "Collection",
+                        "score100": 70.0,
+                        "conf_pct": 60.0,
+                        "reasons": [],
+                        "risk_flags": [],
+                    }
+                ],
+                "provider_health": [{"provider": "telegram_api", "degraded": False, "err_pct": 0.0, "ts": "2026-02-26T00:00:00Z"}],
+                "key_metrics": {"avg_liquidity24h": 0.4},
+            }
+
+        svc.overview_v1 = _overview  # type: ignore[assignment]
+        svc.market_overview = lambda: {"floor_ton_median": 10.0, "active_listings": 100}  # type: ignore[assignment]
+        svc.collections_v1 = lambda limit=1: {"items": [{"collection_id": collection_id, "floor_ton": 8.0}]}  # type: ignore[assignment]
+        svc.variants_v1 = lambda limit=1, mode=None: {"items": [{"variant_id": variant_id, "collection_id": collection_id, "score": 0.8}]}  # type: ignore[assignment]
+        svc.listings_events_v1 = lambda limit=1, include_relisted=True: {"items": []}  # type: ignore[assignment]
+
+        events = svc.stream_events_v1(variant_id=variant_id)
+        self.assertTrue(len(events) > 0)
+        for ev in events:
+            payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+            self.assertEqual(str(payload.get("variant_id") or ev.get("key") or ""), variant_id)
+
+    def test_stream_events_filtering_by_collection_id(self) -> None:
+        svc = GiftAnalyticsService()
+        variant_id = "c|m|b|p"
+        collection_id = "c"
+
+        def _overview(mode=None):
+            return {
+                "market_index": 50.0,
+                "market_state": "флет",
+                "stale": False,
+                "top_signals": [
+                    {
+                        "signal_id": "s1",
+                        "ts": "2026-02-26T00:00:00Z",
+                        "type": "BUY",
+                        "variant_id": variant_id,
+                        "collection_id": collection_id,
+                        "collection": "Collection",
+                        "score100": 70.0,
+                        "conf_pct": 60.0,
+                        "reasons": [],
+                        "risk_flags": [],
+                    }
+                ],
+                "provider_health": [{"provider": "telegram_api", "degraded": False, "err_pct": 0.0, "ts": "2026-02-26T00:00:00Z"}],
+                "key_metrics": {"avg_liquidity24h": 0.4},
+            }
+
+        svc.overview_v1 = _overview  # type: ignore[assignment]
+        svc.market_overview = lambda: {"floor_ton_median": 10.0, "active_listings": 100}  # type: ignore[assignment]
+        svc.collections_v1 = lambda limit=1: {"items": [{"collection_id": collection_id, "floor_ton": 8.0}]}  # type: ignore[assignment]
+        svc.variants_v1 = lambda limit=1, mode=None: {"items": [{"variant_id": variant_id, "collection_id": collection_id, "score": 0.8}]}  # type: ignore[assignment]
+        svc.listings_events_v1 = lambda limit=1, include_relisted=True: {"items": []}  # type: ignore[assignment]
+
+        events = svc.stream_events_v1(collection_id=collection_id)
+        self.assertTrue(len(events) > 0)
+        for ev in events:
+            payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+            self.assertEqual(str(payload.get("collection_id") or ev.get("key") or ""), collection_id)
+
     def test_listing_event_schema_required_fields(self) -> None:
         svc = GiftAnalyticsService()
         listing = {

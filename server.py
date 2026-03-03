@@ -1864,6 +1864,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 types = {x.strip() for x in types_csv.split(",") if x.strip()}
             else:
                 types = set()
+            variant_id_filter = (params.get("variant_id") or [None])[0]
+            collection_id_filter = (params.get("collection_id") or [None])[0]
             allowed_types = {"signal.created", "metric.updated", "listing.event", "provider.health", "variant.updated", "collection.updated"}
             unknown_types = sorted([t for t in types if t not in allowed_types])
             if unknown_types:
@@ -1898,7 +1900,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                 try:
                     if updated != last_updated:
                         last_updated = updated
-                        for ev in _state().stream_events_v1(types=types, mode=mode):
+                        for ev in _state().stream_events_v1(
+                            types=types,
+                            mode=mode,
+                            variant_id=variant_id_filter,
+                            collection_id=collection_id_filter,
+                        ):
                             ev_name = str(ev.get("type") or "provider.health")
                             self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
                             self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
