@@ -89,6 +89,23 @@ class TestMetricWindowsRegression(unittest.TestCase):
             for scope in scopes:
                 self.assertIn((metric, scope), pairs)
 
+    def test_market_floor_realtime_uses_median_of_collection_floors(self) -> None:
+        svc = GiftAnalyticsService()
+        svc.variants = {
+            "c1|m1|b|p": {"variant_id": "c1|m1|b|p", "base_id": "c1", "metrics": {"floor_ton": 1.0, "active_listings": 1, "trades_count_24h": 1, "median_ton": 1.0}, "traits": {}},
+            "c1|m2|b|p": {"variant_id": "c1|m2|b|p", "base_id": "c1", "metrics": {"floor_ton": 100.0, "active_listings": 1, "trades_count_24h": 1, "median_ton": 100.0}, "traits": {}},
+            "c2|m1|b|p": {"variant_id": "c2|m1|b|p", "base_id": "c2", "metrics": {"floor_ton": 2.0, "active_listings": 1, "trades_count_24h": 1, "median_ton": 2.0}, "traits": {}},
+            "c2|m2|b|p": {"variant_id": "c2|m2|b|p", "base_id": "c2", "metrics": {"floor_ton": 100.0, "active_listings": 1, "trades_count_24h": 1, "median_ton": 100.0}, "traits": {}},
+            "c3|m1|b|p": {"variant_id": "c3|m1|b|p", "base_id": "c3", "metrics": {"floor_ton": 3.0, "active_listings": 1, "trades_count_24h": 1, "median_ton": 3.0}, "traits": {}},
+            "c3|m2|b|p": {"variant_id": "c3|m2|b|p", "base_id": "c3", "metrics": {"floor_ton": 100.0, "active_listings": 1, "trades_count_24h": 1, "median_ton": 100.0}, "traits": {}},
+        }
+
+        payload = svc.metrics_v1(metric="FLOOR_REALTIME", scope="MARKET")
+        points = payload.get("points") or []
+        self.assertTrue(points)
+        value = float(points[0].get("value") or 0.0)
+        self.assertEqual(value, 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

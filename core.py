@@ -1668,6 +1668,37 @@ class GiftAnalyticsService:
             "spread_max": max(spreads) if spreads else 1,
         }
 
+    def _market_floor_median_by_collection(self, variants: list[dict]) -> float:
+        # TZ formula: market floor is median of collection floors, where each
+        # collection floor is min floor across its active variants.
+        per_collection_floor: dict[str, float] = {}
+        for v in variants:
+            if not isinstance(v, dict):
+                continue
+            collection_id = str(v.get("base_id") or "").strip().lower()
+            if not collection_id:
+                continue
+            try:
+                floor = float((v.get("metrics") or {}).get("floor_ton") or 0.0)
+            except Exception:
+                continue
+            if floor <= 0 or not math.isfinite(floor):
+                continue
+            prev = per_collection_floor.get(collection_id)
+            if prev is None or floor < prev:
+                per_collection_floor[collection_id] = floor
+        if per_collection_floor:
+            return float(_safe_median(per_collection_floor.values()))
+        return float(
+            _safe_median(
+                [
+                    float((v.get("metrics") or {}).get("floor_ton") or 0.0)
+                    for v in variants
+                    if float((v.get("metrics") or {}).get("floor_ton") or 0.0) > 0
+                ]
+            )
+        )
+
     def is_stale(self) -> bool:
         updated = self.state.get("updated_at")
         if not updated:
@@ -1737,7 +1768,7 @@ class GiftAnalyticsService:
             "base_count": len({v["base_id"] for v in variants}),
             "model_count": len(models),
             "floor_ton_min": min(floors) if floors else None,
-            "floor_ton_median": _safe_median(floors) if floors else None,
+            "floor_ton_median": self._market_floor_median_by_collection(variants) if variants else None,
             "active_listings": active_total,
             "avg_change_7d": round(avg_7d, 3),
             "avg_change_30d": round(avg_30d, 3),
