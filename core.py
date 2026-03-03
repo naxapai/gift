@@ -4160,6 +4160,28 @@ class GiftAnalyticsService:
             _log_ingest(f"realtime publish skipped: {exc}")
 
     def metrics_definitions_v1(self) -> list[dict]:
+        unit_ranges: dict[str, tuple[float | None, float | None]] = {
+            "COUNT": (0.0, None),
+            "BOOL": (0.0, 1.0),
+            "SCORE_0_1": (0.0, 1.0),
+            "SCORE_0_100": (0.0, 100.0),
+        }
+        metric_ranges: dict[str, tuple[float | None, float | None]] = {
+            "LISTING_PRESSURE": (0.0, None),
+            "UNDERVALUE": (-1.0, 1.0),
+            "EXPECTED_PROFIT": (-1.0, 2.0),
+            "VOLUME_VELOCITY": (0.0, None),
+            "ABSORPTION_RATE": (0.0, None),
+            "BUY_WALL_SCORE": (0.0, None),
+            "WHALE_RATIO": (0.0, 1.0),
+            "WHALE_IMPULSE": (-1.0, 1.0),
+            "VOLATILITY": (0.0, None),
+            "FLOOR_REALTIME": (0.0, None),
+            "FAIR_PRICE": (0.0, None),
+            "MARKET_INDEX": (0.0, 100.0),
+            "BUY_SCORE": (0.0, 100.0),
+            "SELL_SCORE": (0.0, 100.0),
+        }
         base_by_metric: dict[str, dict] = {}
         scoped_defs: dict[tuple[str, str], dict] = {}
         for row in METRIC_DEFINITIONS_V1:
@@ -4194,6 +4216,13 @@ class GiftAnalyticsService:
                 if scoped is None:
                     scoped = dict(base_row)
                     scoped["scope"] = scope
+                unit = str(scoped.get("unit") or METRIC_UNITS.get(metric, "RATIO")).upper()
+                metric_min, metric_max = metric_ranges.get(metric, (None, None))
+                unit_min, unit_max = unit_ranges.get(unit, (None, None))
+                if scoped.get("min_value") is None:
+                    scoped["min_value"] = metric_min if metric_min is not None else unit_min
+                if scoped.get("max_value") is None:
+                    scoped["max_value"] = metric_max if metric_max is not None else unit_max
                 out.append(scoped)
         return out
 

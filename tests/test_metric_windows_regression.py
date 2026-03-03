@@ -106,6 +106,70 @@ class TestMetricWindowsRegression(unittest.TestCase):
         value = float(points[0].get("value") or 0.0)
         self.assertEqual(value, 2.0)
 
+    def test_strict_edge_score_matches_tz_example_corridor(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime.now(timezone.utc)
+        variant_id = "edge|m|b|p"
+        svc.variants[variant_id] = {
+            "variant_id": variant_id,
+            "base_id": "edge",
+            "metrics": {
+                "floor_ton": 8.0,
+                "median_ton": 10.0,
+                "trades_count_24h": 700,
+                "active_listings": 840,
+            },
+            "traits": {"model": {"name": "M"}, "background": {"name": "B"}, "pattern": {"name": "P"}},
+        }
+        # volume_10m = 160, volume_30m = 300 => VV=1.6 => norm=0.8
+        # sales_30m = 18, new_30m = 10 => AR=1.8 => norm=0.9
+        trade_events = []
+        for idx in range(10):
+            trade_events.append(
+                {
+                    "ts": (now - timedelta(minutes=5, seconds=idx)).isoformat().replace("+00:00", "Z"),
+                    "variant_id": variant_id,
+                    "base_id": "edge",
+                    "price_ton": 16.0,
+                }
+            )
+        for idx in range(8):
+            trade_events.append(
+                {
+                    "ts": (now - timedelta(minutes=20, seconds=idx)).isoformat().replace("+00:00", "Z"),
+                    "variant_id": variant_id,
+                    "base_id": "edge",
+                    "price_ton": 17.5,
+                }
+            )
+        svc.trade_events = trade_events
+        svc.variant_history[variant_id] = [
+            {"ts": (now - timedelta(minutes=3)).isoformat().replace("+00:00", "Z"), "new_listings": 10, "floor_ton": 8.0}
+        ]
+
+        mm = svc._strict_formula_inputs(svc.variants[variant_id])  # noqa: SLF001
+        # Example in TZ gives ~41.75 due rounded undervalue=0.15;
+        # exact pipeline value with fair=9.4 and floor=8.0 is near 41.7.
+        self.assertAlmostEqual(float(mm["score100"]), 41.7, places=1)
+        self.assertAlmostEqual(float(mm["listing_pressure_norm"]), 0.4, places=6)
+        self.assertAlmostEqual(float(mm["volume_velocity_norm"]), 0.8, places=6)
+        self.assertAlmostEqual(float(mm["absorption_rate_norm"]), 0.9, places=6)
+
+    def test_metric_definitions_include_min_max_ranges(self) -> None:
+        svc = GiftAnalyticsService()
+        defs = svc.metrics_definitions_v1()
+        by_pair = {
+            (str(d.get("metric") or "").upper(), str(d.get("scope") or "").upper()): d
+            for d in defs
+            if isinstance(d, dict)
+        }
+        edge = by_pair.get(("EDGE_SCORE", "VARIANT")) or {}
+        market_index = by_pair.get(("MARKET_INDEX", "MARKET")) or {}
+        self.assertEqual(edge.get("min_value"), 0.0)
+        self.assertEqual(edge.get("max_value"), 1.0)
+        self.assertEqual(market_index.get("min_value"), 0.0)
+        self.assertEqual(market_index.get("max_value"), 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()
