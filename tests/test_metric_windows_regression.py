@@ -228,6 +228,77 @@ class TestMetricWindowsRegression(unittest.TestCase):
         self.assertGreater(v1, v5)
         self.assertGreater(v5, v20)
 
+    def test_metric_points_follow_definitions_ranges(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime.now(timezone.utc)
+        variant_id = "rng|m|b|p"
+        collection_id = "rng"
+        svc.variants = {
+            variant_id: {
+                "variant_id": variant_id,
+                "base_id": collection_id,
+                "metrics": {
+                    "floor_ton": 10.0,
+                    "median_ton": 12.0,
+                    "trades_count_24h": 30,
+                    "active_listings": 18,
+                    "serial_no": 7,
+                },
+                "traits": {"model": {"id": "m"}, "background": {"id": "b"}, "pattern": {"id": "p"}},
+            }
+        }
+        svc.variant_history = {
+            variant_id: [
+                {"ts": (now - timedelta(minutes=25)).isoformat().replace("+00:00", "Z"), "floor_ton": 9.8, "active_listings": 20, "new_listings": 2},
+                {"ts": (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z"), "floor_ton": 10.0, "active_listings": 18, "new_listings": 1},
+            ]
+        }
+        svc.trade_events = [
+            {"ts": (now - timedelta(minutes=20)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": collection_id, "price_ton": 10.1},
+            {"ts": (now - timedelta(minutes=10)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": collection_id, "price_ton": 10.4},
+            {"ts": (now - timedelta(minutes=2)).isoformat().replace("+00:00", "Z"), "variant_id": variant_id, "base_id": collection_id, "price_ton": 10.6},
+        ]
+        svc.listing_state = {
+            "rng-1": {"listing_id": "rng-1", "base_id": collection_id, "variant_id": variant_id, "status": "ACTIVE", "price_ton": 10.0},
+            "rng-2": {"listing_id": "rng-2", "base_id": collection_id, "variant_id": variant_id, "status": "ACTIVE", "price_ton": 10.2},
+        }
+
+        defs = svc.metrics_definitions_v1()
+        by_pair = {
+            (str(d.get("metric") or "").upper(), str(d.get("scope") or "").upper()): d
+            for d in defs
+            if isinstance(d, dict)
+        }
+
+        checks = [
+            ("MARKET", "FLOOR_REALTIME"),
+            ("MARKET", "LIQUIDITY_SCORE"),
+            ("MARKET", "VELOCITY_SCORE"),
+            ("COLLECTION", "MARKET_INDEX"),
+            ("COLLECTION", "TREND_SCORE"),
+            ("VARIANT", "EDGE_SCORE"),
+            ("VARIANT", "BUY_SCORE"),
+            ("VARIANT", "SELL_SCORE"),
+            ("VARIANT", "RARITY_SCORE"),
+            ("VARIANT", "UNDERVALUE"),
+            ("VARIANT", "EXPECTED_PROFIT"),
+        ]
+        for scope, metric in checks:
+            kwargs = {"metric": metric, "scope": scope}
+            if scope == "COLLECTION":
+                kwargs["collection_id"] = collection_id
+            if scope == "VARIANT":
+                kwargs["variant_id"] = variant_id
+            payload = svc.metrics_v1(**kwargs)
+            value = float((payload.get("points") or [{}])[0].get("value") or 0.0)
+            rule = by_pair.get((metric, scope)) or {}
+            min_v = rule.get("min_value")
+            max_v = rule.get("max_value")
+            if min_v is not None:
+                self.assertGreaterEqual(value, float(min_v), f"{scope}:{metric} below min")
+            if max_v is not None:
+                self.assertLessEqual(value, float(max_v), f"{scope}:{metric} above max")
+
 
 if __name__ == "__main__":
     unittest.main()
