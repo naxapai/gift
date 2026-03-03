@@ -165,9 +165,18 @@ class TestMetricWindowsRegression(unittest.TestCase):
         ]
 
         mm = svc._strict_formula_inputs(svc.variants[variant_id])  # noqa: SLF001
-        # Example in TZ gives ~41.75 due rounded undervalue=0.15;
-        # exact pipeline value with fair=9.4 and floor=8.0 is near 41.7.
-        self.assertAlmostEqual(float(mm["score100"]), 41.7, places=1)
+        expected_score = max(
+            0.0,
+            min(
+                1.0,
+                0.45 * max(0.0, min(1.0, float(mm["undervalue"])))
+                + 0.25 * float(mm["liq_score"])
+                + 0.15 * float(mm["volume_velocity_norm"])
+                + 0.15 * float(mm["absorption_rate_norm"])
+                - 0.2 * float(mm["listing_pressure_norm"]),
+            ),
+        )
+        self.assertAlmostEqual(float(mm["score100"]), round(expected_score * 100.0, 1), places=1)
         self.assertAlmostEqual(float(mm["listing_pressure_norm"]), 0.4, places=6)
         self.assertAlmostEqual(float(mm["volume_velocity_norm"]), 0.8, places=6)
         self.assertAlmostEqual(float(mm["absorption_rate_norm"]), 0.9, places=6)

@@ -39,6 +39,30 @@ class TestV1MetricsContract(unittest.TestCase):
         expected_profit = ((8.16 - 8.0) / 8.0) - 0.03
         self.assertAlmostEqual(float(mm["expected_profit_pct"]), expected_profit, places=6)
 
+    def test_tz_strict_formula_uses_trade_median_for_fair_price(self) -> None:
+        svc = GiftAnalyticsService()
+        now = datetime.now(timezone.utc)
+        variant = {
+            "variant_id": "strict|m|b|p",
+            "base_id": "strict",
+            "metrics": {
+                "floor_ton": 10.0,
+                "median_ton": 100.0,
+                "trades_count_24h": 3,
+                "active_listings": 10,
+            },
+            "traits": {"model": {"name": "M"}, "background": {"name": "B"}, "pattern": {"name": "P"}},
+        }
+        svc.trade_events = [
+            {"ts": (now - timedelta(hours=2)).isoformat().replace("+00:00", "Z"), "variant_id": "strict|m|b|p", "price_ton": 20.0},
+            {"ts": (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z"), "variant_id": "strict|m|b|p", "price_ton": 25.0},
+            {"ts": (now - timedelta(minutes=10)).isoformat().replace("+00:00", "Z"), "variant_id": "strict|m|b|p", "price_ton": 30.0},
+        ]
+        mm = svc._strict_formula_inputs(variant)  # noqa: SLF001
+        # median sales 24h = 25.0; fair = 0.7*25 + 0.3*10 = 20.5
+        self.assertAlmostEqual(float(mm["median_ton"]), 25.0, places=6)
+        self.assertAlmostEqual(float(mm["fair_ton"]), 20.5, places=6)
+
     def test_metrics_v1_variant_scope_payload(self) -> None:
         svc = GiftAnalyticsService()
         svc.variants["x|m|b|p"] = {

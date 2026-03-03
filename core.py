@@ -1342,6 +1342,25 @@ class GiftAnalyticsService:
                 volume += float(ev.get("price_ton") or 0)
         return count, volume
 
+    def _median_trade_price_in_window(self, variant_id: str, now: datetime, seconds: int) -> float | None:
+        cutoff = now - timedelta(seconds=seconds)
+        prices: list[float] = []
+        for ev in self.trade_events:
+            if str(ev.get("variant_id") or "") != str(variant_id):
+                continue
+            ts = _parse_ts(ev.get("ts"))
+            if ts < cutoff:
+                continue
+            try:
+                price = float(ev.get("price_ton") or 0.0)
+            except Exception:
+                continue
+            if price > 0:
+                prices.append(price)
+        if not prices:
+            return None
+        return float(_safe_median(prices))
+
     def _trades_in_window_multi(self, now: datetime, seconds: int, variant_ids: set[str] | None = None) -> Tuple[int, float]:
         cutoff = now - timedelta(seconds=seconds)
         count = 0
@@ -2951,7 +2970,10 @@ class GiftAnalyticsService:
             fallback=float(metrics.get("floor_ton") or 0.0),
         )
         price_ton = floor_ton
-        median_24h = float(metrics.get("median_ton") or 0.0)
+        median_24h_trade = self._median_trade_price_in_window(variant_id, now, WINDOWS["24h"])
+        median_24h = float(median_24h_trade or 0.0)
+        if median_24h <= 0:
+            median_24h = float(metrics.get("median_ton") or 0.0)
         if median_24h <= 0:
             median_24h = float(metrics.get("vwap_ton_24h") or metrics.get("vwap_ton") or floor_ton)
         fair_ton = (0.7 * median_24h) + (0.3 * floor_ton) if (median_24h > 0 or floor_ton > 0) else 0.0
