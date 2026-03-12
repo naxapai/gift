@@ -483,6 +483,51 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertIn("source", payload_race)
         self.assertIn("source_error", payload_race)
 
+    def test_race_warmup_tracker_records_price_changes(self) -> None:
+        svc = server._STATE
+        self.assertIsInstance(svc, GiftAnalyticsService)
+        assert isinstance(svc, GiftAnalyticsService)
+        svc.listing_tracker_state = {}
+        now_iso = "2026-02-26T00:00:00Z"
+        rows_first = [
+            {
+                "listing_key": "x:abc",
+                "collection_id": "x",
+                "unique_id": "abc",
+                "variant_id": "x|m|b|p",
+                "resell_amount_ton": 5.0,
+                "last_seen_at": now_iso,
+                "preview_url": "",
+            }
+        ]
+        changed_first = server._warmup_race_tracker_from_rows(svc, rows_first, now_iso)
+        self.assertGreaterEqual(changed_first, 1)
+        entry = svc.listing_tracker_state.get("x:abc") if isinstance(svc.listing_tracker_state, dict) else None
+        self.assertIsInstance(entry, dict)
+        assert isinstance(entry, dict)
+        self.assertEqual(float(entry.get("last_price_ton") or 0.0), 5.0)
+        self.assertIsNone(entry.get("last_price_changed_at"))
+
+        rows_second = [
+            {
+                "listing_key": "x:abc",
+                "collection_id": "x",
+                "unique_id": "abc",
+                "variant_id": "x|m|b|p",
+                "resell_amount_ton": 6.25,
+                "last_seen_at": "2026-02-26T00:00:40Z",
+                "preview_url": "",
+            }
+        ]
+        changed_second = server._warmup_race_tracker_from_rows(svc, rows_second, "2026-02-26T00:00:40Z")
+        self.assertGreaterEqual(changed_second, 1)
+        entry2 = svc.listing_tracker_state.get("x:abc") if isinstance(svc.listing_tracker_state, dict) else None
+        self.assertIsInstance(entry2, dict)
+        assert isinstance(entry2, dict)
+        self.assertEqual(float(entry2.get("prev_price_ton") or 0.0), 5.0)
+        self.assertEqual(float(entry2.get("last_price_ton") or 0.0), 6.25)
+        self.assertEqual(str(entry2.get("last_price_changed_at") or ""), "2026-02-26T00:00:40Z")
+
     def test_listings_endpoints_validation(self) -> None:
         with self.assertRaises(HTTPError) as cm_list_limit:
             urlopen(f"http://127.0.0.1:{self.port}/v1/listings?limit=0", timeout=10)

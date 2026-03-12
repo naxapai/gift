@@ -347,6 +347,93 @@ def _market_regime_snapshot_compat() -> tuple[str, str]:
     return "MEAN_REVERT", "🟡"
 
 
+def _warmup_race_tracker_from_rows(state: GiftAnalyticsService, rows: list[dict], now_iso: str) -> int:
+    if not isinstance(rows, list) or not rows:
+        return 0
+    tracker = state.listing_tracker_state if isinstance(state.listing_tracker_state, dict) else {}
+    if not isinstance(tracker, dict):
+        tracker = {}
+        state.listing_tracker_state = tracker
+    changed = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        listing_key = str(row.get("listing_key") or "").strip()
+        if not listing_key:
+            base_id = str(row.get("collection_id") or row.get("gift_id") or "").strip().lower()
+            listing_id = str(row.get("listing_id") or row.get("unique_id") or "").strip()
+            if not base_id or not listing_id:
+                continue
+            listing_key = f"{base_id}:{listing_id}"
+        price_ton = _safe_float(row.get("resell_amount_ton"), 0.0)
+        if price_ton <= 0.0:
+            continue
+        ts_seen = str(row.get("last_seen_at") or row.get("ts_detected") or now_iso)
+        variant_id = str(row.get("variant_id") or "")
+        base_id = str(row.get("collection_id") or row.get("gift_id") or "").strip().lower()
+        listing_id = str(row.get("listing_id") or row.get("unique_id") or listing_key.split(":", 1)[-1] or "")
+        preview_url = str(row.get("preview_url") or "")
+        entry = tracker.get(listing_key)
+        if not isinstance(entry, dict):
+            tracker[listing_key] = {
+                "listing_key": listing_key,
+                "base_id": base_id,
+                "listing_id": listing_id,
+                "variant_id": variant_id,
+                "first_seen_at": ts_seen,
+                "last_seen_at": ts_seen,
+                "last_price_ton": price_ton,
+                "prev_price_ton": price_ton,
+                "last_price_changed_at": None,
+                "active": True,
+                "relist_count": 0,
+                "last_relisted_at": None,
+                "last_absent_at": None,
+                "preview_url": preview_url,
+            }
+            changed += 1
+            continue
+        old_price = _safe_float(entry.get("last_price_ton"), 0.0)
+        if old_price > 0.0 and abs(old_price - price_ton) >= 1e-9:
+            entry["prev_price_ton"] = old_price
+            entry["last_price_ton"] = price_ton
+            entry["last_price_changed_at"] = ts_seen
+            changed += 1
+        elif old_price <= 0.0:
+            entry["last_price_ton"] = price_ton
+            entry["prev_price_ton"] = price_ton
+            changed += 1
+        if str(entry.get("last_seen_at") or "") != ts_seen:
+            entry["last_seen_at"] = ts_seen
+            changed += 1
+        if str(entry.get("variant_id") or "") != variant_id:
+            entry["variant_id"] = variant_id
+            changed += 1
+        if preview_url and str(entry.get("preview_url") or "") != preview_url:
+            entry["preview_url"] = preview_url
+            changed += 1
+        if str(entry.get("base_id") or "") != base_id:
+            entry["base_id"] = base_id
+            changed += 1
+        if str(entry.get("listing_id") or "") != listing_id:
+            entry["listing_id"] = listing_id
+            changed += 1
+        if not bool(entry.get("active")):
+            entry["active"] = True
+            changed += 1
+    if changed > 0:
+        state._data_version += 1
+        try:
+            state._invalidate_view_cache()
+        except Exception:
+            pass
+        try:
+            state._save_listing_tracker_state()
+        except Exception:
+            pass
+    return changed
+
+
 def _parse_admin_ids() -> set[int]:
     out: set[int] = set()
     for raw in [ADMIN_TELEGRAM_USER_ID, ADMIN_TELEGRAM_USER_IDS_RAW]:
@@ -1890,14 +1977,43 @@ class RequestHandler(BaseHTTPRequestHandler):
 
             state = _state()
             now = datetime.now(timezone.utc)
+            base_payload = None
+            base_rows: list[dict] = []
+            try:
+                mt_rows, mt_status = state._refresh_mt_listing_source(force=False, window_sec=max(window_sec, 120))
+                if isinstance(mt_rows, list):
+                    base_rows = [x for x in mt_rows if isinstance(x, dict)]
+                base_payload = {
+                    "items": base_rows,
+                    "source": str((mt_status or {}).get("source") or "mtproto_api"),
+                    "source_error": str((mt_status or {}).get("error") or ""),
+                }
+            except Exception:
+                base_payload = state.listings_v1(
+                    limit=500,
+                    cursor=None,
+                    only_new=False,
+                    new_window_sec=max(window_sec, 120),
+                    collection_q="",
+                    model_q="",
+                    background_q="",
+                    pattern_q="",
+                )
+                rows_raw = (base_payload or {}).get("items") if isinstance(base_payload, dict) else []
+                base_rows = rows_raw if isinstance(rows_raw, list) else []
+            if isinstance(base_rows, list) and base_rows:
+                _warmup_race_tracker_from_rows(state, base_rows, _tz_now_iso())
             try:
                 state._sync_listing_tracker_state(now, persist=False)
             except Exception:
                 pass
             market_regime_current, market_badge_current = _market_regime_snapshot_compat()
-            source_status = state.listing_source_status_v1()
-            source = str((source_status or {}).get("source") or "fragment.verified_snapshot")
-            source_error = str((source_status or {}).get("error") or "")
+            source = str((base_payload or {}).get("source") or "fragment.verified_snapshot")
+            source_error = str((base_payload or {}).get("source_error") or "")
+            if not source:
+                source_status = state.listing_source_status_v1()
+                source = str((source_status or {}).get("source") or "fragment.verified_snapshot")
+                source_error = str((source_status or {}).get("error") or "")
 
             out: list[dict] = []
             tracker = state.listing_tracker_state if isinstance(state.listing_tracker_state, dict) else {}
