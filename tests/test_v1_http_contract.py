@@ -1,7 +1,10 @@
 import json
+import os
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -34,6 +37,15 @@ class TestV1HttpContract(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._old_auth_required = server.AUTH_REQUIRED
         cls._old_state = server._STATE
+        cls._old_ingest_auto_loop = os.environ.get("INGEST_AUTO_LOOP")
+        cls._old_listing_primary_source = os.environ.get("LISTING_PRIMARY_SOURCE")
+        cls._old_listing_mt_api_url = os.environ.get("LISTING_MT_API_URL")
+        cls._old_listing_mt_api_token = os.environ.get("LISTING_MT_API_TOKEN")
+        os.environ["INGEST_AUTO_LOOP"] = "false"
+        # Deterministic test mode: disable external listing API dependency.
+        os.environ["LISTING_PRIMARY_SOURCE"] = "fragment"
+        os.environ["LISTING_MT_API_URL"] = ""
+        os.environ["LISTING_MT_API_TOKEN"] = ""
         server.AUTH_REQUIRED = False
 
         svc = GiftAnalyticsService()
@@ -52,6 +64,22 @@ class TestV1HttpContract(unittest.TestCase):
             cls.httpd.shutdown()
             cls.httpd.server_close()
         finally:
+            if cls._old_ingest_auto_loop is None:
+                os.environ.pop("INGEST_AUTO_LOOP", None)
+            else:
+                os.environ["INGEST_AUTO_LOOP"] = cls._old_ingest_auto_loop
+            if cls._old_listing_primary_source is None:
+                os.environ.pop("LISTING_PRIMARY_SOURCE", None)
+            else:
+                os.environ["LISTING_PRIMARY_SOURCE"] = cls._old_listing_primary_source
+            if cls._old_listing_mt_api_url is None:
+                os.environ.pop("LISTING_MT_API_URL", None)
+            else:
+                os.environ["LISTING_MT_API_URL"] = cls._old_listing_mt_api_url
+            if cls._old_listing_mt_api_token is None:
+                os.environ.pop("LISTING_MT_API_TOKEN", None)
+            else:
+                os.environ["LISTING_MT_API_TOKEN"] = cls._old_listing_mt_api_token
             server.AUTH_REQUIRED = cls._old_auth_required
             server._STATE = cls._old_state
 
@@ -64,12 +92,12 @@ class TestV1HttpContract(unittest.TestCase):
             svc.alert_rules = []
             svc.alert_events = []
 
-    def _get_json(self, path: str, timeout: float = 10.0):
+    def _get_json(self, path: str, timeout: float = 20.0):
         with urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
             return resp.status, json.loads(body)
 
-    def _post_json(self, path: str, payload: dict, timeout: float = 10.0):
+    def _post_json(self, path: str, payload: dict, timeout: float = 20.0):
         req = Request(
             f"http://127.0.0.1:{self.port}{path}",
             data=json.dumps(payload).encode("utf-8"),
@@ -80,7 +108,12 @@ class TestV1HttpContract(unittest.TestCase):
             body = resp.read().decode("utf-8")
             return resp.status, json.loads(body)
 
-    def _delete_json(self, path: str, timeout: float = 10.0):
+    def _get_json_with_headers(self, path: str, timeout: float = 20.0):
+        with urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            return resp.status, json.loads(body), dict(resp.headers.items())
+
+    def _delete_json(self, path: str, timeout: float = 20.0):
         req = Request(f"http://127.0.0.1:{self.port}{path}", method="DELETE")
         with urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
@@ -90,6 +123,48 @@ class TestV1HttpContract(unittest.TestCase):
         status, payload = self._get_json("/v1/metrics?metric=MARKET_INDEX&scope=MARKET")
         self.assertEqual(status, 200)
         self.assertEqual(payload.get("metric"), "MARKET_INDEX")
+        self.assertEqual(payload.get("scope"), "MARKET")
+        self.assertIn("points", payload)
+        self.assertTrue(isinstance(payload.get("points"), list))
+
+    def test_runtime_http_metrics_endpoint_and_trace_header(self) -> None:
+        status_h, payload_h, headers_h = self._get_json_with_headers("/healthz")
+        self.assertEqual(status_h, 200)
+        self.assertTrue(payload_h.get("ok"))
+        trace_id = str(headers_h.get("X-Trace-Id") or headers_h.get("x-trace-id") or "").strip()
+        self.assertTrue(trace_id)
+
+        # Generate a few requests so metrics have non-zero counters.
+        self._get_json("/v1/overview?mode=tz")
+        self._get_json("/v1/signals?mode=tz&limit=5")
+        status_m, payload_m = self._get_json("/api/admin/runtime/http-metrics")
+        self.assertEqual(status_m, 200)
+        self.assertTrue(payload_m.get("ok"))
+        self.assertIn("total_requests", payload_m)
+        self.assertGreaterEqual(int(payload_m.get("total_requests") or 0), 1)
+        self.assertIn("latency_ms", payload_m)
+        latency = payload_m.get("latency_ms") or {}
+        self.assertIn("p95", latency)
+        self.assertIn("p99", latency)
+        self.assertIn("sse", payload_m)
+        self.assertIn("top_routes", payload_m)
+
+    def test_runtime_http_metrics_reset_endpoint(self) -> None:
+        self._get_json("/healthz")
+        self._get_json("/v1/overview?mode=tz")
+        status_before, payload_before = self._get_json("/api/admin/runtime/http-metrics")
+        self.assertEqual(status_before, 200)
+        self.assertGreaterEqual(int(payload_before.get("total_requests") or 0), 1)
+
+        status_reset, payload_reset = self._post_json("/api/admin/runtime/http-metrics/reset", {})
+        self.assertEqual(status_reset, 200)
+        self.assertTrue(payload_reset.get("ok"))
+        self.assertEqual(int(payload_reset.get("total_requests") or 0), 0)
+
+    def test_metrics_endpoint_listing_pressure_market_success(self) -> None:
+        status, payload = self._get_json("/v1/metrics?metric=LISTING_PRESSURE&scope=MARKET")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload.get("metric"), "LISTING_PRESSURE")
         self.assertEqual(payload.get("scope"), "MARKET")
         self.assertIn("points", payload)
         self.assertTrue(isinstance(payload.get("points"), list))
@@ -124,9 +199,26 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertIn("listings", payload_var_d)
         self.assertIn("breakdown", payload_var_d)
 
+        resolve_q = (
+            f"/v1/variants/resolve?collection_id={quote(str(var_item.get('collection_id') or ''))}"
+            f"&model={quote(str(var_item.get('model') or ''))}"
+            f"&background={quote(str(var_item.get('background') or ''))}"
+            f"&pattern={quote(str(var_item.get('pattern') or ''))}"
+            "&active_only=false"
+        )
+        status_resolve, payload_resolve = self._get_json(resolve_q)
+        self.assertEqual(status_resolve, 200)
+        self.assertIn("variant_id", payload_resolve)
+        self.assertTrue(str(payload_resolve.get("variant_id") or ""))
+        with self.assertRaises(HTTPError) as cm_resolve_bad:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/variants/resolve?model=domino", timeout=10)
+        self.assertEqual(cm_resolve_bad.exception.code, 400)
+
         status_sig, payload_sig = self._get_json("/v1/signals?limit=20")
         self.assertEqual(status_sig, 200)
         self.assertIn("items", payload_sig)
+        self.assertIn("total_count", payload_sig)
+        self.assertTrue(isinstance(payload_sig.get("total_count"), int))
         self.assertTrue(isinstance(payload_sig.get("items"), list))
         seeded_signal = next(
             (
@@ -149,6 +241,110 @@ class TestV1HttpContract(unittest.TestCase):
         with self.assertRaises(HTTPError) as cm_var_404:
             urlopen(f"http://127.0.0.1:{self.port}/v1/variants/does-not-exist", timeout=10)
         self.assertEqual(cm_var_404.exception.code, 404)
+
+    def test_signals_calibration_report_endpoint(self) -> None:
+        status, payload = self._get_json("/v1/signals/calibration/report?mode=tz&horizon_hours=24&limit=200")
+        self.assertEqual(status, 200)
+        self.assertIn("mode", payload)
+        self.assertIn("distribution", payload)
+        self.assertIn("quality", payload)
+        self.assertIn("gate_checks", payload)
+        self.assertIn("gates_passed", payload)
+
+    def test_signals_calibration_report_rejects_invalid_params(self) -> None:
+        with self.assertRaises(HTTPError) as cm_mode:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/signals/calibration/report?mode=foo", timeout=10)
+        self.assertEqual(cm_mode.exception.code, 400)
+        payload_mode = json.loads(cm_mode.exception.read().decode("utf-8"))
+        self.assertIn("unsupported_mode", str(payload_mode.get("error") or ""))
+
+        with self.assertRaises(HTTPError) as cm_horizon:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/signals/calibration/report?horizon_hours=999", timeout=10)
+        self.assertEqual(cm_horizon.exception.code, 400)
+        payload_horizon = json.loads(cm_horizon.exception.read().decode("utf-8"))
+        self.assertIn("invalid_horizon_range", str(payload_horizon.get("error") or ""))
+
+    def test_signals_http_layer_applies_action_filter_compat(self) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        fake_payload = {
+            "items": [
+                {"signal_id": "s-buy", "type": "BUY", "ts": now_iso, "score100": 90, "conf_pct": 90, "expected_profit_pct": 12, "edgeRank100": 70},
+                {"signal_id": "s-sell", "type": "SELL", "ts": now_iso, "score100": 90, "conf_pct": 90, "expected_profit_pct": 12, "edgeRank100": 70},
+                {"signal_id": "s-watch", "type": "WATCH", "ts": now_iso, "score100": 60, "conf_pct": 40, "expected_profit_pct": 2, "edgeRank100": 30},
+            ],
+            "total_count": 3,
+            "next_cursor": "opaque",
+            "has_more": True,
+            "engine_mode": "tz",
+        }
+        with patch.object(GiftAnalyticsService, "signals_v1", return_value=fake_payload):
+            status, payload = self._get_json("/v1/signals?action=SELL&limit=50")
+        self.assertEqual(status, 200)
+        items = payload.get("items") or []
+        self.assertEqual(len(items), 1)
+        self.assertEqual(str(items[0].get("type") or ""), "SELL")
+        self.assertEqual(int(payload.get("total_count") or 0), 1)
+        self.assertIsNone(payload.get("next_cursor"))
+        self.assertFalse(bool(payload.get("has_more")))
+
+    def test_signals_http_layer_applies_type_filter_compat(self) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        fake_payload = {
+            "items": [
+                {"signal_id": "s-buy", "type": "BUY", "ts": now_iso, "score100": 90, "conf_pct": 90, "expected_profit_pct": 12, "edgeRank100": 70},
+                {"signal_id": "s-sell", "type": "SELL", "ts": now_iso, "score100": 90, "conf_pct": 90, "expected_profit_pct": 12, "edgeRank100": 70},
+            ],
+            "total_count": 2,
+            "next_cursor": "opaque",
+            "has_more": True,
+            "engine_mode": "tz",
+        }
+        with patch.object(GiftAnalyticsService, "signals_v1", return_value=fake_payload):
+            status, payload = self._get_json("/v1/signals?type=SELL&limit=50")
+        self.assertEqual(status, 200)
+        items = payload.get("items") or []
+        self.assertEqual(len(items), 1)
+        self.assertEqual(str(items[0].get("type") or ""), "SELL")
+        self.assertEqual(int(payload.get("total_count") or 0), 1)
+        self.assertIsNone(payload.get("next_cursor"))
+        self.assertFalse(bool(payload.get("has_more")))
+
+    def test_signals_http_layer_applies_only_new_1h_filter_compat(self) -> None:
+        now = datetime.now(timezone.utc)
+        old_iso = (now - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+        new_iso = now.isoformat().replace("+00:00", "Z")
+        fake_payload = {
+            "items": [
+                {"signal_id": "s-old", "type": "BUY", "ts": old_iso, "score100": 80, "conf_pct": 80, "expected_profit_pct": 10, "edgeRank100": 70},
+                {"signal_id": "s-new", "type": "BUY", "ts": new_iso, "score100": 80, "conf_pct": 80, "expected_profit_pct": 10, "edgeRank100": 70},
+            ],
+            "total_count": 2,
+            "next_cursor": "opaque",
+            "has_more": True,
+            "engine_mode": "tz",
+        }
+        with patch.object(GiftAnalyticsService, "signals_v1", return_value=fake_payload):
+            status, payload = self._get_json("/v1/signals?only_new_1h=true&limit=50")
+        self.assertEqual(status, 200)
+        items = payload.get("items") or []
+        self.assertEqual(len(items), 1)
+        self.assertEqual(str(items[0].get("signal_id") or ""), "s-new")
+        self.assertEqual(int(payload.get("total_count") or 0), 1)
+
+    def test_listing_source_status_endpoint_uses_cached_mode_without_remote_probe(self) -> None:
+        svc = server._STATE
+        self.assertTrue(isinstance(svc, GiftAnalyticsService))
+        with patch.object(
+            svc,
+            "listing_source_status_v1",
+            return_value={"source": "mtproto_api", "rows_count": 10, "degraded": False},
+        ) as mocked:
+            status, payload = self._get_json("/api/listing/source-status")
+        self.assertEqual(status, 200)
+        self.assertEqual(str(payload.get("source") or ""), "mtproto_api")
+        mocked.assert_called_once()
+        _, kwargs = mocked.call_args
+        self.assertFalse(bool(kwargs.get("allow_remote", True)))
 
     def test_metrics_endpoint_tz_strict_mode_success(self) -> None:
         status, payload = self._get_json(
@@ -224,6 +420,20 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertEqual(cm.exception.code, 400)
         payload = json.loads(cm.exception.read().decode("utf-8"))
         self.assertIn("invalid_min_score_range", str(payload.get("error") or ""))
+
+    def test_signals_endpoint_rejects_invalid_max_risk(self) -> None:
+        with self.assertRaises(HTTPError) as cm:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/signals?max_risk=1.5", timeout=10)
+        self.assertEqual(cm.exception.code, 400)
+        payload = json.loads(cm.exception.read().decode("utf-8"))
+        self.assertIn("invalid_max_risk_range", str(payload.get("error") or ""))
+
+    def test_signals_endpoint_rejects_invalid_min_undervalue(self) -> None:
+        with self.assertRaises(HTTPError) as cm:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/signals?min_undervalue_pct=-1", timeout=10)
+        self.assertEqual(cm.exception.code, 400)
+        payload = json.loads(cm.exception.read().decode("utf-8"))
+        self.assertIn("invalid_min_undervalue_pct_range", str(payload.get("error") or ""))
 
     def test_metrics_endpoint_rejects_unsupported_scope(self) -> None:
         with self.assertRaises(HTTPError) as cm:
@@ -599,6 +809,53 @@ class TestV1HttpContract(unittest.TestCase):
         with self.assertRaises(HTTPError) as cm_race_direction:
             urlopen(f"http://127.0.0.1:{self.port}/v1/listings/race?direction=SIDE", timeout=10)
         self.assertEqual(cm_race_direction.exception.code, 400)
+
+    def test_new_listings_v17_endpoints_success_contract(self) -> None:
+        status_market, payload_market = self._get_json("/v1/market/status?window=30m")
+        self.assertEqual(status_market, 200)
+        self.assertIn("market_regime", payload_market)
+        self.assertIn("flow", payload_market)
+        self.assertIn("liquidity", payload_market)
+        self.assertIn("execution_health", payload_market)
+        self.assertIn("sse_disconnect_rate", (payload_market.get("execution_health") or {}))
+
+        status_new, payload_new = self._get_json("/v1/listings/new?limit=20&window=30m&only_pro_alerts=false")
+        self.assertEqual(status_new, 200)
+        self.assertIn("items", payload_new)
+        self.assertIn("server_ts", payload_new)
+
+        status_race, payload_race = self._get_json("/v1/listings/race?limit=20&window=30m")
+        self.assertEqual(status_race, 200)
+        self.assertIn("items", payload_race)
+        self.assertIn("server_ts", payload_race)
+        if isinstance(payload_race.get("items"), list) and payload_race.get("items"):
+            first = payload_race["items"][0]
+            self.assertIn("collection", first)
+            self.assertIn("model", first)
+            self.assertIn("background", first)
+            self.assertIn("pattern", first)
+            self.assertIn("preview_url", first)
+        status_race_low, payload_race_low = self._get_json("/v1/listings/race?limit=20&window=30m&include_low_priority=true")
+        self.assertEqual(status_race_low, 200)
+        self.assertIn("items", payload_race_low)
+
+        status_history, payload_history = self._get_json(f"/v1/listings/history?variant_id={quote('x|m|b|p')}&resolution=1m")
+        self.assertEqual(status_history, 200)
+        self.assertIn("series", payload_history)
+        self.assertIn("events", payload_history)
+
+    def test_new_listings_v17_validation(self) -> None:
+        with self.assertRaises(HTTPError) as cm_window:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/new?window=2h", timeout=10)
+        self.assertEqual(cm_window.exception.code, 400)
+
+        with self.assertRaises(HTTPError) as cm_direction:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/race?direction=SIDE", timeout=10)
+        self.assertEqual(cm_direction.exception.code, 400)
+
+        with self.assertRaises(HTTPError) as cm_history_missing:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/history", timeout=10)
+        self.assertEqual(cm_history_missing.exception.code, 400)
 
 
 if __name__ == "__main__":

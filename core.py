@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import logging
 import math
 import os
 import ssl
@@ -16,8 +18,11 @@ from typing import Dict, Iterable, List, Tuple
 import urllib.request
 import urllib.error
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 from fragment import FragmentClient, ListingEvent, VariantTraits, BaseInfo
+
+LOGGER = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent / "data"
 VARIANT_HISTORY_FILE = DATA_DIR / "variant_history.json"
@@ -112,7 +117,7 @@ METRIC_ALLOWED_SCOPES: dict[str, set[str]] = {
     "NEW_LISTINGS_REALTIME": {"MARKET", "COLLECTION", "VARIANT"},
     "LISTING_FEED": {"MARKET", "COLLECTION", "VARIANT"},
     "LISTING_VELOCITY": {"MARKET", "COLLECTION", "VARIANT"},
-    "LISTING_PRESSURE": {"VARIANT"},
+    "LISTING_PRESSURE": {"MARKET", "VARIANT"},
     "FAIR_PRICE": {"VARIANT"},
     "UNDERVALUE": {"VARIANT"},
     "EXPECTED_PROFIT": {"VARIANT"},
@@ -135,6 +140,24 @@ METRIC_ALLOWED_SCOPES: dict[str, set[str]] = {
     "SELL_SCORE": {"VARIANT"},
     "MARKET_INDEX": {"MARKET", "COLLECTION"},
     "TREND_SCORE": {"MARKET", "COLLECTION", "VARIANT"},
+}
+
+DEFAULT_EDGERANK_CONFIG: dict = {
+    "normalizations": {"LP": "LP = clamp(listing_pressure/8.0, 0, 1)"},
+    "profiles": {
+        "RISK_ON": {"EP": 0.40, "S": 0.25, "L": 0.10, "AR": 0.10, "D": 0.05, "LP": -0.10},
+        "MEAN_REVERT": {"EP": 0.35, "S": 0.25, "L": 0.15, "AR": 0.10, "D": 0.10, "LP": -0.15},
+        "RISK_OFF": {"EP": 0.25, "S": 0.20, "L": 0.20, "AR": 0.15, "D": 0.15, "LP": -0.20},
+        "PANIC": {"EP": 0.20, "S": 0.20, "L": 0.25, "AR": 0.20, "D": 0.10, "LP": -0.25, "VV_bonus": 0.0},
+    },
+    "panic_bonus": {"VV_norm": "VV_norm = clamp((volume_velocity - 0.8)/1.0, 0, 1)"},
+}
+
+DEFAULT_SIGNAL_PROFILE_CONFIG: dict = {
+    "gates": {"skip_if": {"conf_lt": 20, "sales24h_lt": 2}, "watch_if": {"conf_gte": 20, "conf_lt": 30}},
+    "telegram_publish_gate": {"edgeRank100_gte": 55, "conf_pct_gte": 35, "expected_profit_pct_gte": 8},
+    "profiles": {},
+    "post_rules": {"skip_if": []},
 }
 
 
@@ -221,6 +244,15 @@ def _slug_to_name(value: str) -> str:
     return " ".join(part.capitalize() for part in str(value or "").split("_") if part) or "Unknown"
 
 
+def _trait_key(value: str | None) -> str:
+    # Canonical matcher for traits/collection user input:
+    # "Berry Boxes", "berry_boxes", "berry-boxes" -> "berryboxes".
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", raw)
+
+
 def _sanitize_openai_key(value: str | None) -> str:
     raw = str(value or "").strip().strip("'").strip('"')
     # Remove accidental zero-width/non-ascii chars from copied keys.
@@ -235,6 +267,16 @@ def _load_json(path: Path, default):
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
+
+
+def _deep_merge_dict(base: dict, override: dict) -> dict:
+    out = dict(base or {})
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dict(out.get(key) or {}, value)
+        else:
+            out[key] = value
+    return out
 
 
 def _save_json(path: Path, payload) -> None:
@@ -540,6 +582,7 @@ class GiftAnalyticsService:
         # Fail-closed by default: always use verified snapshot unless explicitly disabled.
         self.verified_only = os.getenv("VERIFIED_ONLY", "true").strip().lower() in {"1", "true", "yes", "on"}
         self.ingest_interval_sec = int(os.getenv("INGEST_INTERVAL_SEC", "300"))
+        self.ingest_auto_loop = os.getenv("INGEST_AUTO_LOOP", "true").strip().lower() in {"1", "true", "yes", "on"}
         self.data_stale_sec = int(os.getenv("DATA_STALE_SEC", "600"))
         self.max_collections = int(os.getenv("FRAGMENT_MAX_COLLECTIONS", "0"))
         self.max_pages = int(os.getenv("FRAGMENT_MAX_PAGES_PER_COLLECTION", "500"))
@@ -607,8 +650,46 @@ class GiftAnalyticsService:
         self.listing_mt_api_token = str(os.getenv("LISTING_MT_API_TOKEN", "") or "").strip()
         self.listing_mt_api_token_header = str(os.getenv("LISTING_MT_API_TOKEN_HEADER", "Authorization") or "Authorization").strip()
         self.listing_mt_api_token_prefix = str(os.getenv("LISTING_MT_API_TOKEN_PREFIX", "Bearer ") or "")
-        self.listing_mt_api_timeout_sec = max(3.0, float(os.getenv("LISTING_MT_API_TIMEOUT_SEC", "8")))
-        self.listing_mt_cache_ttl_sec = max(1.0, float(os.getenv("LISTING_MT_CACHE_TTL_SEC", "2")))
+        self.listing_mt_api_timeout_sec = max(3.0, float(os.getenv("LISTING_MT_API_TIMEOUT_SEC", "4")))
+        # Keep MTProto fetch cadence moderate by default to avoid 429 bursts on provider side.
+        self.listing_mt_cache_ttl_sec = max(3.0, float(os.getenv("LISTING_MT_CACHE_TTL_SEC", "15")))
+        self.listing_mt_error_cache_ttl_sec = max(
+            self.listing_mt_cache_ttl_sec,
+            float(os.getenv("LISTING_MT_ERROR_CACHE_TTL_SEC", "45")),
+        )
+        self.listing_mt_retry_after_cap_sec = max(
+            15.0,
+            float(os.getenv("LISTING_MT_RETRY_AFTER_CAP_SEC", "180")),
+        )
+        self.listing_new_realtime_updated_max_age_sec = max(
+            10,
+            min(int(os.getenv("LISTING_NEW_REALTIME_UPDATED_MAX_AGE_SEC", "120")), 1800),
+        )
+        self.listing_new_realtime_ts_window_sec = max(
+            30,
+            min(int(os.getenv("LISTING_NEW_REALTIME_TS_WINDOW_SEC", "120")), 1800),
+        )
+        self.listing_decision_mode = str(os.getenv("LISTING_DECISION_MODE", "tz_strict") or "tz_strict").strip().lower()
+        self.listing_removed_confirm_misses = max(1, int(os.getenv("LISTING_REMOVED_CONFIRM_MISSES", "3")))
+        self.listing_race_noise_pct = max(0.0, float(os.getenv("LISTING_RACE_NOISE_PCT", "0.5")))
+        self.listing_event_dedupe_ttl_sec = max(60, int(os.getenv("LISTING_EVENT_DEDUPE_TTL_SEC", "600")))
+        self.listing_new_max_candidates = max(200, int(os.getenv("LISTING_NEW_MAX_CANDIDATES", "2500")))
+        self.listing_runtime_error_log_limit = max(20, min(int(os.getenv("LISTING_RUNTIME_ERROR_LOG_LIMIT", "200")), 2000))
+        self.listing_runtime_errors: list[dict] = []
+        self.state["listing_runtime_error_count"] = 0
+        self.state["last_listing_runtime_error"] = None
+        self.listing_config_dir = Path(
+            os.getenv("LISTING_CONFIG_DIR", str((Path(__file__).parent / "config" / "listing").resolve()))
+        )
+        self.edgerank_config = self._load_listing_config_json(
+            "edgerank_weights_by_regime.json",
+            default=DEFAULT_EDGERANK_CONFIG,
+        )
+        self.signal_profile_config = self._load_listing_config_json(
+            "signal_profiles_by_regime.json",
+            default=DEFAULT_SIGNAL_PROFILE_CONFIG,
+        )
+        self._configure_listing_profiles_from_config()
         self.metrics_strict_exact_max_variants = max(50, int(os.getenv("METRICS_STRICT_EXACT_MAX_VARIANTS", "500")))
         self.redis_collections_publish_limit = max(1, min(int(os.getenv("REDIS_COLLECTIONS_PUBLISH_LIMIT", "24")), 200))
         self.redis_collection_floor_series_limit = max(1, min(int(os.getenv("REDIS_COLLECTION_FLOOR_SERIES_LIMIT", "200")), 1000))
@@ -617,8 +698,12 @@ class GiftAnalyticsService:
         self._listing_mt_runtime_cache: dict = {
             "fetched_mono": 0.0,
             "rows": [],
+            "race_events": [],
+            "removed_events": [],
+            "absent_streaks": {},
             "source": "disabled",
             "error": "",
+            "error_ttl_sec": self.listing_mt_error_cache_ttl_sec,
             "updated_at": None,
         }
         self._restore_from_listing_state()
@@ -627,7 +712,8 @@ class GiftAnalyticsService:
         if self.fragment_bootstrap_cache and allow_bootstrap_from_file and not self.variants:
             self._bootstrap_from_verified_file()
         self._prune_ai_cache(force=True)
-        self._start_ingest_loop()
+        if self.ingest_auto_loop:
+            self._start_ingest_loop()
 
     def _invalidate_view_cache(self) -> None:
         self._view_cache.clear()
@@ -648,16 +734,272 @@ class GiftAnalyticsService:
             self._view_cache.clear()
         self._view_cache[key] = (self._data_version, payload)
 
+    def _listing_row_debug_context(self, row: dict | None) -> dict:
+        if not isinstance(row, dict):
+            return {}
+        attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+        return {
+            "listing_key": str(row.get("listing_key") or ""),
+            "listing_id": str(row.get("listing_id") or ""),
+            "unique_id": str(row.get("unique_id") or ""),
+            "variant_id": str(row.get("variant_id") or ""),
+            "collection_id": str(row.get("collection_id") or row.get("gift_id") or row.get("base_id") or ""),
+            "collection": str(row.get("collection") or row.get("title") or ""),
+            "model": str(row.get("model") or attrs.get("model") or ""),
+            "background": str(row.get("background") or attrs.get("background") or ""),
+            "pattern": str(row.get("pattern") or attrs.get("pattern") or ""),
+            "source": str(row.get("source") or ""),
+            "ts_detected": str(row.get("ts_detected") or row.get("first_seen_at") or ""),
+            "last_seen_at": str(row.get("last_seen_at") or row.get("last_seen") or ""),
+        }
+
+    def _record_listing_runtime_error(self, *, block: str, stage: str, exc: Exception, row: dict | None = None) -> dict:
+        payload = {
+            "ts": _iso(_now()),
+            "block": str(block or "unknown"),
+            "stage": str(stage or "runtime"),
+            "error_class": exc.__class__.__name__,
+            "error": str(exc),
+            "row": self._listing_row_debug_context(row),
+        }
+        self.listing_runtime_errors.append(payload)
+        if len(self.listing_runtime_errors) > self.listing_runtime_error_log_limit:
+            self.listing_runtime_errors = self.listing_runtime_errors[-self.listing_runtime_error_log_limit :]
+        self.state["listing_runtime_error_count"] = int(self.state.get("listing_runtime_error_count") or 0) + 1
+        self.state["last_listing_runtime_error"] = payload
+        try:
+            LOGGER.warning("listing_runtime_error %s", json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            LOGGER.warning("listing_runtime_error %s %s:%s", str(block or "unknown"), exc.__class__.__name__, str(exc))
+        return payload
+
+    def listing_runtime_errors_v1(self, limit: int = 50, block: str | None = None) -> dict:
+        lim = max(1, min(int(limit or 50), 500))
+        block_filter = str(block or "").strip().lower()
+        rows = self.listing_runtime_errors
+        if block_filter:
+            rows = [r for r in rows if str((r or {}).get("block") or "").strip().lower() == block_filter]
+        items = list(reversed(rows[-lim:]))
+        return {
+            "items": items,
+            "total": len(rows),
+            "limit": lim,
+            "block": block_filter or None,
+            "error_count_total": int(self.state.get("listing_runtime_error_count") or 0),
+            "last_error": self.state.get("last_listing_runtime_error"),
+        }
+
+    def _load_listing_config_json(self, filename: str, default: dict) -> dict:
+        candidates = [
+            self.listing_config_dir / filename,
+            Path(__file__).parent / "config" / "signals" / filename,
+            Path(__file__).parent / "config" / "listing" / filename,
+            Path(__file__).parent / "config" / filename,
+        ]
+        for path in candidates:
+            try:
+                if path.exists():
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict):
+                        return _deep_merge_dict(default, payload)
+            except Exception:
+                continue
+        return dict(default or {})
+
+    def _parse_listing_lp_divisor(self, normalization_text: str, fallback: float = 8.0) -> float:
+        raw = str(normalization_text or "")
+        match = re.search(r"/\s*([0-9]+(?:\.[0-9]+)?)", raw)
+        if match:
+            try:
+                return max(0.1, float(match.group(1)))
+            except Exception:
+                return float(fallback)
+        return float(fallback)
+
+    def _cfg_float(self, value, fallback: float) -> float:
+        if value in (None, ""):
+            return float(fallback)
+        try:
+            return float(value)
+        except Exception:
+            return float(fallback)
+
+    def _configure_listing_profiles_from_config(self) -> None:
+        edge_cfg = self.edgerank_config if isinstance(self.edgerank_config, dict) else {}
+        signal_cfg = self.signal_profile_config if isinstance(self.signal_profile_config, dict) else {}
+
+        self.edge_profile_weights: dict[str, dict[str, float]] = {}
+        for regime in ("RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"):
+            row = ((edge_cfg.get("profiles") or {}).get(regime) or {}) if isinstance(edge_cfg.get("profiles"), dict) else {}
+            if not isinstance(row, dict):
+                row = {}
+            self.edge_profile_weights[regime] = {
+                "EP": self._cfg_float(row.get("EP"), DEFAULT_EDGERANK_CONFIG["profiles"][regime]["EP"]),
+                "S": self._cfg_float(row.get("S"), DEFAULT_EDGERANK_CONFIG["profiles"][regime]["S"]),
+                "L": self._cfg_float(row.get("L"), DEFAULT_EDGERANK_CONFIG["profiles"][regime]["L"]),
+                "AR": self._cfg_float(row.get("AR"), DEFAULT_EDGERANK_CONFIG["profiles"][regime]["AR"]),
+                "D": self._cfg_float(row.get("D"), DEFAULT_EDGERANK_CONFIG["profiles"][regime]["D"]),
+                "LP": self._cfg_float(row.get("LP"), DEFAULT_EDGERANK_CONFIG["profiles"][regime]["LP"]),
+                "VV_bonus": self._cfg_float(row.get("VV_bonus"), DEFAULT_EDGERANK_CONFIG["profiles"][regime].get("VV_bonus", 0.0)),
+            }
+
+        lp_norm_text = str((((edge_cfg.get("normalizations") or {}).get("LP")) if isinstance(edge_cfg.get("normalizations"), dict) else "") or "")
+        self.edge_lp_divisor = self._parse_listing_lp_divisor(lp_norm_text, fallback=8.0)
+        self.edge_panic_vv_baseline = 0.8
+        self.edge_panic_vv_range = 1.0
+        vv_norm_text = str((((edge_cfg.get("panic_bonus") or {}).get("VV_norm")) if isinstance(edge_cfg.get("panic_bonus"), dict) else "") or "")
+        base_match = re.search(r"-\s*([0-9]+(?:\.[0-9]+)?)", vv_norm_text)
+        range_match = re.search(r"/\s*([0-9]+(?:\.[0-9]+)?)", vv_norm_text)
+        if base_match:
+            try:
+                self.edge_panic_vv_baseline = float(base_match.group(1))
+            except Exception:
+                self.edge_panic_vv_baseline = 0.8
+        if range_match:
+            try:
+                self.edge_panic_vv_range = max(0.1, float(range_match.group(1)))
+            except Exception:
+                self.edge_panic_vv_range = 1.0
+
+        self.listing_signal_profiles = signal_cfg.get("profiles") if isinstance(signal_cfg.get("profiles"), dict) else {}
+        self.listing_signal_global_gates = signal_cfg.get("gates") if isinstance(signal_cfg.get("gates"), dict) else {}
+        self.listing_signal_post_rules = signal_cfg.get("post_rules") if isinstance(signal_cfg.get("post_rules"), dict) else {}
+        publish_gate = signal_cfg.get("telegram_publish_gate") if isinstance(signal_cfg.get("telegram_publish_gate"), dict) else {}
+        self.listing_publish_gate = {
+            "edgeRank100_gte": self._cfg_float(publish_gate.get("edgeRank100_gte"), 55.0),
+            "conf_pct_gte": self._cfg_float(publish_gate.get("conf_pct_gte"), 35.0),
+            "expected_profit_pct_gte": self._cfg_float(publish_gate.get("expected_profit_pct_gte"), 8.0),
+        }
+
     def _ensure_recos(self) -> None:
         if self._reco_version == self._data_version:
             return
         self.recompute_recos()
         self._reco_version = self._data_version
 
+    def _zero_window_metrics(self) -> dict:
+        metrics: dict[str, float | int] = {}
+        for label in WINDOWS:
+            key = f"_{label}"
+            metrics[f"floor_change_pct{key}"] = 0.0
+            metrics[f"price_change_pct{key}"] = 0.0
+            metrics[f"supply_change_pct{key}"] = 0.0
+            metrics[f"trades_count{key}"] = 0
+            metrics[f"volume_ton{key}"] = 0.0
+            metrics[f"volatility{key}"] = 0.0
+            metrics[f"buy_velocity{key}"] = 0.0
+        metrics["vwap_ton_24h"] = 0.0
+        metrics["median_ton_7d"] = 0.0
+        metrics["new_listings_24h"] = 0
+        return metrics
+
+    def _restore_from_listing_state_fast(self, now: datetime) -> bool:
+        by_variant: Dict[str, dict] = {}
+        base_map: Dict[str, BaseInfo] = {}
+        for item in self.listing_state.values():
+            if not isinstance(item, dict) or item.get("status") != "ACTIVE":
+                continue
+            variant_id = str(item.get("variant_id") or "").strip()
+            if not variant_id:
+                continue
+            parts = variant_id.split("|")
+            if len(parts) < 4:
+                continue
+            base_id, model_id, background_id, pattern_id = parts[0], parts[1], parts[2], parts[3]
+            if base_id not in base_map:
+                base_map[base_id] = BaseInfo(base_id=base_id, name=_slug_to_name(base_id), slug=base_id)
+
+            slot = by_variant.get(variant_id)
+            if slot is None:
+                slot = {
+                    "variant_id": variant_id,
+                    "base_id": base_id,
+                    "model_id": model_id,
+                    "background_id": background_id,
+                    "pattern_id": pattern_id,
+                    "prices": [],
+                    "active_listings": 0,
+                    "preview_url": "",
+                    "updated_at": _iso(now),
+                }
+                by_variant[variant_id] = slot
+
+            try:
+                price_ton = float(item.get("price_ton") or 0.0)
+            except Exception:
+                price_ton = 0.0
+            if price_ton > 0:
+                slot["prices"].append(price_ton)
+            slot["active_listings"] = int(slot["active_listings"]) + 1
+
+            preview_url = str(item.get("preview_url") or "").strip()
+            if preview_url and not slot["preview_url"]:
+                slot["preview_url"] = preview_url
+
+            last_seen = str(item.get("last_seen") or "").strip()
+            if last_seen and last_seen > str(slot["updated_at"]):
+                slot["updated_at"] = last_seen
+
+        if not by_variant:
+            return False
+
+        variants: Dict[str, dict] = {}
+        for variant_id, slot in by_variant.items():
+            prices: List[float] = slot["prices"] if isinstance(slot.get("prices"), list) else []
+            prices_sorted = sorted(prices)
+            floor = float(prices_sorted[0]) if prices_sorted else 0.0
+            median_price = _safe_median(prices_sorted) if prices_sorted else floor
+            vwap = _safe_mean(prices_sorted) if prices_sorted else floor
+            p10 = _percentile(prices_sorted, 0.1) if prices_sorted else floor
+            spread_proxy = ((p10 - floor) / floor) if floor > 0 else 0.0
+
+            metrics = {
+                "floor_ton": round(floor, 6),
+                "floor_stars_est": self._stars_est(floor) if floor > 0 else self._stars_est(0.0),
+                "median_ton": round(median_price, 6),
+                "vwap_ton": round(vwap, 6),
+                "active_listings": int(slot.get("active_listings") or 0),
+                "spread_proxy_24h": round(spread_proxy, 6),
+            }
+            metrics.update(self._zero_window_metrics())
+
+            variants[variant_id] = {
+                "variant_id": variant_id,
+                "base_id": str(slot.get("base_id") or ""),
+                "traits": {
+                    "model": {"id": str(slot.get("model_id") or ""), "name": _slug_to_name(str(slot.get("model_id") or ""))},
+                    "background": {"id": str(slot.get("background_id") or ""), "name": _slug_to_name(str(slot.get("background_id") or ""))},
+                    "pattern": {"id": str(slot.get("pattern_id") or ""), "name": _slug_to_name(str(slot.get("pattern_id") or ""))},
+                },
+                "preview_url": str(slot.get("preview_url") or ""),
+                "updated_at": str(slot.get("updated_at") or _iso(now)),
+                "metrics": metrics,
+            }
+
+        self.bases = base_map
+        self.variants = variants
+        self._data_version += 1
+        self._reco_version = -1
+        self._invalidate_view_cache()
+        self._compute_liquidity()
+        self._ensure_recos()
+        self.state["updated_at"] = _iso(now)
+        self.state["ingestion_lag_seconds"] = 0
+        self.state["data_stale"] = True
+        self.state["last_error"] = "RESTORED_FROM_LOCAL_SNAPSHOT_FAST"
+        self.state["ingest_in_progress"] = False
+        self._save_state()
+        self._publish_realtime_snapshot(mode=self.v1_signal_engine_mode)
+        return True
+
     def _restore_from_listing_state(self) -> None:
         if not self.listing_state:
             return
         now = _now()
+        restore_mode = str(os.getenv("LISTING_RESTORE_MODE", "fast") or "fast").strip().lower()
+        if restore_mode != "full":
+            if self._restore_from_listing_state_fast(now):
+                return
         events: List[ListingEvent] = []
         base_map: Dict[str, BaseInfo] = {}
         for item in self.listing_state.values():
@@ -1116,6 +1458,11 @@ class GiftAnalyticsService:
                     "first_seen_at": last_seen,
                     "last_seen_at": last_seen,
                     "last_price_ton": price_ton,
+                    "prev_price_ton": None,
+                    "last_delta_ton": None,
+                    "last_delta_pct": None,
+                    "last_price_changed_at": None,
+                    "price_change_count": 0,
                     "active": True,
                     "relist_count": 0,
                     "last_relisted_at": None,
@@ -1133,7 +1480,15 @@ class GiftAnalyticsService:
             if str(entry.get("variant_id") or "") != variant_id:
                 entry["variant_id"] = variant_id
                 changed = True
-            if float(entry.get("last_price_ton") or 0.0) != price_ton:
+            prev_price_ton = float(entry.get("last_price_ton") or 0.0)
+            if prev_price_ton != price_ton:
+                delta_ton = price_ton - prev_price_ton
+                delta_pct = ((delta_ton / prev_price_ton) * 100.0) if prev_price_ton > 0 else None
+                entry["prev_price_ton"] = round(prev_price_ton, 6) if prev_price_ton > 0 else None
+                entry["last_delta_ton"] = round(delta_ton, 6)
+                entry["last_delta_pct"] = round(float(delta_pct), 6) if delta_pct is not None else None
+                entry["last_price_changed_at"] = now_iso
+                entry["price_change_count"] = int(entry.get("price_change_count") or 0) + 1
                 entry["last_price_ton"] = price_ton
                 changed = True
             if str(entry.get("last_seen_at") or "") != last_seen:
@@ -1466,7 +1821,74 @@ class GiftAnalyticsService:
             if price > 0:
                 prices_7d.append(price)
         if not prices_7d:
-            return 0.0, 0.0, 0.0
+            # Sparse-trades fallback: derive whale threshold and ratio from active listings/floor proxies,
+            # so market/collection whale widgets keep meaningful signal during low trade cadence.
+            proxy_prices: list[float] = []
+            for row in (self.listing_state or {}).values():
+                if not isinstance(row, dict):
+                    continue
+                variant_id = str(row.get("variant_id") or "")
+                if variant_ids is not None and variant_id not in variant_ids:
+                    continue
+                try:
+                    price = float(row.get("price_ton") or 0.0)
+                except Exception:
+                    continue
+                if price > 0:
+                    proxy_prices.append(price)
+            if not proxy_prices:
+                for vid, v in (self.variants or {}).items():
+                    if variant_ids is not None and vid not in variant_ids:
+                        continue
+                    try:
+                        floor_price = float(((v or {}).get("metrics") or {}).get("floor_ton") or 0.0)
+                    except Exception:
+                        continue
+                    if floor_price > 0:
+                        proxy_prices.append(floor_price)
+            if not proxy_prices:
+                return 0.0, 0.0, 0.0
+            whale_thr_proxy = _percentile(proxy_prices, 0.95)
+
+            def _proxy_ratio(start_dt: datetime, end_dt: datetime) -> float:
+                total = 0.0
+                whale = 0.0
+                for row in (self.listing_state or {}).values():
+                    if not isinstance(row, dict):
+                        continue
+                    variant_id = str(row.get("variant_id") or "")
+                    if variant_ids is not None and variant_id not in variant_ids:
+                        continue
+                    ts = _parse_ts(row.get("last_seen"))
+                    if ts < start_dt or ts >= end_dt:
+                        continue
+                    try:
+                        price = float(row.get("price_ton") or 0.0)
+                    except Exception:
+                        continue
+                    if price <= 0:
+                        continue
+                    total += price
+                    if price >= whale_thr_proxy:
+                        whale += price
+                if total > 0:
+                    return whale / total
+                # If listing timestamps are sparse/missing, use cross-sectional floor/listing prices.
+                px_total = sum(float(p) for p in proxy_prices if float(p) > 0)
+                if px_total <= 0:
+                    return 0.0
+                px_whale = sum(float(p) for p in proxy_prices if float(p) >= whale_thr_proxy)
+                return px_whale / px_total
+
+            now_24 = now - timedelta(seconds=WINDOWS["24h"])
+            prev_24 = now - timedelta(seconds=2 * WINDOWS["24h"])
+            ratio_now_proxy = _proxy_ratio(now_24, now)
+            ratio_prev_proxy = _proxy_ratio(prev_24, now_24)
+            return (
+                _clamp(ratio_now_proxy, 0.0, 1.0),
+                _clamp(ratio_now_proxy - ratio_prev_proxy, -1.0, 1.0),
+                float(whale_thr_proxy),
+            )
         whale_thr = _percentile(prices_7d, 0.95)
 
         def _ratio(start_dt: datetime, end_dt: datetime) -> float:
@@ -1732,7 +2154,8 @@ class GiftAnalyticsService:
         cached = self._cache_get(cache_key)
         if cached is not None:
             return cached
-        with self.lock:
+        acquired = self.lock.acquire(timeout=0.2)
+        try:
             variants = list(self.variants.values())
             state_updated_at = self.state.get("updated_at")
             state_ingestion_lag = self.state.get("ingestion_lag_seconds")
@@ -1756,6 +2179,9 @@ class GiftAnalyticsService:
             positive_24h = sum(1 for v in variants if float(v["metrics"].get("floor_change_pct_24h", 0) or 0) > 0)
             breadth_24h = positive_24h / max(len(variants), 1)
             trend_score = (0.18 * avg_1h) + (0.27 * avg_12h) + (0.35 * avg_24h) + (0.20 * avg_7d)
+        finally:
+            if acquired:
+                self.lock.release()
 
         net_signal = buy_signals - sell_signals
         market_state = "Боковик"
@@ -3218,6 +3644,22 @@ class GiftAnalyticsService:
 
     def _tz_signal_math(self, v: dict) -> dict:
         metrics = v.get("metrics") or {}
+        trades24_raw = float(metrics.get("trades_count_24h") or 0.0)
+        volume24_raw = float(metrics.get("volume_ton_24h") or 0.0)
+        trades1h_raw = float(metrics.get("trades_count_1h") or 0.0)
+        median24_raw = float(metrics.get("median_ton") or 0.0)
+        vwap24_raw = float(metrics.get("vwap_ton_24h") or 0.0)
+        # `median_ton` may just mirror current floor when there are no trades.
+        # Treat it as a pricing input only with real flow evidence.
+        has_metric_pricing_inputs = (
+            vwap24_raw > 0.0
+            or (median24_raw > 0.0 and trades24_raw > 0.0)
+        )
+        has_metric_flow_inputs = (
+            trades24_raw > 0.0
+            or volume24_raw > 0.0
+            or trades1h_raw > 0.0
+        )
         active_lots = int(metrics.get("active_listings") or 0)
         variant_floor_ton = float(metrics.get("floor_ton") or 0.0)
         vwap_24h = float(metrics.get("vwap_ton_24h") or metrics.get("vwap_ton") or 0.0)
@@ -3225,20 +3667,34 @@ class GiftAnalyticsService:
         base_id = str(v.get("base_id") or "")
         base_obj = self.get_base(base_id) or {}
         base_metrics = (base_obj.get("metrics") or {}) if isinstance(base_obj, dict) else {}
+        base_sales24_raw = float(base_metrics.get("trades_count_24h") or 0.0)
+        base_volume24_raw = float(base_metrics.get("volume_ton_24h") or 0.0)
+        base_trades1h_raw = float(base_metrics.get("trades_count_1h") or 0.0)
+        base_new24_raw = float(base_metrics.get("new_listings_24h") or 0.0)
+        base_liq24_raw = float(base_metrics.get("liquidity_score_24h") or 0.0)
         collection_floor_ton = float(base_metrics.get("floor_ton") or 0.0)
-        floor_ton = collection_floor_ton if collection_floor_ton > 0 else variant_floor_ton
+        # Prefer variant-level floor to keep per-variant signals differentiated;
+        # collection floor is a fallback when variant floor is absent.
+        floor_ton = variant_floor_ton if variant_floor_ton > 0 else collection_floor_ton
         price_ton = variant_floor_ton if variant_floor_ton > 0 else floor_ton
         supply_s = int(base_metrics.get("active_listings") or 0)
         floor_type = "real"
         sales24h = int(metrics.get("trades_count_24h") or 0)
         vol24h = float(metrics.get("volume_ton_24h") or 0.0)
         liquidity24h = _clamp(float(metrics.get("liquidity_score_24h") or 0.0), 0.0, 1.0)
+        share_active = _clamp(float(active_lots) / max(float(supply_s if supply_s > 0 else active_lots), 1.0), 0.0, 1.0)
         if sales24h <= 0 and vol24h > 0 and floor_ton > 0:
             sales24h = max(1, int(round(vol24h / max(floor_ton, 1e-6))))
-        if sales24h <= 0 and liquidity24h > 0:
-            sales24h = max(1, int(round(liquidity24h * 12)))
+        if sales24h <= 0 and base_sales24_raw > 0 and share_active > 0:
+            sales24h = max(0, int(round(base_sales24_raw * share_active)))
+        if vol24h <= 0 and base_volume24_raw > 0 and share_active > 0:
+            vol24h = max(0.0, float(base_volume24_raw) * share_active)
+        if liquidity24h <= 0 and base_liq24_raw > 0:
+            liquidity24h = _clamp(base_liq24_raw, 0.0, 1.0)
         liq6h = sales24h / 6.0
         trades_1h = float(metrics.get("trades_count_1h") or 0.0)
+        if trades_1h <= 0 and base_trades1h_raw > 0 and share_active > 0:
+            trades_1h = max(0.0, float(base_trades1h_raw) * share_active)
         if trades_1h > 0:
             vol30m = max(0.0, trades_1h * 0.5)
         else:
@@ -3266,9 +3722,37 @@ class GiftAnalyticsService:
         prem_rarity = _clamp(prem_rarity, 0.0, 0.20)
         target_liq = 0.5
         pen_liq = _clamp((target_liq - liq6h) / target_liq, 0.0, 0.25)
+        sparse_no_flow = (sales24h <= 0 and vol24h <= 0 and trades_1h <= 0)
+        if sparse_no_flow:
+            # Sparse snapshots should not systematically collapse fair value
+            # below floor due missing flow metrics.
+            sparse_floor_disp = _clamp(math.log10(max(floor_ton, 0.0) + 1.0) / 5.5, 0.0, 1.0)
+            pen_liq = _clamp((pen_liq * 0.35) + (0.04 * (1.0 - sparse_floor_disp)), 0.0, 0.12)
         alpha = 0.7
         base = alpha * m + (1 - alpha) * floor_ton
         fair_ton = base * (1 + prem_rarity) * (1 - pen_liq)
+        if sparse_no_flow and floor_ton > 0:
+            # In sparse/no-flow mode derive fair from structural scarcity/pressure
+            # to avoid flat undervalue=0 for most variants.
+            lots_norm_sparse = _clamp(math.log1p(max(float(active_lots), 0.0)) / max(math.log1p(800.0), 1e-6), 0.0, 1.0)
+            share_norm_sparse = _clamp(float(share_active), 0.0, 1.0)
+            structural_pressure = _clamp((0.7 * share_norm_sparse) + (0.3 * lots_norm_sparse), 0.0, 1.0)
+            scarcity_component = (0.5 - structural_pressure) * 0.18
+            rarity_component = (prem_rarity - 0.04) * 0.9
+            floor_disp_sparse = _clamp(math.log10(max(floor_ton, 0.0) + 1.0) / 5.5, 0.0, 1.0)
+            pressure_sparse = _clamp((float(active_lots) / max(float(sales24h), 1.0)) / 6.0, 0.0, 1.0)
+            floor_component = (floor_disp_sparse - 0.5) * 0.10
+            pressure_component = -0.14 * pressure_sparse
+            sparse_mult = _clamp(
+                0.90
+                + scarcity_component
+                + rarity_component
+                + floor_component
+                + pressure_component,
+                0.84,
+                1.16,
+            )
+            fair_ton = floor_ton * sparse_mult
 
         undervalue = 0.0
         if fair_ton > 0:
@@ -3297,6 +3781,12 @@ class GiftAnalyticsService:
             risk_pen += 0.25
             risk_flags.append("EXEC_FAIL_SPIKE")
 
+        has_proxy_flow_inputs = (
+            base_sales24_raw > 0.0
+            or base_volume24_raw > 0.0
+            or base_trades1h_raw > 0.0
+        )
+        inputs_sparse = not has_metric_pricing_inputs and not (has_metric_flow_inputs or has_proxy_flow_inputs)
         u = _clamp(undervalue / 0.6, 0.0, 1.0)
         r = _clamp(prem_rarity / 0.8, 0.0, 1.0)
         risk_pen_eff = risk_pen
@@ -3305,9 +3795,46 @@ class GiftAnalyticsService:
         score = _clamp(0.45 * u + 0.25 * r + 0.20 * trend_t + 0.10 * liq_score - risk_pen_eff, 0.0, 1.0)
         if sales24h < 10 and undervalue > 0:
             score = _clamp(score + min(0.10, undervalue * 0.25), 0.0, 1.0)
+        if inputs_sparse:
+            # Sparse snapshots often produce clustered scores.
+            # Add a deterministic low-amplitude adjustment from observable state.
+            floor_disp = _clamp(math.log10(max(price_ton, 0.0) + 1.0) / 5.5, 0.0, 1.0)
+            lots_disp = _clamp(math.log1p(max(float(active_lots), 0.0)) / max(math.log1p(500.0), 1e-6), 0.0, 1.0)
+            sparse_adj = ((0.7 * floor_disp) + (0.3 * lots_disp) - 0.5) * 0.06
+            score = _clamp(score + sparse_adj, 0.0, 1.0)
+            # Keep sparse scores low, but not fully collapsed to zero for all variants.
+            sparse_floor = _clamp(0.03 + (0.10 * floor_disp) + (0.06 * lots_disp) - (0.12 * risk_pen_eff), 0.0, 0.22)
+            score = max(score, sparse_floor)
         score100 = round(score * 100.0, 1)
 
-        confidence = _clamp(0.3 + 0.7 * min(1.0, sales24h / 30.0), 0.0, 1.0)
+        listing_pressure_tmp = float(active_lots) / max(float(sales24h), 1.0)
+        listing_pressure_norm_tmp = _clamp(float(listing_pressure_tmp) / max(0.1, float(self.edge_lp_divisor or 8.0)), 0.0, 1.0)
+        flow_conf = _clamp(min(1.0, sales24h / 30.0), 0.0, 1.0)
+        lots_conf = _clamp(math.log1p(max(float(active_lots), 0.0)) / max(math.log1p(300.0), 1e-6), 0.0, 1.0)
+        pricing_conf = 1.0 if has_metric_pricing_inputs else 0.45
+        pressure_conf = 1.0 - listing_pressure_norm_tmp
+        confidence = _clamp(
+            0.12
+            + (0.46 * flow_conf)
+            + (0.12 * liq_score)
+            + (0.10 * lots_conf)
+            + (0.10 * pressure_conf)
+            + (0.10 * pricing_conf),
+            0.0,
+            1.0,
+        )
+        if not has_metric_flow_inputs:
+            confidence = _clamp(confidence - 0.05, 0.0, 1.0)
+        if inputs_sparse:
+            floor_conf = _clamp(math.log10(max(price_ton, 0.0) + 1.0) / 5.5, 0.0, 1.0)
+            lots_conf_sparse = _clamp(math.log1p(max(float(active_lots), 0.0)) / max(math.log1p(500.0), 1e-6), 0.0, 1.0)
+            confidence = _clamp(
+                confidence
+                + ((floor_conf - 0.5) * 0.12)
+                + ((lots_conf_sparse - 0.5) * 0.08),
+                0.0,
+                1.0,
+            )
         if sales24h < 12 and undervalue > 0.015 and score >= 0.22:
             confidence = _clamp(confidence + min(0.06, 0.015 + (undervalue * 0.35)), 0.0, 1.0)
         conf_pct = round(confidence * 100.0, 1)
@@ -3318,9 +3845,11 @@ class GiftAnalyticsService:
             # Do not bias target below observable market floor.
             target_sell = max(target_sell, floor_ton)
         expected_profit_pct = 0.0
+        expected_profit_raw = 0.0
         if price_ton > 0:
             gross_profit = (target_sell - price_ton) / price_ton
-            expected_profit_pct = max(0.0, gross_profit - 0.03)
+            expected_profit_raw = gross_profit - 0.03
+            expected_profit_pct = max(0.0, expected_profit_raw)
 
         lots_ma_7d = max(1.0, active_lots * (1.0 - (float(metrics.get("supply_change_pct_24h") or 0.0) / 100.0)))
         sales_ma_7d = max(1.0, float(metrics.get("trades_count_7d") or (sales24h * 5)))
@@ -3343,10 +3872,33 @@ class GiftAnalyticsService:
 
         lots_ref = max(30.0, float(supply_s) / 150.0 if supply_s > 0 else 30.0)
         sell_pressure = _clamp((active_lots / lots_ref) - liquidity24h, 0.0, 1.0)
+        listing_pressure = float(active_lots) / max(float(sales24h), 1.0)
+        listing_pressure_norm = _clamp(float(listing_pressure) / max(0.1, float(self.edge_lp_divisor or 8.0)), 0.0, 1.0)
+        sales30m = float(trades_1h * 0.5) if trades_1h > 0 else float(sales24h / 48.0)
+        new_listings_30m_raw = float(metrics.get("new_listings_30m") or 0.0)
+        if new_listings_30m_raw <= 0:
+            new_listings_24h = float(metrics.get("new_listings_24h") or 0.0)
+            if new_listings_24h <= 0 and base_new24_raw > 0 and share_active > 0:
+                new_listings_24h = max(0.0, float(base_new24_raw) * share_active)
+            if new_listings_24h > 0:
+                new_listings_30m_raw = max(0.0, new_listings_24h / 48.0)
+            else:
+                supply_change_pct_24h = max(0.0, float(metrics.get("supply_change_pct_24h") or 0.0))
+                new_listings_30m_raw = max(0.0, (float(active_lots) * (supply_change_pct_24h / 100.0)) / 48.0)
+        absorption_rate = float(sales30m) / max(float(new_listings_30m_raw), 1.0)
+        absorption_rate_norm = _clamp(float(absorption_rate) / 2.0, 0.0, 1.0)
+        volume_velocity = float(metrics.get("volume_velocity_24h") or metrics.get("volume_velocity") or 0.0)
+        if volume_velocity <= 0:
+            hour_avg_sales = float(sales24h) / 24.0
+            volume_velocity = (float(trades_1h) / hour_avg_sales) if hour_avg_sales > 0 else 0.0
+        if volume_velocity <= 0 and base_sales24_raw > 0 and base_trades1h_raw > 0 and share_active > 0:
+            base_hour_avg_sales = (base_sales24_raw * share_active) / 24.0
+            volume_velocity = ((base_trades1h_raw * share_active) / base_hour_avg_sales) if base_hour_avg_sales > 0 else 0.0
+        volume_velocity_norm = _clamp(float(volume_velocity) / 2.0, 0.0, 1.0)
 
         reasons: List[str] = []
         if sales24h > 0:
-            reasons.append(f"Сделок за 24h: {sales24h}, объем: {round(float(metrics.get('volume_ton_24h') or 0.0), 2)} TON.")
+            reasons.append(f"Сделок за 24h: {sales24h}, объем: {round(float(vol24h or 0.0), 2)} TON.")
         reasons.append(f"Активных лотов: {active_lots}.")
         reasons.append(f"Ликвидность 24h: {round(liquidity24h, 2)}.")
 
@@ -3378,6 +3930,16 @@ class GiftAnalyticsService:
                 action_hint = "BUY"
             elif score >= 0.205 and undervalue >= 0.045 and forecast_max > -0.20 and confidence >= 0.30 and expected_profit_pct >= 0.0:
                 action_hint = "BUY"
+            elif inputs_sparse and undervalue <= -0.005 and listing_pressure >= 8.0 and confidence >= 0.16 and score <= 0.13:
+                action_hint = "SELL"
+            elif inputs_sparse and undervalue >= 0.042 and score >= 0.145 and confidence >= 0.18 and forecast_max > -0.22:
+                action_hint = "BUY"
+            elif (not forecast_reliable) and undervalue >= 0.04 and score >= 0.14 and confidence >= 0.18 and forecast_max > -0.22:
+                action_hint = "BUY"
+            elif undervalue <= -0.005 and listing_pressure >= 8.0 and confidence >= 0.16 and score <= 0.13 and forecast_max < 0.20:
+                action_hint = "SELL"
+            elif inputs_sparse and score >= 0.10 and confidence >= 0.16 and forecast_max > -0.25:
+                action_hint = "WATCH"
             elif (
                 score >= 0.30
                 or (expected_profit_pct > 0.0 and forecast_max > -0.12)
@@ -3396,6 +3958,24 @@ class GiftAnalyticsService:
                 action_hint = "WATCH"
             else:
                 action_hint = "SKIP"
+
+        # Safety gate: BUY must not pass with non-positive raw expected profit
+        # (before clipping) or with fair below current entry price.
+        if action_hint == "BUY":
+            non_positive_buy_profile = (
+                expected_profit_raw <= 0.0
+                or (fair_ton > 0 and price_ton > 0 and fair_ton <= price_ton)
+            )
+            if non_positive_buy_profile:
+                if forecast_max < 0 and confidence >= 0.30 and listing_pressure >= 1.0:
+                    action_hint = "SELL"
+                else:
+                    action_hint = "WATCH"
+                if "NEGATIVE_EXPECTED_PROFIT" not in risk_flags:
+                    risk_flags.append("NEGATIVE_EXPECTED_PROFIT")
+                reasons = list(reasons[:2]) + [
+                    f"BUY отклонен: ожидаемая прибыль до комиссий/клиппинга {round(expected_profit_raw * 100.0, 1)}%.",
+                ]
 
         return {
             "engine_mode": "tz",
@@ -3425,6 +4005,15 @@ class GiftAnalyticsService:
             "sales24h": sales24h,
             "liq6h": round(liq6h, 6),
             "vol30m": round(vol30m, 6),
+            "listing_pressure": round(listing_pressure, 6),
+            "listing_pressure_norm": round(listing_pressure_norm, 6),
+            "absorption_rate": round(absorption_rate, 6),
+            "absorption_rate_norm": round(absorption_rate_norm, 6),
+            "volume_velocity": round(volume_velocity, 6),
+            "volume_velocity_norm": round(volume_velocity_norm, 6),
+            "sales30m": int(max(0, round(sales30m))),
+            "new_listings_30m": int(max(0, round(new_listings_30m_raw))),
+            "inputs_sparse": bool(inputs_sparse),
         }
 
     def _effective_v1_mode(self, mode: str | None = None) -> str:
@@ -3499,16 +4088,36 @@ class GiftAnalyticsService:
             "reasons": reasons,
             "risk_flags": risk_flags,
             "stale": self.is_stale(),
-            "updated_at": v.get("updated_at") or self.state.get("updated_at") or _iso(_now()),
+            "updated_at": v.get("updated_at") or self.state.get("updated_at") or "1970-01-01T00:00:00Z",
         }
 
-    def _v1_signal(self, v: dict, mode: str | None = None) -> dict:
+    def _v1_signal(
+        self,
+        v: dict,
+        mode: str | None = None,
+        regime_snapshot: dict | None = None,
+        depth_cache: dict[str, tuple[int, float]] | None = None,
+    ) -> dict:
         eff_mode = self._effective_v1_mode(mode)
         variant = self._v1_variant_summary(v, mode=eff_mode)
         mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
         reco = v.get("reco") or {}
-        signal_ts = variant.get("updated_at") or self.state.get("updated_at") or _iso(_now())
-        signal_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{signal_ts}|{variant.get('variant_id')}|{variant.get('action_hint')}"))
+        metrics = v.get("metrics") if isinstance(v.get("metrics"), dict) else {}
+        # Keep signal identity stable across repeated requests:
+        # do not fallback to "now", otherwise signal_id changes and /v1/signals/{id}
+        # may intermittently return 404 right after list fetch.
+        signal_ts = (
+            variant.get("updated_at")
+            or v.get("updated_at")
+            or self.state.get("updated_at")
+            or "1970-01-01T00:00:00Z"
+        )
+        regime = regime_snapshot if isinstance(regime_snapshot, dict) else self._market_regime_snapshot_v1()
+        market_regime = str(regime.get("market_regime") or "MEAN_REVERT")
+        market_regime_badge = str(regime.get("market_regime_badge") or "🟡")
+        signal_type = str(variant.get("action_hint") or "WATCH").upper()
+        if signal_type not in {"BUY", "SELL", "WATCH", "SKIP"}:
+            signal_type = "WATCH"
         price_ton = variant.get("price_ton")
         floor_ton = variant.get("floor_ton")
         fair_ton = variant.get("fair_ton")
@@ -3516,6 +4125,7 @@ class GiftAnalyticsService:
         expected_profit_pct = variant.get("expected_profit_pct")
         forecast_min = mm.get("forecast24h_pct_min")
         forecast_max = mm.get("forecast24h_pct_max")
+        data_quality = "ok"
         if eff_mode == "legacy":
             forecast = reco.get("forecast") if isinstance(reco, dict) else {}
             rng = (forecast or {}).get("range_pct") if isinstance(forecast, dict) else None
@@ -3526,35 +4136,260 @@ class GiftAnalyticsService:
                 except Exception:
                     pass
             # Legacy mode doesn't have stable Fair/Undervalue/ExpectedProfit contract.
-            # Keep nullable fields null to avoid mixed-engine contradictions in one signal.
             fair_ton = None
             undervalue = None
             expected_profit_pct = None
+            data_quality = "legacy"
+        elif bool(mm.get("inputs_sparse")):
+            # Keep sparse estimates visible for ranking/comparison,
+            # but mark quality explicitly for UI/consumers.
+            data_quality = "sparse"
+
+        try:
+            price_num = float(price_ton or 0.0)
+        except Exception:
+            price_num = 0.0
+        try:
+            floor_num = float(floor_ton or 0.0)
+        except Exception:
+            floor_num = 0.0
+        try:
+            fair_num = float(fair_ton or 0.0)
+        except Exception:
+            fair_num = 0.0
+        try:
+            score100 = float(variant.get("score100") or 0.0)
+        except Exception:
+            score100 = 0.0
+        try:
+            conf_pct = float(variant.get("conf_pct") or 0.0)
+        except Exception:
+            conf_pct = 0.0
+        try:
+            expected_profit_raw = float(expected_profit_pct or 0.0)
+        except Exception:
+            expected_profit_raw = 0.0
+        expected_profit_pct_num = expected_profit_raw * 100.0 if abs(expected_profit_raw) <= 1.0 else expected_profit_raw
+        expected_profit_ratio = expected_profit_pct_num / 100.0
+        try:
+            undervalue_ratio = float(undervalue or 0.0)
+        except Exception:
+            undervalue_ratio = 0.0
+        liquidity_score_raw = _clamp(float(mm.get("liquidity24h") or 0.0), 0.0, 1.0)
+        liquidity_score = liquidity_score_raw * 100.0
+        absorption_30m = float(mm.get("absorption_rate") or 0.0)
+        listing_pressure = float(mm.get("listing_pressure") or 0.0)
+        volume_velocity = float(mm.get("volume_velocity") or 0.0)
+        active_lots_i = int(mm.get("active_lots") or metrics.get("active_listings") or 0)
+        sales24h = float(mm.get("sales24h") or metrics.get("trades_count_24h") or 0.0)
+        trades_1h = float(metrics.get("trades_count_1h") or 0.0)
+        supply_hint = float(metrics.get("active_listings") or mm.get("supply_s") or active_lots_i or 1.0)
+        share_active_sparse = _clamp(float(active_lots_i) / max(supply_hint, 1.0), 0.0, 1.0)
+        floor_ref_sparse = max(0.0, floor_num if floor_num > 0 else price_num)
+        floor_disp_sparse = _clamp(math.log10(floor_ref_sparse + 1.0) / 5.5, 0.0, 1.0)
+        lots_disp_sparse = _clamp(
+            math.log1p(max(float(active_lots_i), 0.0)) / max(math.log1p(500.0), 1e-6),
+            0.0,
+            1.0,
+        )
+        if listing_pressure <= 0:
+            listing_pressure = float(active_lots_i) / max(sales24h, 1.0)
+        if listing_pressure <= 0:
+            # Keep LP positive and variant-specific for sparse datasets.
+            listing_pressure = 0.5 + (2.5 * lots_disp_sparse)
+        if data_quality == "sparse" and sales24h <= 0:
+            # Structural LP for no-flow snapshots:
+            # use observable listing state instead of flat active_lots/1 = 1.0.
+            structural_lp = _clamp(
+                0.35
+                + (2.4 * share_active_sparse)
+                + (1.8 * lots_disp_sparse)
+                + (0.8 * (1.0 - floor_disp_sparse)),
+                0.3,
+                max(1.5, float(self.edge_lp_divisor or 8.0)),
+            )
+            if listing_pressure <= 1.05:
+                listing_pressure = structural_lp
+            else:
+                listing_pressure = (0.65 * listing_pressure) + (0.35 * structural_lp)
+        if absorption_30m <= 0:
+            sales30m = float(mm.get("sales30m") or 0.0)
+            new_30m = float(mm.get("new_listings_30m") or metrics.get("new_listings_30m") or 0.0)
+            absorption_30m = sales30m / max(new_30m, 1.0)
+        if absorption_30m <= 0 and data_quality == "sparse":
+            lp_norm_sparse = _clamp(listing_pressure / max(0.1, float(self.edge_lp_divisor or 8.0)), 0.0, 1.0)
+            trades_norm_sparse = _clamp(trades_1h / 3.0, 0.0, 1.0)
+            absorption_30m = _clamp((1.0 - lp_norm_sparse) * 1.0 + (0.35 * trades_norm_sparse), 0.05, 1.2)
+        if volume_velocity <= 0:
+            hour_avg_sales = sales24h / 24.0
+            volume_velocity = (trades_1h / hour_avg_sales) if hour_avg_sales > 0 else 0.0
+        if volume_velocity <= 0 and data_quality == "sparse":
+            trades_norm_sparse = _clamp(trades_1h / 3.0, 0.0, 1.0)
+            supply_relief_sparse = _clamp(1.0 - share_active_sparse, 0.0, 1.0)
+            volume_velocity = _clamp(
+                (0.80 * trades_norm_sparse)
+                + (0.55 * supply_relief_sparse)
+                + (0.40 * floor_disp_sparse)
+                + (0.15 * (1.0 - lots_disp_sparse)),
+                0.0,
+                2.0,
+            )
+        if data_quality == "sparse":
+            lp_norm_sparse = _clamp(listing_pressure / max(0.1, float(self.edge_lp_divisor or 8.0)), 0.0, 1.0)
+            ar_norm_sparse = _clamp(absorption_30m / 2.0, 0.0, 1.0)
+            liq_sparse_proxy = _clamp(
+                (0.35 * (1.0 - lp_norm_sparse))
+                + (0.25 * (1.0 - share_active_sparse))
+                + (0.20 * floor_disp_sparse)
+                + (0.20 * ar_norm_sparse),
+                0.05,
+                0.95,
+            )
+            if liquidity_score_raw <= 0.0:
+                liquidity_score_raw = liq_sparse_proxy
+            else:
+                # Blend feed liquidity with sparse proxy to avoid flat 60/100 style clusters.
+                liquidity_score_raw = _clamp((0.55 * liquidity_score_raw) + (0.45 * liq_sparse_proxy), 0.0, 1.0)
+            liquidity_score = liquidity_score_raw * 100.0
+
+        if depth_cache is None:
+            depth_cache = {}
+        variant_id = str(variant.get("variant_id") or "")
+        depth_count = 0
+        depth_ton = 0.0
+        if variant_id:
+            if variant_id in depth_cache:
+                depth_count, depth_ton = depth_cache.get(variant_id) or (0, 0.0)
+            else:
+                # Keep /v1/signals fast: use local estimate, avoid heavy cross-variant depth scan on each row.
+                depth_count = int(mm.get("active_lots") or metrics.get("active_listings") or 0)
+                price_ref = max(0.000001, floor_num if floor_num > 0 else price_num)
+                depth_ton = float(price_ref) * float(max(0, min(depth_count, 25)))
+                depth_cache[variant_id] = (int(depth_count), float(depth_ton))
+        depth_score = _clamp(float(depth_count) / 25.0, 0.0, 1.0)
+        edge_raw, edge_rank100 = self._edge_rank_raw_v1(
+            regime=market_regime,
+            score100=score100,
+            conf_pct=conf_pct,
+            expected_profit_ratio=expected_profit_ratio,
+            liquidity_score_pct=liquidity_score,
+            absorption_30m=absorption_30m,
+            listing_pressure=listing_pressure,
+            depth_score=depth_score,
+            volume_velocity=volume_velocity,
+        )
+        liq_norm = _clamp(liquidity_score / 100.0, 0.0, 1.0)
+        lp_norm = _clamp(listing_pressure / max(0.1, float(self.edge_lp_divisor or 8.0)), 0.0, 1.0)
+        ar_norm = _clamp(absorption_30m / 2.0, 0.0, 1.0)
+        vv_norm = _clamp(volume_velocity / 2.0, 0.0, 1.0)
+        sparse_damp = 0.55 if data_quality == "sparse" else 1.0
+
+        buy_profile_invalid = bool(
+            signal_type == "BUY"
+            and (
+                (expected_profit_pct is not None and expected_profit_ratio <= 0.0)
+                or (fair_num > 0 and price_num > 0 and fair_num <= price_num)
+            )
+        )
+        if buy_profile_invalid:
+            signal_type = "WATCH" if conf_pct >= 30.0 else "SKIP"
+
+        # Context-driven refinement to avoid clustered score/conf values
+        # for sparse snapshots while keeping deterministic ranking.
+        score_adj = sparse_damp * (
+            ((liq_norm - 0.5) * 3.5)
+            + ((1.0 - lp_norm - 0.5) * 2.5)
+            + ((vv_norm - 0.5) * 2.0)
+        )
+        score100 = round(_clamp(score100 + score_adj, 0.0, 100.0), 1)
+
+        conf_adj = sparse_damp * (
+            (_clamp((edge_rank100 - 50.0) / 50.0, -1.0, 1.0) * 6.0)
+            + ((liq_norm - 0.5) * 5.0)
+            + (((ar_norm - lp_norm)) * 4.0)
+            + ((vv_norm - 0.5) * 3.0)
+        )
+        conf_pct = round(_clamp(conf_pct + conf_adj, 0.0, 99.0), 1)
+
+        watch_trigger = ""
+        if signal_type == "WATCH":
+            if buy_profile_invalid:
+                watch_trigger = "BUY заблокирован: ожидаемая прибыль не покрывает риск/комиссии."
+            elif listing_pressure >= 4.0 and absorption_30m <= 0.8:
+                watch_trigger = "Ожидаем разгрузку предложения: LP высокий, AR низкий."
+            elif edge_rank100 >= 55.0 and expected_profit_pct_num < 8.0:
+                watch_trigger = "Подтверждение profit%: edge есть, но profit ниже порога."
+            elif conf_pct < 35.0:
+                watch_trigger = "Подтверждение confidence: дождаться conf >= 35%."
+            else:
+                watch_trigger = "Наблюдать 1ч: при улучшении контекста возможен переход в BUY/SELL."
+        signal_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"{signal_ts}|{variant_id}",
+            )
+        )
+        strength_tag = "NONE"
+        if signal_type == "BUY" and edge_rank100 >= 70 and conf_pct >= 65:
+            strength_tag = "STRONG_BUY"
+        elif signal_type == "SELL" and edge_rank100 >= 70 and conf_pct >= 65:
+            strength_tag = "STRONG_SELL"
+        collection_name = str(variant.get("collection_name") or variant.get("collection_id") or "")
+        model = str(variant.get("model") or "")
+        background = str(variant.get("background") or "")
+        pattern = str(variant.get("pattern") or "")
+        variant_label = " • ".join([collection_name or "Unknown", model or "Unknown", background or "Unknown", pattern or "Unknown"])
         return {
             "signal_id": signal_id,
             "ts": signal_ts,
-            "type": variant.get("action_hint"),
-            "variant_id": variant.get("variant_id"),
+            "type": signal_type,
+            "action": signal_type,
+            "strength_tag": strength_tag,
+            "variant_id": variant_id,
+            "variant_label": variant_label,
             "collection_id": variant.get("collection_id"),
-            "collection": variant.get("collection_name"),
+            "collection": collection_name,
             "preview_url": variant.get("preview_url"),
-            "model": variant.get("model"),
-            "background": variant.get("background"),
-            "pattern": variant.get("pattern"),
-            "score100": variant.get("score100"),
-            "conf_pct": variant.get("conf_pct"),
-            "price_ton": price_ton,
-            "floor_ton": floor_ton,
-            "fair_ton": fair_ton,
-            "undervalue": undervalue,
-            "expected_profit_pct": expected_profit_pct,
+            "model": model,
+            "background": background,
+            "pattern": pattern,
+            "market_regime": market_regime,
+            "market_regime_badge": market_regime_badge,
+            "edgeRank_profile": market_regime,
+            "edgeRank_raw": edge_raw,
+            "edgeRank100": edge_rank100,
+            "score100": score100,
+            "score_pct": score100,
+            "conf_pct": conf_pct,
+            "confidence_pct": conf_pct,
+            "price_ton": price_num,
+            "price_stars": self._stars_est(price_num),
+            "floor_ton": floor_num if floor_num > 0 else None,
+            "floor_stars": self._stars_est(floor_num) if floor_num > 0 else None,
+            "fair_ton": fair_num if fair_num > 0 else None,
+            "undervalue": undervalue_ratio if fair_ton is not None else None,
+            "undervalue_pct": round(undervalue_ratio * 100.0, 3) if fair_ton is not None else None,
+            "expected_profit_pct": round(expected_profit_pct_num, 3) if expected_profit_pct is not None else None,
             "forecast24h_pct_min": forecast_min,
             "forecast24h_pct_max": forecast_max,
+            "forecast_24h_pct_min": forecast_min,
+            "forecast_24h_pct_max": forecast_max,
+            "target_ton": fair_num if fair_num > 0 else None,
+            "stop_ton": round(price_num * 0.96, 6) if price_num > 0 else None,
             "active_lots": mm.get("active_lots"),
             "liquidity24h": mm.get("liquidity24h"),
-            "reasons": variant.get("reasons") or [],
-            "risk_flags": variant.get("risk_flags") or [],
+            "liquidity_score": round(liquidity_score, 2),
+            "absorption_30m": round(absorption_30m, 6),
+            "listing_pressure": round(listing_pressure, 6),
+            "volume_velocity": round(volume_velocity, 6),
+            "depth_5pct_count": int(depth_count),
+            "depth_5pct_ton": round(float(depth_ton), 6),
+            "depth_score": round(depth_score, 6),
+            "watch_trigger": watch_trigger,
+            "reasons": (variant.get("reasons") or [])[:3],
+            "risk_flags": (variant.get("risk_flags") or [])[:3],
             "engine_mode": eff_mode,
+            "data_quality": data_quality,
         }
 
     def _cursor_offset(self, cursor: str | None) -> int:
@@ -3564,6 +4399,42 @@ class GiftAnalyticsService:
             return max(0, int(str(cursor)))
         except Exception:
             return 0
+
+    def _cursor_keyset_encode(self, payload: dict) -> str:
+        try:
+            raw = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+        except Exception:
+            return ""
+
+    def _cursor_keyset_decode(self, cursor: str | None) -> dict | None:
+        token = str(cursor or "").strip()
+        if not token:
+            return None
+        try:
+            pad = "=" * ((4 - len(token) % 4) % 4)
+            raw = base64.urlsafe_b64decode((token + pad).encode("ascii"))
+            payload = json.loads(raw.decode("utf-8"))
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            return None
+        return None
+
+    def _cursor_find_index(self, rows: list[dict], cursor_payload: dict | None, key_fields: list[str]) -> int:
+        if not cursor_payload:
+            return 0
+        for idx, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            ok = True
+            for field in key_fields:
+                if str(row.get(field) or "") != str((cursor_payload or {}).get(field) or ""):
+                    ok = False
+                    break
+            if ok:
+                return idx + 1
+        return 0
 
     def _fallback_v1_counts_from_listings(self) -> dict:
         active_rows = [row for row in self.listing_state.values() if str((row or {}).get("status") or "ACTIVE").upper() == "ACTIVE"]
@@ -3677,6 +4548,10 @@ class GiftAnalyticsService:
     def overview_v1(self, mode: str | None = None) -> dict:
         self._ensure_recos()
         eff_mode = self._effective_v1_mode(mode)
+        cache_key = ("overview_v1", eff_mode)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
         variants = [self._v1_variant_summary(v, mode=eff_mode) for v in self.variants.values()]
         scores = [float(v.get("score100") or 0.0) for v in variants]
         market_index = round(_safe_mean(scores), 2) if scores else 0.0
@@ -3723,7 +4598,7 @@ class GiftAnalyticsService:
         if not top_signals:
             top_signals = self._fallback_v1_signals_from_listings(mode=eff_mode)[:8]
             recommendation = top_signals[0] if top_signals else None
-        return {
+        payload = {
             "market_index": market_index,
             "market_state": market_state,
             "counts": counts_payload,
@@ -3746,6 +4621,8 @@ class GiftAnalyticsService:
             "stale": self.is_stale(),
             "engine_mode": eff_mode,
         }
+        self._cache_set(cache_key, payload)
+        return payload
 
     def collections_v1(self, q: str = "", limit: int = 50, cursor: str | None = None) -> dict:
         query = str(q or "").strip().lower()
@@ -3882,6 +4759,10 @@ class GiftAnalyticsService:
         if not v:
             return None
         summary = self._v1_variant_summary(v, mode=eff_mode)
+        canonical_signal = self._v1_signal(v, mode=eff_mode)
+        canonical_action = str(canonical_signal.get("type") or canonical_signal.get("action") or "").upper()
+        if canonical_action in {"BUY", "SELL", "WATCH", "SKIP"}:
+            summary["action_hint"] = canonical_action
         listings = []
         for lid, row in self.listing_state.items():
             if str((row or {}).get("variant_id") or "") != str(v.get("variant_id") or ""):
@@ -3902,39 +4783,274 @@ class GiftAnalyticsService:
             breakdown = self._tz_signal_math_strict(v)
         else:
             breakdown = {"engine_mode": "legacy"}
+        if canonical_action in {"BUY", "SELL", "WATCH", "SKIP"}:
+            breakdown["action_hint"] = canonical_action
         return {"variant": summary, "listings": listings, "breakdown": breakdown}
+
+    def variant_resolve_v1(
+        self,
+        *,
+        collection_id: str | None = None,
+        collection: str | None = None,
+        model: str | None = None,
+        background: str | None = None,
+        pattern: str | None = None,
+        active_only: bool = True,
+        mode: str | None = None,
+    ) -> dict | None:
+        eff_mode = self._effective_v1_mode(mode)
+        cid_key = _trait_key(collection_id)
+        collection_key = _trait_key(collection)
+        model_key = _trait_key(model)
+        background_key = _trait_key(background)
+        pattern_key = _trait_key(pattern)
+        # For stable resolver results, require at least collection + model.
+        if not ((cid_key or collection_key) and model_key):
+            return None
+
+        active_variants: set[str] = set()
+        for row in (self.listing_state or {}).values():
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("status") or "ACTIVE").strip().upper() != "ACTIVE":
+                continue
+            vid = str(row.get("variant_id") or "").strip()
+            if vid:
+                active_variants.add(vid)
+
+        def _pick_best(*, relaxed: bool) -> tuple[dict | None, str]:
+            best_summary: dict | None = None
+            best_rank: tuple[float, float, float, float] | None = None
+            matched_by_local = "none"
+            for raw in self.variants.values():
+                if not isinstance(raw, dict):
+                    continue
+                summary = self._v1_variant_summary(raw, mode=eff_mode)
+                vid = str(summary.get("variant_id") or "").strip()
+                if not vid:
+                    continue
+                row_cid = _trait_key(summary.get("collection_id"))
+                row_collection = _trait_key(summary.get("collection_name"))
+                if cid_key and row_cid != cid_key:
+                    continue
+                if collection_key and collection_key not in {row_collection, row_cid}:
+                    continue
+                if model_key and _trait_key(summary.get("model")) != model_key:
+                    continue
+                # Primary pass requires exact optional traits; fallback pass keeps resolver
+                # stable when source normalization differs for background/pattern labels.
+                if not relaxed:
+                    if background_key and _trait_key(summary.get("background")) != background_key:
+                        continue
+                    if pattern_key and _trait_key(summary.get("pattern")) != pattern_key:
+                        continue
+
+                active_lots = int(summary.get("active_lots") or 0)
+                is_active = (vid in active_variants) or (active_lots > 0)
+                if active_only and not is_active:
+                    continue
+                score = float(summary.get("score") or 0.0)
+                conf = float(summary.get("confidence") or 0.0)
+                floor = float(summary.get("floor_ton") or 0.0)
+                # Prioritize active + liquid variants, then quality, then lower floor.
+                rank = (
+                    1.0 if is_active else 0.0,
+                    float(active_lots),
+                    score + (conf / 100.0),
+                    -floor if floor > 0 else 0.0,
+                )
+                if best_rank is None or rank > best_rank:
+                    best_rank = rank
+                    best_summary = summary
+                    matched_by_local = "traits_relaxed" if relaxed else "traits"
+            return best_summary, matched_by_local
+
+        best_summary, matched_by = _pick_best(relaxed=False)
+        if not isinstance(best_summary, dict) and (background_key or pattern_key):
+            best_summary, matched_by = _pick_best(relaxed=True)
+
+        if not isinstance(best_summary, dict):
+            return None
+        return {
+            "variant_id": str(best_summary.get("variant_id") or ""),
+            "collection_id": str(best_summary.get("collection_id") or ""),
+            "collection": str(best_summary.get("collection_name") or best_summary.get("collection_id") or ""),
+            "model": str(best_summary.get("model") or ""),
+            "background": str(best_summary.get("background") or ""),
+            "pattern": str(best_summary.get("pattern") or ""),
+            "preview_url": str(best_summary.get("preview_url") or ""),
+            "active_lots": int(best_summary.get("active_lots") or 0),
+            "floor_ton": float(best_summary.get("floor_ton") or 0.0),
+            "matched_by": matched_by,
+            "active_only": bool(active_only),
+        }
 
     def signals_v1(
         self,
         signal_type: str | None = None,
+        action: list[str] | None = None,
+        market_regime: list[str] | None = None,
         min_score: float | None = None,
+        edgeRank_min: float | None = None,
+        conf_min: float | None = None,
+        profit_min: float | None = None,
+        liq_min: float | None = None,
+        lp_max: float | None = None,
+        ar_min: float | None = None,
+        vv_min: float | None = None,
+        min_undervalue_pct: float | None = None,
+        max_risk: float | None = None,
+        only_new_1h: bool = False,
+        only_pro_alerts: bool = False,
+        q: str = "",
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
         since: str | None = None,
         limit: int = 50,
         cursor: str | None = None,
         mode: str | None = None,
     ) -> dict:
         allowed_types = {"BUY", "SELL", "WATCH", "SKIP"}
+        allowed_regimes = {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}
         if signal_type is not None:
             signal_type = str(signal_type).strip().upper()
             if signal_type and signal_type not in allowed_types:
                 raise ValueError(f"unsupported_signal_type:{signal_type}")
             if not signal_type:
                 signal_type = None
+        action_filter: set[str] = set()
+        if signal_type:
+            action_filter.add(signal_type)
+        for raw_action in (action or []):
+            val = str(raw_action or "").strip().upper()
+            if not val:
+                continue
+            if val not in allowed_types:
+                raise ValueError(f"unsupported_signal_type:{val}")
+            action_filter.add(val)
+        regime_filter: set[str] = set()
+        for raw_regime in (market_regime or []):
+            val = str(raw_regime or "").strip().upper()
+            if not val:
+                continue
+            if val not in allowed_regimes:
+                raise ValueError(f"unsupported_market_regime:{val}")
+            regime_filter.add(val)
         if min_score is not None and not (0.0 <= float(min_score) <= 1.0):
             raise ValueError("invalid_min_score_range")
+        if edgeRank_min is not None and not (0.0 <= float(edgeRank_min) <= 100.0):
+            raise ValueError("invalid_edgeRank_min_range")
+        if conf_min is not None and not (0.0 <= float(conf_min) <= 100.0):
+            raise ValueError("invalid_conf_min_range")
+        if liq_min is not None and not (0.0 <= float(liq_min) <= 100.0):
+            raise ValueError("invalid_liq_min_range")
+        if lp_max is not None and float(lp_max) < 0.0:
+            raise ValueError("invalid_lp_max_range")
+        if ar_min is not None and float(ar_min) < 0.0:
+            raise ValueError("invalid_ar_min_range")
+        if vv_min is not None and float(vv_min) < 0.0:
+            raise ValueError("invalid_vv_min_range")
+        if min_undervalue_pct is not None and float(min_undervalue_pct) < 0.0:
+            raise ValueError("invalid_min_undervalue_pct_range")
+        if max_risk is not None and not (0.0 <= float(max_risk) <= 1.0):
+            raise ValueError("invalid_max_risk_range")
         eff_mode = self._effective_v1_mode(mode)
         since_dt = _parse_ts(since) if since else None
-        items = []
+        new_1h_cutoff = _now() - timedelta(hours=1)
+        q_norm = str(q or "").strip().lower()
+        cache_key = (
+            "signals_v1",
+            eff_mode,
+            str(signal_type or ""),
+            tuple(sorted(action_filter)),
+            tuple(sorted(regime_filter)),
+            None if min_score is None else float(min_score),
+            None if edgeRank_min is None else float(edgeRank_min),
+            None if conf_min is None else float(conf_min),
+            None if profit_min is None else float(profit_min),
+            None if liq_min is None else float(liq_min),
+            None if lp_max is None else float(lp_max),
+            None if ar_min is None else float(ar_min),
+            None if vv_min is None else float(vv_min),
+            None if min_undervalue_pct is None else float(min_undervalue_pct),
+            None if max_risk is None else float(max_risk),
+            bool(only_new_1h),
+            bool(only_pro_alerts),
+            str(q_norm or ""),
+            str(sort_by or ""),
+            str(sort_dir or ""),
+            str(since or ""),
+            int(limit or 50),
+            str(cursor or ""),
+        )
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+        items: list[dict] = []
+        regime_snapshot = self._market_regime_snapshot_v1()
+        depth_cache: dict[str, tuple[int, float]] = {}
+        publish_gate = self.listing_publish_gate if isinstance(getattr(self, "listing_publish_gate", None), dict) else {}
+        gate_edge = _clamp(self._cfg_float(publish_gate.get("edgeRank100_gte"), 55.0), 0.0, 100.0)
+        gate_conf = _clamp(self._cfg_float(publish_gate.get("conf_pct_gte"), 35.0), 0.0, 100.0)
+        gate_profit = self._cfg_float(publish_gate.get("expected_profit_pct_gte"), 8.0)
         for v in self.variants.values():
-            sig = self._v1_signal(v, mode=eff_mode)
-            if signal_type and sig.get("type") != signal_type:
+            sig = self._v1_signal(v, mode=eff_mode, regime_snapshot=regime_snapshot, depth_cache=depth_cache)
+            action_val = str(sig.get("type") or "").upper()
+            if action_filter and action_val not in action_filter:
                 continue
             if min_score is not None and (float(sig.get("score100") or 0.0) / 100.0) < float(min_score):
                 continue
             if since_dt and _parse_ts(sig.get("ts")) < since_dt:
                 continue
-            if sig.get("type") not in {"BUY", "SELL", "WATCH", "SKIP"}:
+            if regime_filter and str(sig.get("market_regime") or "").upper() not in regime_filter:
                 continue
+            if action_val not in {"BUY", "SELL", "WATCH", "SKIP"}:
+                continue
+            edge_rank = float(sig.get("edgeRank100") or 0.0)
+            conf_pct = float(sig.get("conf_pct") or 0.0)
+            expected_profit = float(sig.get("expected_profit_pct") or 0.0)
+            liq = float(sig.get("liquidity_score") or 0.0)
+            lp = float(sig.get("listing_pressure") or 0.0)
+            ar = float(sig.get("absorption_30m") or 0.0)
+            vv = float(sig.get("volume_velocity") or 0.0)
+            undervalue_pct = float(sig.get("undervalue_pct") or (float(sig.get("undervalue") or 0.0) * 100.0))
+            risk_flags = sig.get("risk_flags") if isinstance(sig.get("risk_flags"), list) else []
+            risk_proxy = min(1.0, len(risk_flags) / 4.0)
+            if edgeRank_min is not None and edge_rank < float(edgeRank_min):
+                continue
+            if conf_min is not None and conf_pct < float(conf_min):
+                continue
+            if profit_min is not None and expected_profit < float(profit_min):
+                continue
+            if liq_min is not None and liq < float(liq_min):
+                continue
+            if lp_max is not None and lp > float(lp_max):
+                continue
+            if ar_min is not None and ar < float(ar_min):
+                continue
+            if vv_min is not None and vv < float(vv_min):
+                continue
+            if min_undervalue_pct is not None and undervalue_pct < float(min_undervalue_pct):
+                continue
+            if max_risk is not None and risk_proxy > float(max_risk):
+                continue
+            if only_new_1h and _parse_ts(sig.get("ts")) < new_1h_cutoff:
+                continue
+            if only_pro_alerts and not (edge_rank >= gate_edge and conf_pct >= gate_conf and expected_profit >= gate_profit):
+                continue
+            if q_norm:
+                hay = " ".join(
+                    [
+                        str(sig.get("variant_id") or ""),
+                        str(sig.get("variant_label") or ""),
+                        str(sig.get("collection") or ""),
+                        str(sig.get("model") or ""),
+                        str(sig.get("background") or ""),
+                        str(sig.get("pattern") or ""),
+                    ]
+                ).lower()
+                if q_norm not in hay:
+                    continue
             items.append(sig)
         if not items:
             items = self._fallback_v1_signals_from_listings(
@@ -3943,12 +5059,78 @@ class GiftAnalyticsService:
                 since_dt=since_dt,
                 mode=eff_mode,
             )
-        items.sort(key=lambda x: (str(x.get("ts") or ""), float(x.get("score100") or 0.0)), reverse=True)
-        off = self._cursor_offset(cursor)
+            if action_filter:
+                items = [x for x in items if str((x or {}).get("type") or "").upper() in action_filter]
+            if regime_filter or edgeRank_min is not None or conf_min is not None or profit_min is not None or liq_min is not None or lp_max is not None or ar_min is not None or vv_min is not None or min_undervalue_pct is not None or max_risk is not None or only_new_1h or only_pro_alerts or q_norm:
+                items = []
+
+        sort_field = str(sort_by or "").strip()
+        sort_direction = str(sort_dir or "").strip().lower()
+        reverse = sort_direction != "asc"
+        if sort_field:
+            sortable = {
+                "ts",
+                "edgeRank100",
+                "score100",
+                "conf_pct",
+                "expected_profit_pct",
+                "listing_pressure",
+                "liquidity_score",
+                "absorption_30m",
+                "volume_velocity",
+            }
+            if sort_field not in sortable:
+                raise ValueError(f"unsupported_sort_by:{sort_field}")
+            if sort_direction not in {"asc", "desc", ""}:
+                raise ValueError(f"unsupported_sort_dir:{sort_direction}")
+            if sort_field == "ts":
+                items.sort(key=lambda x: str(x.get("ts") or ""), reverse=reverse)
+            else:
+                items.sort(
+                    key=lambda x: (
+                        float(x.get(sort_field) or 0.0),
+                        float(x.get("conf_pct") or 0.0),
+                        str(x.get("ts") or ""),
+                    ),
+                    reverse=reverse,
+                )
+        else:
+            # PRO default sort from Signals TZ mapping.
+            items.sort(
+                key=lambda x: (
+                    float(x.get("edgeRank100") or 0.0),
+                    float(x.get("conf_pct") or 0.0),
+                    str(x.get("ts") or ""),
+                ),
+                reverse=True,
+            )
+
+        cursor_payload = self._cursor_keyset_decode(cursor)
+        if cursor_payload:
+            off = self._cursor_find_index(items, cursor_payload, ["signal_id", "ts"])
+        else:
+            off = self._cursor_offset(cursor)
         lim = max(1, min(int(limit or 50), 200))
         chunk = items[off : off + lim]
-        next_cursor = str(off + lim) if (off + lim) < len(items) else None
-        return {"items": chunk, "next_cursor": next_cursor, "engine_mode": eff_mode}
+        next_cursor = None
+        if (off + lim) < len(items):
+            if chunk:
+                next_cursor = self._cursor_keyset_encode(
+                    {
+                        "signal_id": str(chunk[-1].get("signal_id") or ""),
+                        "ts": str(chunk[-1].get("ts") or ""),
+                    }
+                )
+            if not next_cursor:
+                next_cursor = str(off + lim)
+        payload = {
+            "items": chunk,
+            "next_cursor": next_cursor,
+            "engine_mode": eff_mode,
+            "total_count": len(items),
+        }
+        self._cache_set(cache_key, payload)
+        return payload
 
     def signal_by_id_v1(self, signal_id: str, mode: str | None = None) -> dict | None:
         for item in self.signals_v1(limit=5000, mode=mode).get("items") or []:
@@ -4005,6 +5187,115 @@ class GiftAnalyticsService:
             "ts": event_ts,
             "key": key,
             "version": max(1, int(version or 1)),
+            "trace_id": str(trace_id or uuid.uuid4()),
+            "payload": payload,
+        }
+
+    def build_signal_created_event_v2(
+        self,
+        signal: dict,
+        ts: str | None = None,
+        trace_id: str | None = None,
+    ) -> dict:
+        sig = signal if isinstance(signal, dict) else {}
+        event_ts = str(ts or _iso(_now()))
+        variant_id = str(sig.get("variant_id") or "")
+        collection_id = str(sig.get("collection_id") or sig.get("gift_id") or "")
+        action = str(sig.get("action") or sig.get("type") or "WATCH").upper()
+        if action not in {"BUY", "SELL", "WATCH", "SKIP"}:
+            action = "WATCH"
+        regime = str(sig.get("market_regime") or "MEAN_REVERT").upper()
+        if regime not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}:
+            regime = "MEAN_REVERT"
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        try:
+            uuid.UUID(signal_id)
+        except Exception:
+            signal_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"{event_ts}|{variant_id}|{collection_id}|{action}|{sig.get('listing_key') or ''}",
+                )
+            )
+
+        price_ton = float(sig.get("price_ton") or 0.0)
+        floor_ton = sig.get("floor_ton")
+        if floor_ton in (None, ""):
+            floor_ton = price_ton
+        fair_ton = sig.get("fair_ton")
+        if fair_ton in (None, ""):
+            fair_ton = float(floor_ton or 0.0)
+        expected_profit_pct_raw = float(sig.get("expected_profit_pct") or 0.0)
+        expected_profit_pct = expected_profit_pct_raw * 100.0 if abs(expected_profit_pct_raw) <= 1.0 else expected_profit_pct_raw
+        undervalue_pct = sig.get("undervalue_pct")
+        if undervalue_pct in (None, ""):
+            undervalue_pct = float(sig.get("undervalue") or 0.0) * 100.0
+
+        payload = {
+            "signal_id": signal_id,
+            "ts": str(sig.get("ts") or event_ts),
+            "action": action,
+            "strength_tag": str(sig.get("strength_tag") or "NONE"),
+            "market_regime": regime,
+            "edgeRank_profile": str(sig.get("edgeRank_profile") or regime),
+            "edgeRank_raw": float(sig.get("edgeRank_raw") or 0.0),
+            "edgeRank100": float(sig.get("edgeRank100") or 0.0),
+            "score100": float(sig.get("score100") or 0.0),
+            "conf_pct": float(sig.get("conf_pct") or 0.0),
+            "expected_profit_pct": float(expected_profit_pct),
+            "variant_id": variant_id,
+            "collection_id": collection_id,
+            "collection": str(sig.get("collection") or sig.get("title") or collection_id),
+            "model": str(sig.get("model") or "Unknown"),
+            "background": str(sig.get("background") or "Unknown"),
+            "pattern": str(sig.get("pattern") or "Unknown"),
+            "price_ton": float(price_ton),
+            "floor_ton": float(floor_ton or 0.0),
+            "fair_ton": float(fair_ton or 0.0),
+            "undervalue_pct": float(undervalue_pct or 0.0),
+            "target_ton": float(sig.get("target_ton") or 0.0),
+            "stop_ton": float(sig.get("stop_ton") or 0.0),
+            "liquidity_score": float(sig.get("liquidity_score") or 0.0),
+            "absorption_30m": float(sig.get("absorption_30m") or 0.0),
+            "listing_pressure": float(sig.get("listing_pressure") or 0.0),
+            "volume_velocity": float(sig.get("volume_velocity") or 0.0),
+            "depth_5pct_count": int(sig.get("depth_5pct_count") or 0),
+            "depth_5pct_ton": float(sig.get("depth_5pct_ton") or 0.0),
+            "whale_ratio_pct": float(sig.get("whale_ratio_pct") or 0.0),
+            "buy_wall_score": float(sig.get("buy_wall_score") or 0.0),
+            "forecast_24h_pct_min": float(sig.get("forecast_24h_pct_min") or sig.get("forecast24h_pct_min") or 0.0),
+            "forecast_24h_pct_max": float(sig.get("forecast_24h_pct_max") or sig.get("forecast24h_pct_max") or 0.0),
+            "watch_trigger": str(sig.get("watch_trigger") or ""),
+            "reasons": [str(x) for x in (sig.get("reasons") or [])][:3],
+            "risk_flags": [str(x) for x in (sig.get("risk_flags") or [])][:3],
+        }
+        if payload["strength_tag"] not in {"NONE", "STRONG_BUY", "STRONG_SELL"}:
+            payload["strength_tag"] = "NONE"
+        if payload["edgeRank_profile"] not in {"BASE", "RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}:
+            payload["edgeRank_profile"] = regime
+        return {
+            "type": "signal.created",
+            "ts": event_ts,
+            "key": variant_id or collection_id,
+            "version": 2,
+            "trace_id": str(trace_id or uuid.uuid4()),
+            "payload": payload,
+        }
+
+    def build_market_status_event_v1(
+        self,
+        status: dict | None = None,
+        window: str | None = None,
+        ts: str | None = None,
+        trace_id: str | None = None,
+    ) -> dict:
+        event_ts = str(ts or _iso(_now()))
+        payload = status if isinstance(status, dict) else self.market_status_v1(window=window)
+        return {
+            "type": "market.status",
+            "ts": event_ts,
+            "version": 1,
             "trace_id": str(trace_id or uuid.uuid4()),
             "payload": payload,
         }
@@ -4091,7 +5382,7 @@ class GiftAnalyticsService:
         collection_id: str | None = None,
     ) -> list[dict]:
         wanted = set(types or [])
-        all_types = {"signal.created", "metric.updated", "listing.event", "variant.updated", "collection.updated", "provider.health"}
+        all_types = {"signal.created", "metric.updated", "listing.event", "market.status", "variant.updated", "collection.updated", "provider.health"}
         if not wanted:
             wanted = set(all_types)
         now_iso = _iso(_now())
@@ -4179,6 +5470,8 @@ class GiftAnalyticsService:
             top = (overview.get("top_signals") or [])
             if top:
                 out.append(self.build_signal_created_event_v1(top[0], ts=now_iso))
+        if "market.status" in wanted:
+            out.append(self.build_market_status_event_v1(window="30m", ts=now_iso))
         if "listing.event" in wanted:
             listing_items = self.listings_events_v1(limit=1, include_relisted=True).get("items") or []
             if listing_items:
@@ -5009,6 +6302,11 @@ class GiftAnalyticsService:
             elif metric_name == "LISTING_VELOCITY":
                 value = float(self._new_listings_in_window_multi(now_dt, 600, variant_ids=variant_ids))
                 points = [{"ts": now_iso, "value": value}]
+            elif metric_name == "LISTING_PRESSURE":
+                active_lots = float(market_summary.get("active_listings") or 0.0)
+                sales24h, _ = self._trades_in_window_multi(now_dt, WINDOWS["24h"], variant_ids=variant_ids)
+                value = active_lots / max(float(sales24h), 1.0)
+                points = [{"ts": now_iso, "value": value}]
             elif metric_name == "NEW_LISTINGS_REALTIME":
                 total_new_10m = float(self._new_listings_in_window_multi(now_dt, 600, variant_ids=variant_ids))
                 points = [{"ts": now_iso, "value": float(total_new_10m)}]
@@ -5131,6 +6429,36 @@ class GiftAnalyticsService:
             return data.get("items") or []
         return []
 
+    def _mt_api_candidate_urls(self) -> list[str]:
+        raw = str(self.listing_mt_api_url or "").strip()
+        if not raw:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for token in [x.strip() for x in raw.split(",") if x.strip()]:
+            candidates = [token]
+            try:
+                parsed = urlsplit(token)
+                base = urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+                path = str(parsed.path or "").strip()
+                if not path or path == "/":
+                    candidates.append(f"{base}/api/listings/new")
+                elif path.endswith("/api/listing-bridge/status"):
+                    candidates.append(f"{base}/api/listings/new")
+                elif path.endswith("/api/listings/new"):
+                    candidates.append(f"{base}/api/listing-bridge/status")
+            except Exception:
+                pass
+            for candidate in candidates:
+                c = str(candidate or "").strip()
+                if not c:
+                    continue
+                if c in seen:
+                    continue
+                seen.add(c)
+                out.append(c)
+        return out
+
     def _normalize_mt_listing_item(self, raw: dict, now: datetime, window_sec: int) -> dict | None:
         if not isinstance(raw, dict):
             return None
@@ -5243,36 +6571,119 @@ class GiftAnalyticsService:
         now = _now()
         wsec = max(30, min(int(window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
         cache = self._listing_mt_runtime_cache
-        if (not force) and cache.get("rows") and (time.monotonic() - float(cache.get("fetched_mono") or 0.0)) < self.listing_mt_cache_ttl_sec:
+        cache_age = time.monotonic() - float(cache.get("fetched_mono") or 0.0)
+        cache_has_rows = isinstance(cache.get("rows"), list)
+        cache_has_error = bool(str(cache.get("error") or "").strip())
+        cache_error_ttl = max(
+            self.listing_mt_error_cache_ttl_sec,
+            float(cache.get("error_ttl_sec") or self.listing_mt_error_cache_ttl_sec),
+        )
+        cache_ttl_sec = cache_error_ttl if cache_has_error else self.listing_mt_cache_ttl_sec
+        cache_url_used = str(cache.get("url_used") or "")
+        if (not force) and (cache_age < cache_ttl_sec) and (cache_has_rows or cache_has_error):
             return list(cache.get("rows") or []), {
                 "source": str(cache.get("source") or "runtime_cache"),
                 "error": str(cache.get("error") or ""),
                 "updated_at": cache.get("updated_at"),
                 "url_configured": bool(self.listing_mt_api_url),
+                "url_used": cache_url_used or None,
+            }
+        allow_snapshot_when_url_empty = self.listing_primary_source in {"mtproto", "mtproto_api"}
+        if (not self.listing_mt_api_url) and (not allow_snapshot_when_url_empty):
+            cache.update(
+                {
+                    "fetched_mono": time.monotonic(),
+                    "rows": [],
+                    "source": "disabled",
+                    "error": "",
+                    "error_ttl_sec": self.listing_mt_error_cache_ttl_sec,
+                    "updated_at": cache.get("updated_at") or _iso(now),
+                    "rows_count": 0,
+                    "url_used": "",
+                }
+            )
+            return [], {
+                "source": "disabled",
+                "error": "",
+                "updated_at": cache.get("updated_at") or _iso(now),
+                "url_configured": False,
+                "rows_count": 0,
+                "url_used": None,
             }
 
+        prev_rows = list(cache.get("rows") or [])
         rows: list = []
         source = "disabled"
         error = ""
+        error_ttl_sec = self.listing_mt_error_cache_ttl_sec
         updated_at = None
+        url_used = ""
         if self.listing_mt_api_url:
             source = "mtproto_api"
-            try:
-                req = urllib.request.Request(self.listing_mt_api_url, method="GET")
-                if self.listing_mt_api_token:
-                    req.add_header(self.listing_mt_api_token_header, f"{self.listing_mt_api_token_prefix}{self.listing_mt_api_token}")
-                with urllib.request.urlopen(req, timeout=self.listing_mt_api_timeout_sec) as resp:
-                    payload = json.loads(resp.read().decode("utf-8"))
-                updated_at = payload.get("updated_at") if isinstance(payload, dict) else None
-                for item in self._extract_mt_listing_items(payload):
-                    norm = self._normalize_mt_listing_item(item, now=now, window_sec=wsec)
-                    if norm:
-                        rows.append(norm)
-                if rows:
-                    self.mt_listings_snapshot = {"updated_at": updated_at or _iso(now), "items": rows}
-                    self._save_mt_listings_snapshot()
-            except Exception as exc:
-                error = f"{exc.__class__.__name__}: {exc}"
+            last_error = ""
+            for candidate_url in self._mt_api_candidate_urls():
+                try:
+                    req = urllib.request.Request(candidate_url, method="GET")
+                    if self.listing_mt_api_token:
+                        req.add_header(self.listing_mt_api_token_header, f"{self.listing_mt_api_token_prefix}{self.listing_mt_api_token}")
+                    with urllib.request.urlopen(req, timeout=self.listing_mt_api_timeout_sec) as resp:
+                        raw_bytes = resp.read()
+                        content_type = str(resp.headers.get("Content-Type") or "").lower()
+                    body = raw_bytes.decode("utf-8", errors="replace")
+                    if "text/html" in content_type or body.lstrip().startswith("<"):
+                        if "service suspended" in body.lower():
+                            last_error = "mtproto_service_suspended"
+                        else:
+                            last_error = "mtproto_non_json_response"
+                        continue
+                    try:
+                        payload = json.loads(body)
+                    except Exception:
+                        last_error = "mtproto_invalid_json_response"
+                        continue
+                    if isinstance(payload, dict) and payload.get("ok") is False:
+                        api_err = str(payload.get("error") or "request_rejected")
+                        last_error = f"mtproto_api_error:{api_err}"
+                        continue
+                    updated_at = payload.get("updated_at") if isinstance(payload, dict) else None
+                    items = self._extract_mt_listing_items(payload if isinstance(payload, dict) else {})
+                    if not items:
+                        if isinstance(payload, dict) and str(payload.get("schema") or "").startswith("listing.bridge."):
+                            last_error = "mtproto_status_endpoint_used_instead_of_listings_new"
+                        else:
+                            last_error = "mtproto_payload_no_items"
+                        continue
+                    for item in items:
+                        norm = self._normalize_mt_listing_item(item, now=now, window_sec=wsec)
+                        if norm:
+                            rows.append(norm)
+                    if rows:
+                        url_used = candidate_url
+                        self.mt_listings_snapshot = {"updated_at": updated_at or _iso(now), "items": rows}
+                        self._save_mt_listings_snapshot()
+                        break
+                    last_error = "mtproto_payload_items_not_normalized"
+                except urllib.error.HTTPError as exc:
+                    if int(getattr(exc, "code", 0)) == 401:
+                        last_error = "mtproto_http_401_unauthorized"
+                    elif int(getattr(exc, "code", 0)) == 403:
+                        last_error = "mtproto_http_403_forbidden"
+                    elif int(getattr(exc, "code", 0)) == 404:
+                        last_error = "mtproto_http_404_not_found"
+                    elif int(getattr(exc, "code", 0)) == 429:
+                        last_error = "mtproto_http_429_rate_limited"
+                        retry_after = self._retry_after_sec(exc)
+                        if retry_after is not None:
+                            error_ttl_sec = max(
+                                error_ttl_sec,
+                                min(self.listing_mt_retry_after_cap_sec, float(retry_after)),
+                            )
+                    else:
+                        last_error = f"mtproto_http_{int(getattr(exc, 'code', 0))}"
+                except Exception as exc:
+                    last_error = f"{exc.__class__.__name__}: {exc}"
+            if not rows:
+                error = last_error or "mtproto_unknown_fetch_error"
 
         if not rows:
             snap_items = self.mt_listings_snapshot.get("items") if isinstance(self.mt_listings_snapshot, dict) else []
@@ -5286,15 +6697,122 @@ class GiftAnalyticsService:
                 updated_at = self.mt_listings_snapshot.get("updated_at") if isinstance(self.mt_listings_snapshot, dict) else None
                 # Snapshot is a valid degraded datasource; keep UI/API healthy without bubbling transient upstream errors.
                 error = ""
+        # On transient upstream errors without any usable rows keep previous runtime rows to avoid false removed spikes.
+        if not rows and error and prev_rows:
+            rows = list(prev_rows)
+            source = str(cache.get("source") or "runtime_cache")
+
+        prev_by_key: dict[str, dict] = {}
+        for row in prev_rows:
+            if not isinstance(row, dict):
+                continue
+            listing_key = str(row.get("listing_key") or "")
+            if listing_key:
+                prev_by_key[listing_key] = row
+        rows_by_key: dict[str, dict] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            listing_key = str(row.get("listing_key") or "")
+            if listing_key:
+                rows_by_key[listing_key] = row
+        now_iso = _iso(now)
+        race_events: list[dict] = []
+        for listing_key, current in rows_by_key.items():
+            prev = prev_by_key.get(listing_key)
+            if not isinstance(prev, dict):
+                continue
+            try:
+                prev_price = float(prev.get("resell_amount_ton") or 0.0)
+                cur_price = float(current.get("resell_amount_ton") or 0.0)
+            except Exception:
+                continue
+            if prev_price <= 0 or cur_price <= 0:
+                continue
+            if abs(cur_price - prev_price) < 1e-9:
+                continue
+            delta_ton = cur_price - prev_price
+            delta_pct = (delta_ton / prev_price) * 100.0
+            attrs = current.get("attributes") if isinstance(current.get("attributes"), dict) else {}
+            low_priority = abs(delta_pct) < float(self.listing_race_noise_pct or 0.5)
+            race_events.append(
+                {
+                    "ts_detected": now_iso,
+                    "listing_key": listing_key,
+                    "variant_id": str(current.get("variant_id") or ""),
+                    "variant_label": " • ".join(
+                        [
+                            str(current.get("collection") or current.get("title") or current.get("collection_id") or ""),
+                            str(attrs.get("model") or ""),
+                            str(attrs.get("background") or ""),
+                            str(attrs.get("pattern") or ""),
+                        ]
+                    ).strip(" •"),
+                    "prev_price_ton": round(prev_price, 6),
+                    "price_ton": round(cur_price, 6),
+                    "delta_ton": round(delta_ton, 6),
+                    "delta_pct": round(delta_pct, 6),
+                    "direction": "UP" if delta_ton > 0 else "DOWN",
+                    "low_priority": bool(low_priority),
+                    "source": source,
+                }
+            )
+        removed_events: list[dict] = []
+        absent_streaks = cache.get("absent_streaks") if isinstance(cache.get("absent_streaks"), dict) else {}
+        if not isinstance(absent_streaks, dict):
+            absent_streaks = {}
+        confirm_misses = max(1, int(self.listing_removed_confirm_misses or 3))
+        for listing_key in list(absent_streaks.keys()):
+            if listing_key in rows_by_key:
+                absent_streaks.pop(listing_key, None)
+        for listing_key, old_row in prev_by_key.items():
+            if listing_key in rows_by_key:
+                absent_streaks.pop(listing_key, None)
+                continue
+            streak = int(absent_streaks.get(listing_key) or 0) + 1
+            absent_streaks[listing_key] = streak
+            if streak < confirm_misses:
+                continue
+            removed_events.append(
+                {
+                    "ts": now_iso,
+                    "type": "listing.removed",
+                    "listing_key": listing_key,
+                    "price_ton": old_row.get("resell_amount_ton"),
+                    "variant_id": old_row.get("variant_id"),
+                    "source": source,
+                    "meta": {
+                        "collection_id": old_row.get("collection_id") or old_row.get("gift_id"),
+                        "unique_id": old_row.get("unique_id"),
+                        "confirmed_after_misses": streak,
+                    },
+                }
+            )
+            absent_streaks.pop(listing_key, None)
+        ttl_sec = max(WINDOWS["24h"], wsec)
+        cutoff = now - timedelta(seconds=ttl_sec)
+        keep_race = [ev for ev in (cache.get("race_events") or []) if _parse_ts((ev or {}).get("ts_detected")) >= cutoff]
+        keep_removed = [ev for ev in (cache.get("removed_events") or []) if _parse_ts((ev or {}).get("ts")) >= cutoff]
+        keep_race.extend(race_events)
+        keep_removed.extend(removed_events)
+        if len(keep_race) > 5000:
+            keep_race = keep_race[-5000:]
+        if len(keep_removed) > 5000:
+            keep_removed = keep_removed[-5000:]
 
         cache.update(
             {
                 "fetched_mono": time.monotonic(),
                 "rows": rows,
+                "race_events": keep_race,
+                "removed_events": keep_removed,
+                "absent_streaks": absent_streaks,
                 "source": source,
                 "error": error,
+                "error_ttl_sec": error_ttl_sec if error else self.listing_mt_error_cache_ttl_sec,
                 "updated_at": updated_at or _iso(now),
                 "rows_count": len(rows),
+                "url_used": url_used,
             }
         )
         return rows, {
@@ -5303,6 +6821,7 @@ class GiftAnalyticsService:
             "updated_at": updated_at or _iso(now),
             "url_configured": bool(self.listing_mt_api_url),
             "rows_count": len(rows),
+            "url_used": url_used or None,
         }
 
     def _apply_listing_filters(
@@ -5343,8 +6862,34 @@ class GiftAnalyticsService:
         )
         return out
 
-    def listing_source_status_v1(self) -> dict:
-        _, status = self._refresh_mt_listing_source(force=False)
+    def listing_source_status_v1(self, allow_remote: bool = True) -> dict:
+        if allow_remote:
+            _, status = self._refresh_mt_listing_source(force=False)
+        else:
+            cache = self._listing_mt_runtime_cache if isinstance(self._listing_mt_runtime_cache, dict) else {}
+            cached_rows = list(cache.get("rows") or [])
+            status = {
+                "source": str(cache.get("source") or ("mtproto_cache" if cached_rows else "mtproto_cache_empty")),
+                "error": str(cache.get("error") or ""),
+                "updated_at": cache.get("updated_at") or self.state.get("updated_at"),
+                "rows_count": len(cached_rows),
+                "url_used": cache.get("url_used"),
+            }
+        source = str(status.get("source") or "")
+        if source in {"disabled", "mtproto_cache_empty"} and self.listing_primary_source in {"auto", "fragment"}:
+            active_rows = 0
+            for row in (self.listing_state or {}).values():
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("status") or "").upper() == "ACTIVE":
+                    active_rows += 1
+            status = {
+                "source": "fragment.verified_snapshot",
+                "error": "",
+                "updated_at": self.state.get("updated_at"),
+                "rows_count": active_rows,
+                "url_used": None,
+            }
         rows_count = int(status.get("rows_count") or 0)
         error = str(status.get("error") or "")
         source = str(status.get("source") or "")
@@ -5360,6 +6905,1221 @@ class GiftAnalyticsService:
             "cache_ttl_sec": self.listing_mt_cache_ttl_sec,
             "rows_count": rows_count,
             "degraded": degraded,
+            "url_used": status.get("url_used"),
+            "url_candidates": self._mt_api_candidate_urls()[:5],
+        }
+
+    def _listing_window_to_seconds(self, window: str | None, default: str = "30m") -> int:
+        raw = str(window or default).strip().lower()
+        allowed = {"10m", "30m", "1h", "6h", "24h"}
+        if raw not in allowed:
+            raise ValueError(f"unsupported_window:{raw}")
+        return int(WINDOWS.get(raw, WINDOWS[default]))
+
+    def _listing_source_rows_v1(
+        self,
+        window_sec: int,
+        allow_remote: bool = True,
+        sync_tracker: bool = True,
+    ) -> tuple[list[dict], dict]:
+        now = _now()
+        if sync_tracker:
+            self._sync_listing_tracker_state(now, persist=False)
+        source_status = {"source": "fragment.verified_snapshot", "error": "", "updated_at": self.state.get("updated_at")}
+        rows: list[dict] = []
+        primary_mode = self.listing_primary_source
+        if primary_mode in {"auto", "mtproto", "mtproto_api"}:
+            if allow_remote:
+                mt_rows, mt_status = self._refresh_mt_listing_source(force=False, window_sec=window_sec)
+            else:
+                cache = self._listing_mt_runtime_cache if isinstance(self._listing_mt_runtime_cache, dict) else {}
+                mt_rows = list(cache.get("rows") or [])
+                mt_status = {
+                    "source": str(cache.get("source") or ("mtproto_cache" if mt_rows else "mtproto_cache_empty")),
+                    "error": str(cache.get("error") or ""),
+                    "updated_at": cache.get("updated_at") or self.state.get("updated_at"),
+                }
+            source_status = mt_status
+            if mt_rows:
+                rows = mt_rows
+            elif primary_mode in {"mtproto", "mtproto_api"}:
+                source_status = {
+                    "source": str(mt_status.get("source") or "mtproto_api"),
+                    "error": str(mt_status.get("error") or "mtproto_empty_payload"),
+                    "updated_at": mt_status.get("updated_at") or self.state.get("updated_at"),
+                }
+        if not rows:
+            rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
+            if not str(source_status.get("source") or "").startswith("mtproto"):
+                source_status = {
+                    "source": "fragment.verified_snapshot",
+                    "error": str(source_status.get("error") or ""),
+                    "updated_at": self.state.get("updated_at"),
+                }
+        return rows, source_status
+
+    def _listing_new_realtime_source_ok(self, source_status: dict, now: datetime | None = None) -> tuple[bool, str]:
+        now_dt = now if isinstance(now, datetime) else _now()
+        source = str((source_status or {}).get("source") or "").strip().lower()
+        if source != "mtproto_api":
+            return False, "source_not_mtproto_api"
+        updated_at_raw = str((source_status or {}).get("updated_at") or "").strip()
+        updated_at_dt = _parse_ts(updated_at_raw) if updated_at_raw else None
+        if updated_at_dt is None:
+            return False, "mtproto_updated_at_missing"
+        age_sec = (now_dt - updated_at_dt).total_seconds()
+        if age_sec < -30:
+            return False, "mtproto_updated_at_future_skew"
+        if age_sec > float(self.listing_new_realtime_updated_max_age_sec):
+            return False, f"mtproto_updated_at_stale:{int(age_sec)}s"
+        return True, ""
+
+    def _listing_new_row_is_fresh(self, row: dict, now: datetime | None = None, window_sec: int | None = None) -> bool:
+        now_dt = now if isinstance(now, datetime) else _now()
+        ts_raw = str((row or {}).get("ts_detected") or (row or {}).get("first_seen_at") or "").strip()
+        ts_dt = _parse_ts(ts_raw) if ts_raw else None
+        if ts_dt is None:
+            return False
+        age_sec = (now_dt - ts_dt).total_seconds()
+        if age_sec < -30:
+            return False
+        strict_window = int(self.listing_new_realtime_ts_window_sec)
+        if window_sec is not None:
+            strict_window = min(strict_window, max(30, int(window_sec)))
+        return age_sec <= float(strict_window)
+
+    def _market_regime_snapshot_v1(self) -> dict:
+        market_overview = self.market_overview()
+        market_state_ru = str(market_overview.get("market_state") or "").strip().lower()
+        trend_map = {
+            "рост": "рост",
+            "падение": "падение",
+            "флет": "флет",
+            "боковик": "флет",
+            "sideways": "флет",
+            "flat": "флет",
+            "bull": "рост",
+            "bear": "падение",
+        }
+        trend = trend_map.get(market_state_ru, "флет")
+        avg_7d = float(market_overview.get("avg_change_7d") or 0.0)
+        anomalies = int(market_overview.get("anomalies") or 0)
+        gifts_count = int(market_overview.get("gifts_count") or 0)
+        regime = "MEAN_REVERT"
+        if trend == "рост":
+            regime = "RISK_ON"
+        elif trend == "падение":
+            panic_by_move = avg_7d <= -5.0
+            panic_by_anomaly = anomalies >= max(10, int(gifts_count * 0.02)) if gifts_count > 0 else anomalies >= 10
+            regime = "PANIC" if (panic_by_move or panic_by_anomaly) else "RISK_OFF"
+        badge = {
+            "RISK_ON": "🟢",
+            "MEAN_REVERT": "🟡",
+            "RISK_OFF": "🔴",
+            "PANIC": "⚠",
+        }.get(regime, "🟡")
+        return {
+            "market_regime": regime,
+            "market_regime_badge": badge,
+            "trend": trend,
+            "avg_change_7d": avg_7d,
+        }
+
+    def _listing_condition_match(self, condition: dict, ctx: dict[str, float]) -> bool:
+        if not isinstance(condition, dict) or not condition:
+            return False
+        for key, threshold in condition.items():
+            raw_key = str(key or "").strip()
+            if not raw_key:
+                return False
+            op = "eq"
+            field = raw_key
+            for suffix, candidate in (("_gte", "gte"), ("_lte", "lte"), ("_gt", "gt"), ("_lt", "lt"), ("_eq", "eq")):
+                if raw_key.endswith(suffix):
+                    field = raw_key[: -len(suffix)]
+                    op = candidate
+                    break
+            if field not in ctx:
+                return False
+            try:
+                left = float(ctx.get(field) or 0.0)
+                right = float(threshold)
+            except Exception:
+                return False
+            if op == "gte" and not (left >= right):
+                return False
+            if op == "lte" and not (left <= right):
+                return False
+            if op == "gt" and not (left > right):
+                return False
+            if op == "lt" and not (left < right):
+                return False
+            if op == "eq" and not (left == right):
+                return False
+        return True
+
+    def _listing_action_from_profiles_v1(self, regime: str, ctx: dict[str, float], fallback_action: str = "WATCH") -> str:
+        # Strict TZ decision engine (default): BUY/SELL/WATCH/SKIP gates from PRO New Listings TZ.
+        if self.listing_decision_mode in {"tz", "tz_strict", "strict"}:
+            edge_rank = float(ctx.get("edgeRank100") or 0.0)
+            conf_pct = float(ctx.get("conf") or 0.0)
+            expected_profit_pct = float(ctx.get("expected_profit_pct") or 0.0)
+            liquidity_norm = float(ctx.get("liquidity_norm") or 0.0)
+            absorption = float(ctx.get("absorption") or 0.0)
+            listing_pressure = float(ctx.get("listing_pressure") or 0.0)
+            if (
+                edge_rank >= 60.0
+                and conf_pct >= 35.0
+                and expected_profit_pct >= 8.0
+                and liquidity_norm >= 0.35
+                and absorption >= 0.9
+            ):
+                return "BUY"
+            if listing_pressure >= 4.0 and absorption <= 0.8:
+                return "SELL"
+            if 55.0 <= edge_rank < 60.0:
+                return "WATCH"
+            return "SKIP"
+
+        normalized_regime = str(regime or "MEAN_REVERT").strip().upper()
+        if normalized_regime not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}:
+            normalized_regime = "MEAN_REVERT"
+        profile = self.listing_signal_profiles.get(normalized_regime) if isinstance(self.listing_signal_profiles, dict) else None
+        if not isinstance(profile, dict):
+            profile = {}
+        action = "SKIP"
+        global_skip = (self.listing_signal_global_gates.get("skip_if") or {}) if isinstance(self.listing_signal_global_gates, dict) else {}
+        global_watch = (self.listing_signal_global_gates.get("watch_if") or {}) if isinstance(self.listing_signal_global_gates, dict) else {}
+        if self._listing_condition_match(global_skip, ctx):
+            action = "SKIP"
+        elif self._listing_condition_match(profile.get("buy_all") or {}, ctx):
+            action = "BUY"
+        else:
+            sell_any = profile.get("sell_any") if isinstance(profile.get("sell_any"), list) else []
+            if any(self._listing_condition_match(group if isinstance(group, dict) else {}, ctx) for group in sell_any):
+                action = "SELL"
+            elif self._listing_condition_match(profile.get("watch_band") or {}, ctx):
+                action = "WATCH"
+            else:
+                action = fallback_action if fallback_action in {"BUY", "SELL", "WATCH", "SKIP"} else "SKIP"
+        post_skip_rules = (self.listing_signal_post_rules.get("skip_if") or []) if isinstance(self.listing_signal_post_rules, dict) else []
+        if any(self._listing_condition_match(group if isinstance(group, dict) else {}, ctx) for group in post_skip_rules):
+            action = "SKIP"
+        if action == "SKIP" and self._listing_condition_match(global_watch, ctx):
+            action = "WATCH"
+        return action if action in {"BUY", "SELL", "WATCH", "SKIP"} else "SKIP"
+
+    def _edge_rank_raw_v1(
+        self,
+        regime: str,
+        score100: float,
+        conf_pct: float,
+        expected_profit_ratio: float,
+        liquidity_score_pct: float,
+        absorption_30m: float,
+        listing_pressure: float,
+        depth_score: float,
+        volume_velocity: float = 0.0,
+    ) -> tuple[float, float]:
+        regime_key = str(regime or "MEAN_REVERT").strip().upper()
+        if regime_key not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}:
+            regime_key = "MEAN_REVERT"
+        c_norm = _clamp(float(conf_pct or 0.0) / 100.0, 0.0, 1.0)
+        s_norm = _clamp(float(score100 or 0.0) / 100.0, 0.0, 1.0)
+        ep_norm = _clamp(float(expected_profit_ratio or 0.0) / 0.30, 0.0, 1.0)
+        liq_norm = _clamp(float(liquidity_score_pct or 0.0) / 100.0, 0.0, 1.0)
+        ar_norm = _clamp(float(absorption_30m or 0.0) / 2.0, 0.0, 1.0)
+        lp_norm = _clamp(float(listing_pressure or 0.0) / max(0.1, float(self.edge_lp_divisor or 8.0)), 0.0, 1.0)
+        d_norm = _clamp(float(depth_score or 0.0), 0.0, 1.0)
+        profile = (self.edge_profile_weights or {}).get(regime_key) if isinstance(getattr(self, "edge_profile_weights", None), dict) else None
+        if not isinstance(profile, dict):
+            profile = DEFAULT_EDGERANK_CONFIG["profiles"][regime_key]
+        w_ep = float(profile.get("EP") or 0.0)
+        w_s = float(profile.get("S") or 0.0)
+        w_l = float(profile.get("L") or 0.0)
+        w_ar = float(profile.get("AR") or 0.0)
+        w_d = float(profile.get("D") or 0.0)
+        w_lp = float(profile.get("LP") or 0.0)
+        edge_raw = (w_ep * ep_norm) + (w_s * s_norm) + (w_l * liq_norm) + (w_ar * ar_norm) + (w_d * d_norm) + (w_lp * lp_norm)
+        if regime_key == "PANIC":
+            vv_norm = _clamp((float(volume_velocity or 0.0) - float(self.edge_panic_vv_baseline or 0.8)) / max(0.1, float(self.edge_panic_vv_range or 1.0)), 0.0, 1.0)
+            vv_bonus = float(profile.get("VV_bonus") or 0.0)
+            edge_raw += vv_bonus * vv_norm
+        edge_raw = _clamp(edge_raw, 0.0, 1.0)
+        edge_rank = _clamp(edge_raw, 0.0, 1.0) * c_norm
+        return round(edge_raw, 6), round(edge_rank * 100.0, 1)
+
+    def _listing_pro_item_from_row(
+        self,
+        row: dict,
+        now: datetime,
+        window_sec: int,
+        regime_snapshot: dict,
+        variant_math_cache: dict[str, dict],
+        depth_cache: dict[str, tuple[int, float]] | None = None,
+    ) -> dict:
+        attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+        listing_key = str(row.get("listing_key") or "")
+        variant_id = str(row.get("variant_id") or "")
+        collection = str(row.get("collection") or row.get("title") or row.get("collection_id") or row.get("gift_id") or "")
+        variant = self.variants.get(variant_id) if variant_id else None
+        if variant_id and variant_id not in variant_math_cache:
+            if isinstance(variant, dict):
+                variant_math_cache[variant_id] = self._tz_signal_math(variant)
+            else:
+                variant_math_cache[variant_id] = {}
+        mm = variant_math_cache.get(variant_id) or {}
+        model = str(attrs.get("model") or "")
+        background = str(attrs.get("background") or "")
+        pattern = str(attrs.get("pattern") or "")
+        if isinstance(variant, dict):
+            traits = variant.get("traits") or {}
+            model = str(((traits.get("model") or {}).get("name")) or model or "")
+            background = str(((traits.get("background") or {}).get("name")) or background or "")
+            pattern = str(((traits.get("pattern") or {}).get("name")) or pattern or "")
+        model = model or "Unknown"
+        background = background or "Unknown"
+        pattern = pattern or "Unknown"
+        variant_label = " • ".join([collection or "Unknown", model, background, pattern])
+        try:
+            price_ton = float(row.get("resell_amount_ton") or row.get("price_ton") or 0.0)
+        except Exception:
+            price_ton = 0.0
+        floor_ton_raw = mm.get("floor_ton") if isinstance(mm, dict) else None
+        floor_ton = float(floor_ton_raw or 0.0) if floor_ton_raw is not None else (price_ton if price_ton > 0 else 0.0)
+        fair_ton_raw = mm.get("fair_ton") if isinstance(mm, dict) else None
+        fair_ton = float(fair_ton_raw) if fair_ton_raw not in (None, "") else None
+        undervalue_ratio = float(mm.get("undervalue") or 0.0) if isinstance(mm, dict) else 0.0
+        expected_profit_ratio = float(mm.get("expected_profit_pct") or 0.0) if isinstance(mm, dict) else 0.0
+        score100 = float(mm.get("score100") or 0.0) if isinstance(mm, dict) else 0.0
+        conf_pct = float(mm.get("conf_pct") or 0.0) if isinstance(mm, dict) else 0.0
+        liquidity_score = _clamp(float(mm.get("liquidity24h") or 0.0), 0.0, 1.0) * 100.0 if isinstance(mm, dict) else 0.0
+        absorption_30m = float(mm.get("absorption_rate") or 0.0) if isinstance(mm, dict) else 0.0
+        listing_pressure = float(mm.get("listing_pressure") or 0.0) if isinstance(mm, dict) else 0.0
+        volume_velocity = float(mm.get("volume_velocity") or 0.0) if isinstance(mm, dict) else 0.0
+        depth_count = 0
+        depth_ton = 0.0
+        if depth_cache is None:
+            depth_cache = {}
+        if variant_id:
+            if variant_id in depth_cache:
+                depth_count, depth_ton = depth_cache.get(variant_id) or (0, 0.0)
+            else:
+                depth_count, depth_ton = self._market_depth_for_variants(max(0.000001, floor_ton if floor_ton > 0 else price_ton), {variant_id})
+                depth_cache[variant_id] = (int(depth_count), float(depth_ton))
+        depth_score = _clamp(float(depth_count) / 25.0, 0.0, 1.0)
+        edge_raw, edge_rank100 = self._edge_rank_raw_v1(
+            regime=str(regime_snapshot.get("market_regime") or "MEAN_REVERT"),
+            score100=score100,
+            conf_pct=conf_pct,
+            expected_profit_ratio=expected_profit_ratio,
+            liquidity_score_pct=liquidity_score,
+            absorption_30m=absorption_30m,
+            listing_pressure=listing_pressure,
+            depth_score=depth_score,
+            volume_velocity=volume_velocity,
+        )
+        c_norm = _clamp(float(conf_pct or 0.0) / 100.0, 0.0, 1.0)
+        s_norm = _clamp(float(score100 or 0.0) / 100.0, 0.0, 1.0)
+        ep_norm = _clamp(float(expected_profit_ratio or 0.0) / 0.30, 0.0, 1.0)
+        liq_norm = _clamp(float(liquidity_score or 0.0) / 100.0, 0.0, 1.0)
+        ar_norm = _clamp(float(absorption_30m or 0.0) / 2.0, 0.0, 1.0)
+        lp_norm = _clamp(float(listing_pressure or 0.0) / max(0.1, float(self.edge_lp_divisor or 8.0)), 0.0, 1.0)
+        d_norm = _clamp(float(depth_score or 0.0), 0.0, 1.0)
+        fallback_action = str(mm.get("action_hint") or "WATCH") if isinstance(mm, dict) else "WATCH"
+        if fallback_action not in {"BUY", "SELL", "WATCH", "SKIP"}:
+            fallback_action = "WATCH"
+        profile_ctx = {
+            "edgeRank100": float(edge_rank100),
+            "score100": float(score100),
+            "conf": float(conf_pct),
+            "sales24h": float(mm.get("sales24h") or 0.0) if isinstance(mm, dict) else 0.0,
+            "undervalue": float(undervalue_ratio),
+            "expected_profit_pct": float(expected_profit_ratio * 100.0),
+            "liquidity_norm": float(liquidity_score / 100.0),
+            "absorption": float(absorption_30m),
+            "listing_pressure": float(listing_pressure),
+            "depth_score": float(depth_score),
+            "volume_velocity": float(volume_velocity),
+        }
+        action = self._listing_action_from_profiles_v1(
+            regime=str(regime_snapshot.get("market_regime") or "MEAN_REVERT"),
+            ctx=profile_ctx,
+            fallback_action=fallback_action,
+        )
+        decision_trace = {
+            "mode": self.listing_decision_mode,
+            "edgeRank100": round(float(edge_rank100), 3),
+            "conf_pct": round(float(conf_pct), 3),
+            "expected_profit_pct": round(float(expected_profit_ratio * 100.0), 3),
+            "liquidity_norm": round(float(liq_norm), 6),
+            "absorption_30m": round(float(absorption_30m), 6),
+            "listing_pressure": round(float(listing_pressure), 6),
+            "resolved_action": action,
+        }
+        strength_tag = "NONE"
+        if action == "BUY" and edge_rank100 >= 70 and conf_pct >= 65:
+            strength_tag = "STRONG_BUY"
+        elif action == "SELL" and edge_rank100 >= 70 and conf_pct >= 65:
+            strength_tag = "STRONG_SELL"
+        ts_detected_raw = str(row.get("ts_detected") or row.get("first_seen_at") or row.get("last_seen_at") or _iso(now))
+        ts_source = str(row.get("last_seen_at") or ts_detected_raw)
+        ts_detected_dt = _parse_ts(ts_detected_raw)
+        latency_ms = max(0, int((now - ts_detected_dt).total_seconds() * 1000.0))
+        relisted_at = row.get("last_relisted_at")
+        relisted_dt = _parse_ts(relisted_at) if relisted_at else None
+        is_relist = bool(relisted_dt is not None and (now - relisted_dt).total_seconds() <= window_sec)
+        gift_id = row.get("gift_id") or row.get("collection_id")
+        listing_id_raw = row.get("listing_id") or row.get("unique_id")
+        try:
+            listing_id = int(str(listing_id_raw)) if listing_id_raw not in (None, "") else None
+        except Exception:
+            listing_id = None
+        return {
+            "listing_key": listing_key,
+            "gift_id": gift_id,
+            "listing_id": listing_id,
+            "unique_id": str(row.get("unique_id") or listing_id_raw or ""),
+            "variant_id": variant_id,
+            "collection": collection,
+            "model": model,
+            "background": background,
+            "pattern": pattern,
+            "variant_label": variant_label,
+            "price_ton": round(price_ton, 6),
+            "floor_ton": round(floor_ton, 6) if floor_ton > 0 else None,
+            "fair_ton": round(float(fair_ton), 6) if fair_ton is not None else None,
+            "undervalue_pct": round(undervalue_ratio * 100.0, 3),
+            "expected_profit_pct": round(expected_profit_ratio * 100.0, 3),
+            "score100": round(score100, 1),
+            "conf_pct": round(conf_pct, 1),
+            "market_regime": str(regime_snapshot.get("market_regime") or "MEAN_REVERT"),
+            "market_regime_badge": str(regime_snapshot.get("market_regime_badge") or "🟡"),
+            "edgeRank_profile": str(regime_snapshot.get("market_regime") or "MEAN_REVERT"),
+            "edgeRank_raw": edge_raw,
+            "edgeRank100": edge_rank100,
+            "action": action,
+            "strength_tag": strength_tag,
+            "target_ton": round(float(fair_ton), 6) if fair_ton is not None else None,
+            "stop_ton": round(price_ton * 0.96, 6) if price_ton > 0 else None,
+            "liquidity_score": round(liquidity_score, 2),
+            "absorption_30m": round(absorption_30m, 4),
+            "listing_pressure": round(listing_pressure, 4),
+            "volume_velocity": round(volume_velocity, 4),
+            "depth_5pct_count": int(depth_count),
+            "depth_5pct_ton": round(float(depth_ton), 6),
+            "depth_score": round(depth_score, 4),
+            "edge_norms": {
+                "C": round(c_norm, 6),
+                "S": round(s_norm, 6),
+                "EP": round(ep_norm, 6),
+                "L": round(liq_norm, 6),
+                "AR": round(ar_norm, 6),
+                "LP": round(lp_norm, 6),
+                "D": round(d_norm, 6),
+            },
+            "decision_trace": decision_trace,
+            "reasons": list(mm.get("reasons") or [])[:3] if isinstance(mm, dict) else [],
+            "risk_flags": list(mm.get("risk_flags") or [])[:3] if isinstance(mm, dict) else [],
+            "ts_source": ts_source,
+            "ts_detected": ts_detected_raw,
+            "latency_ms": latency_ms,
+            "is_relist": is_relist,
+            "premium_required": row.get("premium_required") if "premium_required" in row else None,
+            "resale_ton_only": bool(str(row.get("resell_currency") or "TON").upper() == "TON"),
+            "preview_url": str(row.get("preview_url") or ""),
+            "source": str(row.get("source") or "fragment.verified_snapshot"),
+        }
+
+    def _listing_removed_events_v1(self, since_dt: datetime | None = None, variant_id: str | None = None) -> list[dict]:
+        out: list[dict] = []
+        variant_filter = str(variant_id or "").strip()
+        for entry in self.listing_tracker_state.values():
+            if not isinstance(entry, dict):
+                continue
+            if bool(entry.get("active")):
+                continue
+            ts_raw = entry.get("last_absent_at")
+            ts = _parse_ts(ts_raw) if ts_raw else None
+            if ts is None:
+                continue
+            if since_dt is not None and ts < since_dt:
+                continue
+            row_variant_id = str(entry.get("variant_id") or "")
+            if variant_filter and row_variant_id != variant_filter:
+                continue
+            out.append(
+                {
+                    "ts": _iso(ts),
+                    "type": "listing.removed",
+                    "listing_key": str(entry.get("listing_key") or ""),
+                    "price_ton": entry.get("last_price_ton"),
+                    "variant_id": row_variant_id,
+                    "source": "fragment.verified_snapshot",
+                    "meta": {
+                        "base_id": entry.get("base_id"),
+                        "listing_id": entry.get("listing_id"),
+                    },
+                }
+            )
+        for ev in (self._listing_mt_runtime_cache.get("removed_events") or []):
+            if not isinstance(ev, dict):
+                continue
+            ts = _parse_ts(ev.get("ts"))
+            if since_dt is not None and ts < since_dt:
+                continue
+            row_variant_id = str(ev.get("variant_id") or "")
+            if variant_filter and row_variant_id != variant_filter:
+                continue
+            out.append(ev)
+        out.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
+        dedupe: dict[str, dict] = {}
+        for row in out:
+            key = f"{row.get('type')}|{row.get('listing_key')}|{row.get('ts')}"
+            if key not in dedupe:
+                dedupe[key] = row
+        return list(dedupe.values())
+
+    def market_status_v1(self, window: str | None = None) -> dict:
+        now = _now()
+        window_raw = str(window or "30m").strip().lower()
+        window_sec = self._listing_window_to_seconds(window_raw, default="30m")
+        regime = self._market_regime_snapshot_v1()
+        summary = self.market_overview()
+        variant_ids = {str(v.get("variant_id") or "") for v in self.variants.values() if str(v.get("variant_id") or "")}
+        _, volume_10m = self._trades_in_window_multi(now, WINDOWS["10m"], variant_ids=variant_ids)
+        _, volume_30m = self._trades_in_window_multi(now, WINDOWS["30m"], variant_ids=variant_ids)
+        vv_denom = (volume_30m / 3.0) if volume_30m > 0 else 0.0
+        volume_velocity = (volume_10m / vv_denom) if vv_denom > 0 else 0.0
+        sales_30m, _ = self._trades_in_window_multi(now, WINDOWS["30m"], variant_ids=variant_ids)
+        listing_rows_base, source_status = self._listing_source_rows_v1(
+            window_sec=max(window_sec, WINDOWS["30m"]),
+            allow_remote=False,
+            sync_tracker=False,
+        )
+
+        def _row_ts(row: dict) -> datetime:
+            ts_raw = str((row or {}).get("ts_detected") or (row or {}).get("first_seen_at") or (row or {}).get("last_seen_at") or "")
+            if not ts_raw:
+                return now
+            return _parse_ts(ts_raw)
+
+        cutoff_30m = now - timedelta(seconds=WINDOWS["30m"])
+        cutoff_10m = now - timedelta(seconds=WINDOWS["10m"])
+        cutoff_window = now - timedelta(seconds=window_sec)
+        new_30m = 0
+        listing_velocity_10m = 0
+        listing_rows: list[dict] = []
+        for row in listing_rows_base:
+            ts_dt = _row_ts(row)
+            if ts_dt >= cutoff_30m:
+                new_30m += 1
+            if ts_dt >= cutoff_10m:
+                listing_velocity_10m += 1
+            if ts_dt >= cutoff_window:
+                listing_rows.append(row)
+        absorption = float(sales_30m) / max(float(new_30m), 1.0)
+        active_lots = int(summary.get("active_listings") or 0)
+        sales_24h, _ = self._trades_in_window_multi(now, WINDOWS["24h"], variant_ids=variant_ids)
+        listing_pressure = float(active_lots) / max(float(sales_24h), 1.0)
+        liquidity_score = _clamp(float(sales_24h) / 1000.0, 0.0, 1.0) * 100.0
+        market_floor = float(summary.get("floor_ton_median") or summary.get("floor_ton_min") or 0.0)
+        depth_count, depth_ton = self._market_depth_for_variants(max(0.000001, market_floor), variant_ids=variant_ids)
+        listing_velocity_10m = int(listing_velocity_10m)
+        listing_velocity_norm = _clamp(float(listing_velocity_10m) / 300.0, 0.0, 1.0)
+        lv_norm = _clamp(float(listing_velocity_10m) / 30.0, 0.0, 1.0)
+        vv_norm = _clamp(float(volume_velocity) / 2.0, 0.0, 1.0)
+        ar_norm = _clamp(float(absorption) / 2.0, 0.0, 1.0)
+        velocity_score = int(round((0.4 * lv_norm + 0.3 * vv_norm + 0.3 * ar_norm) * 100.0))
+        if velocity_score >= 67:
+            vol_level = "HIGH"
+        elif velocity_score <= 33:
+            vol_level = "LOW"
+        else:
+            vol_level = "MED"
+        one_hour_ago = _iso(now - timedelta(hours=1))
+        signals_1h_feed = self.signals_v1(since=one_hour_ago, limit=300, mode="tz")
+        signals_1h = {"buy": 0, "sell": 0, "watch": 0, "skip": 0}
+        for row in (signals_1h_feed.get("items") or []):
+            t = str((row or {}).get("type") or "").upper()
+            if t == "BUY":
+                signals_1h["buy"] += 1
+            elif t == "SELL":
+                signals_1h["sell"] += 1
+            elif t == "WATCH":
+                signals_1h["watch"] += 1
+            elif t == "SKIP":
+                signals_1h["skip"] += 1
+        whale_ratio, whale_impulse, _ = self._whale_ratio_and_impulse(now, variant_ids=variant_ids)
+        source_error = str(source_status.get("error") or "")
+        data_health = "DEGRADED" if (self.is_stale() or bool(source_error)) else "OK"
+        data_conf = 88
+        if data_health == "DEGRADED":
+            data_conf = 45
+        elif str(source_status.get("source") or "").startswith("mtproto") and int(source_status.get("rows_count") or 0) < 100:
+            data_conf = 65
+        provider_health_raw = (summary.get("provider_health") or [{}])[0] if isinstance(summary.get("provider_health"), list) else {}
+        if not isinstance(provider_health_raw, dict):
+            provider_health_raw = {}
+        provider_health = {
+            "p95_ms": int(provider_health_raw.get("p95_ms") or 0),
+            "err_pct": float(provider_health_raw.get("err_pct") or 0.0),
+        }
+        if provider_health_raw.get("provider") not in (None, ""):
+            provider_health["provider"] = str(provider_health_raw.get("provider"))
+
+        if len(listing_rows) > 5000:
+            listing_rows = listing_rows[:5000]
+        listing_key_seen: set[str] = set()
+        duplicates = 0
+        for row in listing_rows:
+            lkey = str((row or {}).get("listing_key") or "")
+            if not lkey:
+                continue
+            if lkey in listing_key_seen:
+                duplicates += 1
+            else:
+                listing_key_seen.add(lkey)
+        latency_samples: list[int] = []
+        for row in listing_rows[:500]:
+            try:
+                ts_dt = _row_ts(row)
+                latency_ms = max(0, int((now - ts_dt).total_seconds() * 1000.0))
+            except Exception:
+                latency_ms = 0
+            if latency_ms >= 0:
+                latency_samples.append(latency_ms)
+        if latency_samples:
+            lat_sorted = sorted(latency_samples)
+            i95 = min(len(lat_sorted) - 1, max(0, int(round((len(lat_sorted) - 1) * 0.95))))
+            i99 = min(len(lat_sorted) - 1, max(0, int(round((len(lat_sorted) - 1) * 0.99))))
+            detect_p95 = int(lat_sorted[i95])
+            detect_p99 = int(lat_sorted[i99])
+        else:
+            detect_p95 = 0
+            detect_p99 = 0
+        miss_rate = 0.0
+        if data_health == "DEGRADED":
+            miss_rate = 1.0
+        duplicate_rate = (float(duplicates) / max(1.0, float(len(listing_rows)))) * 100.0
+        return {
+            "ts": _iso(now),
+            "window": window_raw if window_raw in {"10m", "30m", "1h", "6h", "24h"} else "30m",
+            "window_sec": window_sec,
+            "market_regime": regime.get("market_regime"),
+            "market_regime_badge": regime.get("market_regime_badge"),
+            "data_health": data_health,
+            "data_conf_pct": int(data_conf),
+            "trend": str(regime.get("trend") or "флет"),
+            "velocity_score": int(_clamp(float(velocity_score), 0.0, 100.0)),
+            "vol_level": vol_level,
+            "flow": {
+                "volume_velocity": round(float(volume_velocity), 6),
+                "absorption": round(float(absorption), 6),
+                "listing_pressure": round(float(listing_pressure), 6),
+            },
+            "liquidity": {
+                "liquidity_score": int(round(liquidity_score)),
+                "depth_5pct": {"lots": int(depth_count), "ton": round(float(depth_ton), 6)},
+            },
+            "supply": {
+                "active_lots": int(active_lots),
+                "delta_lots_1h": int(self._new_listings_in_window_multi(now, WINDOWS["1h"], variant_ids=variant_ids)),
+                "listing_velocity_10m": int(listing_velocity_10m),
+                "listing_velocity_norm": round(float(listing_velocity_norm), 6),
+            },
+            "whales": {
+                "whale_ratio_pct": round(float(whale_ratio) * 100.0, 2),
+                "whale_impulse": round(float(whale_impulse), 6) if whale_impulse is not None else None,
+            },
+            "signals_1h": signals_1h,
+            "provider_health": provider_health,
+            "execution_health": {
+                "detect_latency_p95": detect_p95,
+                "detect_latency_p99": detect_p99,
+                "miss_rate": round(miss_rate, 4),
+                "duplicate_rate": round(duplicate_rate, 4),
+                "sse_disconnect_rate": 0.0,
+            },
+            "source": source_status.get("source") or "fragment.verified_snapshot",
+            "source_error": source_error,
+        }
+
+    def listings_new_v1(
+        self,
+        limit: int = 200,
+        cursor: str | None = None,
+        window: str | None = "30m",
+        market_regime: list[str] | None = None,
+        action: list[str] | None = None,
+        edgeRank_min: float = 55.0,
+        conf_min: float = 35.0,
+        profit_min: float = 8.0,
+        undervalue_min: float = 0.0,
+        liq_min: float = 35.0,
+        lp_max: float = 4.0,
+        ar_min: float = 0.9,
+        vv_min: float = 1.0,
+        only_pro_alerts: bool = True,
+        collection: str = "",
+        model: str = "",
+        background: str = "",
+        pattern: str = "",
+        variant_id: str = "",
+        q: str = "",
+    ) -> dict:
+        now = _now()
+        window_sec = self._listing_window_to_seconds(window, default="30m")
+        lim = max(1, min(int(limit or 200), 500))
+        rows, source_status = self._listing_source_rows_v1(window_sec=window_sec)
+        source_ok, source_reason = self._listing_new_realtime_source_ok(source_status, now=now)
+        source_name = source_status.get("source") or "fragment.verified_snapshot"
+        source_error_text = str(source_status.get("error") or "")
+        if source_reason:
+            source_error_text = f"{source_error_text}; {source_reason}".strip("; ").strip()
+        if not source_ok:
+            return {
+                "items": [],
+                "next_cursor": None,
+                "server_ts": _iso(now),
+                "window": str(window or "30m"),
+                "window_sec": window_sec,
+                "source": source_name,
+                "source_error": source_error_text,
+                "row_processing_errors": 0,
+                "row_processing_error_samples": [],
+            }
+        rows = self._apply_listing_filters(
+            rows,
+            only_new=True,
+            collection_q=collection,
+            model_q=model,
+            background_q=background,
+            pattern_q=pattern,
+        )
+        max_candidates = max(int(self.listing_new_max_candidates or 2500), lim * 20)
+        if len(rows) > max_candidates:
+            rows = rows[:max_candidates]
+        variant_filter = str(variant_id or "").strip()
+        q_norm = str(q or "").strip().lower()
+        regime_filter = {str(x or "").strip().upper() for x in (market_regime or []) if str(x or "").strip()}
+        action_filter = {str(x or "").strip().upper() for x in (action or []) if str(x or "").strip()}
+        bad_regimes = sorted([x for x in regime_filter if x not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}])
+        if bad_regimes:
+            raise ValueError(f"unsupported_market_regime:{','.join(bad_regimes)}")
+        bad_actions = sorted([x for x in action_filter if x not in {"BUY", "SELL", "WATCH", "SKIP"}])
+        if bad_actions:
+            raise ValueError(f"unsupported_action:{','.join(bad_actions)}")
+        edge_min = _clamp(float(edgeRank_min or 0.0), 0.0, 100.0)
+        conf_min_v = _clamp(float(conf_min or 0.0), 0.0, 100.0)
+        profit_min_v = float(profit_min or 0.0)
+        undervalue_min_v = float(undervalue_min or 0.0)
+        liq_min_v = _clamp(float(liq_min or 0.0), 0.0, 100.0)
+        lp_max_v = max(0.0, float(lp_max or 0.0))
+        ar_min_v = float(ar_min or 0.0)
+        vv_min_v = float(vv_min or 0.0)
+        publish_gate = self.listing_publish_gate if isinstance(getattr(self, "listing_publish_gate", None), dict) else {}
+        gate_edge = _clamp(self._cfg_float(publish_gate.get("edgeRank100_gte"), 55.0), 0.0, 100.0)
+        gate_conf = _clamp(self._cfg_float(publish_gate.get("conf_pct_gte"), 35.0), 0.0, 100.0)
+        gate_profit = self._cfg_float(publish_gate.get("expected_profit_pct_gte"), 8.0)
+        regime_snapshot = self._market_regime_snapshot_v1()
+        variant_math_cache: dict[str, dict] = {}
+        depth_cache: dict[str, tuple[int, float]] = {}
+        out: list[dict] = []
+        row_failures = 0
+        row_failure_samples: list[str] = []
+        for row in rows:
+            try:
+                if not self._listing_new_row_is_fresh(row, now=now, window_sec=window_sec):
+                    continue
+                item = self._listing_pro_item_from_row(
+                    row=row,
+                    now=now,
+                    window_sec=window_sec,
+                    regime_snapshot=regime_snapshot,
+                    variant_math_cache=variant_math_cache,
+                    depth_cache=depth_cache,
+                )
+                if variant_filter and str(item.get("variant_id") or "") != variant_filter:
+                    continue
+                if regime_filter and str(item.get("market_regime") or "").upper() not in regime_filter:
+                    continue
+                if action_filter and str(item.get("action") or "").upper() not in action_filter:
+                    continue
+                if q_norm:
+                    hay = " ".join(
+                        [
+                            str(item.get("variant_label") or ""),
+                            str(item.get("listing_key") or ""),
+                            str(item.get("collection") or ""),
+                            str(item.get("model") or ""),
+                            str(item.get("background") or ""),
+                            str(item.get("pattern") or ""),
+                        ]
+                    ).lower()
+                    if q_norm not in hay:
+                        continue
+                edge = float(item.get("edgeRank100") or 0.0)
+                conf = float(item.get("conf_pct") or 0.0)
+                profit = float(item.get("expected_profit_pct") or 0.0)
+                undervalue_pct = float(item.get("undervalue_pct") or 0.0)
+                liq = float(item.get("liquidity_score") or 0.0)
+                lp = float(item.get("listing_pressure") or 0.0)
+                ar = float(item.get("absorption_30m") or 0.0)
+                vv = float(item.get("volume_velocity") or 0.0)
+                if edge < edge_min:
+                    continue
+                if conf < conf_min_v:
+                    continue
+                if profit < profit_min_v:
+                    continue
+                if undervalue_pct < undervalue_min_v:
+                    continue
+                if liq < liq_min_v:
+                    continue
+                if lp > lp_max_v:
+                    continue
+                if ar < ar_min_v:
+                    continue
+                if vv < vv_min_v:
+                    continue
+                if only_pro_alerts and not (edge >= gate_edge and conf >= gate_conf and profit >= gate_profit):
+                    continue
+                out.append(item)
+            except Exception as exc:
+                row_failures += 1
+                err_payload = self._record_listing_runtime_error(
+                    block="listings_new",
+                    stage="row_processing",
+                    exc=exc,
+                    row=row,
+                )
+                if len(row_failure_samples) < 3:
+                    row_ctx = err_payload.get("row") if isinstance(err_payload.get("row"), dict) else {}
+                    row_key = str(row_ctx.get("listing_key") or row_ctx.get("listing_id") or row_ctx.get("unique_id") or "")
+                    sample = f"{err_payload.get('error_class')}:{err_payload.get('error')}"
+                    if row_key:
+                        sample = f"{sample}@{row_key}"
+                    row_failure_samples.append(sample)
+        out.sort(
+            key=lambda x: (
+                float(x.get("edgeRank100") or 0.0),
+                float(x.get("expected_profit_pct") or 0.0),
+                str(x.get("ts_detected") or ""),
+            ),
+            reverse=True,
+        )
+        cursor_payload = self._cursor_keyset_decode(cursor)
+        off = self._cursor_find_index(out, cursor_payload, ["listing_key", "ts_detected"])
+        chunk = out[off : off + lim]
+        next_cursor = None
+        if (off + lim) < len(out) and chunk:
+            last = chunk[-1]
+            next_cursor = self._cursor_keyset_encode(
+                {
+                    "listing_key": str(last.get("listing_key") or ""),
+                    "ts_detected": str(last.get("ts_detected") or ""),
+                }
+            )
+        source_error_out = str(source_error_text or "")
+        if row_failures > 0:
+            row_err = f"row_processing_errors:{row_failures}"
+            if row_failure_samples:
+                row_err = f"{row_err}; sample={','.join(row_failure_samples)}"
+            source_error_out = f"{source_error_out}; {row_err}".strip("; ").strip()
+        return {
+            "items": chunk,
+            "next_cursor": next_cursor,
+            "server_ts": _iso(now),
+            "window": str(window or "30m"),
+            "window_sec": window_sec,
+            "source": source_name,
+            "source_error": source_error_out,
+            "row_processing_errors": row_failures,
+            "row_processing_error_samples": row_failure_samples,
+        }
+
+    def listings_race_v1(
+        self,
+        limit: int = 200,
+        cursor: str | None = None,
+        window: str | None = "30m",
+        direction: str | None = "ANY",
+        delta_pct_min: float = 0.0,
+        only_pro_alerts: bool = False,
+        include_low_priority: bool = False,
+        q: str = "",
+    ) -> dict:
+        now = _now()
+        window_sec = self._listing_window_to_seconds(window, default="30m")
+        direction_norm = str(direction or "ANY").strip().upper()
+        if direction_norm not in {"UP", "DOWN", "ANY"}:
+            raise ValueError(f"unsupported_direction:{direction_norm}")
+        delta_min = max(0.0, float(delta_pct_min or 0.0))
+        q_norm = str(q or "").strip().lower()
+        publish_gate = self.listing_publish_gate if isinstance(getattr(self, "listing_publish_gate", None), dict) else {}
+        gate_edge = _clamp(self._cfg_float(publish_gate.get("edgeRank100_gte"), 55.0), 0.0, 100.0)
+        gate_conf = _clamp(self._cfg_float(publish_gate.get("conf_pct_gte"), 35.0), 0.0, 100.0)
+        gate_profit = self._cfg_float(publish_gate.get("expected_profit_pct_gte"), 8.0)
+        regime_snapshot = self._market_regime_snapshot_v1()
+        variant_math_cache: dict[str, dict] = {}
+        cutoff = now - timedelta(seconds=window_sec)
+        out: list[dict] = []
+        row_failures = 0
+        row_failure_samples: list[str] = []
+
+        for entry in self.listing_tracker_state.values():
+            try:
+                if not isinstance(entry, dict):
+                    continue
+                ts_raw = entry.get("last_price_changed_at")
+                ts_dt = _parse_ts(ts_raw) if ts_raw else None
+                if ts_dt is None or ts_dt < cutoff:
+                    continue
+                prev_price = float(entry.get("prev_price_ton") or 0.0)
+                cur_price = float(entry.get("last_price_ton") or 0.0)
+                if prev_price <= 0 or cur_price <= 0:
+                    continue
+                delta_ton = cur_price - prev_price
+                if abs(delta_ton) < 1e-9:
+                    continue
+                delta_pct = (delta_ton / prev_price) * 100.0
+                dir_val = "UP" if delta_ton > 0 else "DOWN"
+                if direction_norm != "ANY" and dir_val != direction_norm:
+                    continue
+                if abs(delta_pct) < delta_min:
+                    continue
+                low_priority = abs(delta_pct) < float(self.listing_race_noise_pct or 0.5)
+                if low_priority and not include_low_priority:
+                    continue
+                variant_id = str(entry.get("variant_id") or "")
+                variant = self.variants.get(variant_id) if variant_id else None
+                collection = str(entry.get("base_id") or "")
+                collection_name = _slug_to_name(collection) if collection else "Unknown"
+                model = "Unknown"
+                background = "Unknown"
+                pattern = "Unknown"
+                preview_url = str(entry.get("preview_url") or "")
+                if isinstance(variant, dict):
+                    traits = variant.get("traits") or {}
+                    model = str(((traits.get("model") or {}).get("name")) or model)
+                    background = str(((traits.get("background") or {}).get("name")) or background)
+                    pattern = str(((traits.get("pattern") or {}).get("name")) or pattern)
+                    preview_url = str(variant.get("preview_url") or preview_url)
+                    if variant_id not in variant_math_cache:
+                        variant_math_cache[variant_id] = self._tz_signal_math(variant)
+                mm = variant_math_cache.get(variant_id) or {}
+                score100 = float(mm.get("score100") or 0.0) if isinstance(mm, dict) else 0.0
+                conf_pct = float(mm.get("conf_pct") or 0.0) if isinstance(mm, dict) else 0.0
+                expected_profit_ratio = float(mm.get("expected_profit_pct") or 0.0) if isinstance(mm, dict) else 0.0
+                liquidity_score = _clamp(float(mm.get("liquidity24h") or 0.0), 0.0, 1.0) * 100.0 if isinstance(mm, dict) else 0.0
+                absorption_30m = float(mm.get("absorption_rate") or 0.0) if isinstance(mm, dict) else 0.0
+                listing_pressure = float(mm.get("listing_pressure") or 0.0) if isinstance(mm, dict) else 0.0
+                volume_velocity = float(mm.get("volume_velocity") or 0.0) if isinstance(mm, dict) else 0.0
+                floor_ton = float(mm.get("floor_ton") or 0.0) if isinstance(mm, dict) else cur_price
+                depth_count, _ = self._market_depth_for_variants(max(0.000001, floor_ton if floor_ton > 0 else cur_price), {variant_id}) if variant_id else (0, 0.0)
+                depth_score = _clamp(float(depth_count) / 25.0, 0.0, 1.0)
+                _, edge_rank100 = self._edge_rank_raw_v1(
+                    regime=str(regime_snapshot.get("market_regime") or "MEAN_REVERT"),
+                    score100=score100,
+                    conf_pct=conf_pct,
+                    expected_profit_ratio=expected_profit_ratio,
+                    liquidity_score_pct=liquidity_score,
+                    absorption_30m=absorption_30m,
+                    listing_pressure=listing_pressure,
+                    depth_score=depth_score,
+                    volume_velocity=volume_velocity,
+                )
+                action_hint = str(mm.get("action_hint") or "WATCH") if isinstance(mm, dict) else "WATCH"
+                if only_pro_alerts and not (edge_rank100 >= gate_edge and conf_pct >= gate_conf and (expected_profit_ratio * 100.0) >= gate_profit):
+                    continue
+                variant_label = " • ".join([collection_name, model, background, pattern])
+                row = {
+                    "listing_key": str(entry.get("listing_key") or ""),
+                    "variant_id": variant_id or None,
+                    "collection_id": collection or None,
+                    "collection": collection_name,
+                    "model": model,
+                    "background": background,
+                    "pattern": pattern,
+                    "variant_label": variant_label,
+                    "preview_url": preview_url,
+                    "prev_price_ton": round(prev_price, 6),
+                    "price_ton": round(cur_price, 6),
+                    "delta_ton": round(delta_ton, 6),
+                    "delta_pct": round(delta_pct, 6),
+                    "direction": dir_val,
+                    "low_priority": bool(low_priority),
+                    "market_regime": str(regime_snapshot.get("market_regime") or "MEAN_REVERT"),
+                    "market_regime_badge": str(regime_snapshot.get("market_regime_badge") or "🟡"),
+                    "edgeRank100": round(edge_rank100, 1),
+                    "action": action_hint,
+                    "reasons": list(mm.get("reasons") or [])[:3] if isinstance(mm, dict) else [],
+                    "risk_flags": list(mm.get("risk_flags") or [])[:3] if isinstance(mm, dict) else [],
+                    "ts_detected": _iso(ts_dt),
+                    "source": "fragment.verified_snapshot",
+                }
+                if q_norm:
+                    hay = " ".join([str(row.get("variant_label") or ""), str(row.get("listing_key") or ""), str(row.get("variant_id") or "")]).lower()
+                    if q_norm not in hay:
+                        continue
+                out.append(row)
+            except Exception as exc:
+                row_failures += 1
+                err_payload = self._record_listing_runtime_error(
+                    block="listings_race",
+                    stage="tracker_row_processing",
+                    exc=exc,
+                    row=entry if isinstance(entry, dict) else None,
+                )
+                if len(row_failure_samples) < 3:
+                    row_ctx = err_payload.get("row") if isinstance(err_payload.get("row"), dict) else {}
+                    row_key = str(row_ctx.get("listing_key") or row_ctx.get("listing_id") or row_ctx.get("unique_id") or "")
+                    sample = f"{err_payload.get('error_class')}:{err_payload.get('error')}"
+                    if row_key:
+                        sample = f"{sample}@{row_key}"
+                    row_failure_samples.append(sample)
+
+        for row in (self._listing_mt_runtime_cache.get("race_events") or []):
+            try:
+                if not isinstance(row, dict):
+                    continue
+                ts_dt = _parse_ts(row.get("ts_detected"))
+                if ts_dt < cutoff:
+                    continue
+                direction_val = str(row.get("direction") or "").upper()
+                if direction_norm != "ANY" and direction_val != direction_norm:
+                    continue
+                delta_pct = float(row.get("delta_pct") or 0.0)
+                if abs(delta_pct) < delta_min:
+                    continue
+                low_priority = bool(row.get("low_priority")) or (abs(delta_pct) < float(self.listing_race_noise_pct or 0.5))
+                if low_priority and not include_low_priority:
+                    continue
+                variant_id = str(row.get("variant_id") or "")
+                collection_id = str(row.get("collection_id") or "").strip().lower()
+                if not collection_id and "|" in variant_id:
+                    collection_id = str(variant_id.split("|", 1)[0] or "").strip().lower()
+                model_name = str(row.get("model") or "").strip()
+                background_name = str(row.get("background") or "").strip()
+                pattern_name = str(row.get("pattern") or "").strip()
+                if variant_id and (not model_name or not background_name or not pattern_name):
+                    v_model, v_background, v_pattern = self._variant_attrs_from_id(variant_id)
+                    model_name = model_name or v_model
+                    background_name = background_name or v_background
+                    pattern_name = pattern_name or v_pattern
+                collection_name = str(row.get("collection") or "").strip()
+                if not collection_name and collection_id:
+                    collection_name = _slug_to_name(collection_id)
+                preview_url = str(row.get("preview_url") or "")
+                if not preview_url and variant_id in self.variants:
+                    preview_url = str((self.variants.get(variant_id) or {}).get("preview_url") or "")
+                if q_norm:
+                    hay = " ".join([str(row.get("variant_label") or ""), str(row.get("listing_key") or ""), str(row.get("variant_id") or "")]).lower()
+                    if q_norm not in hay:
+                        continue
+                out.append(
+                    {
+                        "listing_key": str(row.get("listing_key") or ""),
+                        "variant_id": variant_id or None,
+                        "collection_id": collection_id or None,
+                        "collection": collection_name or None,
+                        "model": model_name or None,
+                        "background": background_name or None,
+                        "pattern": pattern_name or None,
+                        "variant_label": str(
+                            row.get("variant_label")
+                            or " • ".join([x for x in [collection_name, model_name, background_name, pattern_name] if x])
+                            or variant_id
+                            or ""
+                        ),
+                        "preview_url": preview_url,
+                        "prev_price_ton": row.get("prev_price_ton"),
+                        "price_ton": row.get("price_ton"),
+                        "delta_ton": row.get("delta_ton"),
+                        "delta_pct": row.get("delta_pct"),
+                        "direction": direction_val,
+                        "low_priority": bool(low_priority),
+                        "market_regime": str(regime_snapshot.get("market_regime") or "MEAN_REVERT"),
+                        "market_regime_badge": str(regime_snapshot.get("market_regime_badge") or "🟡"),
+                        "edgeRank100": None,
+                        "action": None,
+                        "reasons": [],
+                        "risk_flags": [],
+                        "ts_detected": str(row.get("ts_detected") or _iso(now)),
+                        "source": str(row.get("source") or "mtproto_api"),
+                    }
+                )
+            except Exception as exc:
+                row_failures += 1
+                err_payload = self._record_listing_runtime_error(
+                    block="listings_race",
+                    stage="mtproto_row_processing",
+                    exc=exc,
+                    row=row if isinstance(row, dict) else None,
+                )
+                if len(row_failure_samples) < 3:
+                    row_ctx = err_payload.get("row") if isinstance(err_payload.get("row"), dict) else {}
+                    row_key = str(row_ctx.get("listing_key") or row_ctx.get("listing_id") or row_ctx.get("unique_id") or "")
+                    sample = f"{err_payload.get('error_class')}:{err_payload.get('error')}"
+                    if row_key:
+                        sample = f"{sample}@{row_key}"
+                    row_failure_samples.append(sample)
+
+        def _race_sort_key(x: dict) -> tuple[int, float, str]:
+            # Prefer primary MTProto feed over fallback snapshots to keep race tape fresh.
+            source_rank = 1 if str(x.get("source") or "").strip().lower().startswith("mtproto") else 0
+            return (
+                source_rank,
+                abs(float(x.get("delta_pct") or 0.0)),
+                str(x.get("ts_detected") or ""),
+            )
+
+        out.sort(key=_race_sort_key, reverse=True)
+        cursor_payload = self._cursor_keyset_decode(cursor)
+        off = self._cursor_find_index(out, cursor_payload, ["listing_key", "ts_detected"])
+        lim = max(1, min(int(limit or 200), 500))
+        chunk = out[off : off + lim]
+        next_cursor = None
+        if (off + lim) < len(out) and chunk:
+            last = chunk[-1]
+            next_cursor = self._cursor_keyset_encode(
+                {
+                    "listing_key": str(last.get("listing_key") or ""),
+                    "ts_detected": str(last.get("ts_detected") or ""),
+                }
+            )
+        source_error = ""
+        if row_failures > 0:
+            source_error = f"row_processing_errors:{row_failures}"
+            if row_failure_samples:
+                source_error = f"{source_error}; sample={','.join(row_failure_samples)}"
+        return {
+            "items": chunk,
+            "next_cursor": next_cursor,
+            "server_ts": _iso(now),
+            "window": str(window or "30m"),
+            "window_sec": window_sec,
+            "source": "hybrid_runtime",
+            "source_error": source_error,
+            "row_processing_errors": row_failures,
+            "row_processing_error_samples": row_failure_samples,
+        }
+
+    def listings_history_v1(
+        self,
+        variant_id: str,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        resolution: str | None = "1m",
+    ) -> dict:
+        now = _now()
+        variant_key = str(variant_id or "").strip()
+        if not variant_key:
+            raise ValueError("variant_id_required")
+        # Keep history endpoint stable for newly discovered variants and seeded tests:
+        # listing/signal pipelines can request history before full variant snapshot is materialized.
+        mapped_variant = self._listing_to_variant(variant_key)
+        if mapped_variant:
+            variant_key = mapped_variant
+        to_dt = _parse_ts(to_ts) if to_ts else now
+        from_dt = _parse_ts(from_ts) if from_ts else (to_dt - timedelta(hours=24))
+        if from_dt > to_dt:
+            raise ValueError("invalid_time_range")
+        resolution_map = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}
+        res = str(resolution or "1m").strip().lower()
+        if res not in resolution_map:
+            raise ValueError(f"unsupported_resolution:{res}")
+        interval_sec = resolution_map[res]
+        history = self.variant_history.get(variant_key, [])
+        floor_points = self._series_points_from_history(history, "floor_ton", from_dt, to_dt, interval_sec, limit=5000)
+        active_points = self._series_points_from_history(history, "active_listings", from_dt, to_dt, interval_sec, limit=5000)
+        sales_points = self._trade_series_for_variants({variant_key}, from_dt, to_dt, interval_sec, limit=5000, value_mode="count")
+        volume_points = self._trade_series_for_variants({variant_key}, from_dt, to_dt, interval_sec, limit=5000, value_mode="volume")
+        listing_events_feed = self.listings_events_v1(
+            limit=5000,
+            since=_iso(from_dt),
+            new_window_sec=max(WINDOWS["24h"], int((to_dt - from_dt).total_seconds()) + 60),
+            include_relisted=True,
+        )
+        events: list[dict] = []
+        for ev in (listing_events_feed.get("items") or []):
+            if not isinstance(ev, dict):
+                continue
+            if str(ev.get("variant_id") or "") != variant_key:
+                continue
+            ts = _parse_ts(ev.get("ts"))
+            if ts < from_dt or ts > to_dt:
+                continue
+            topic = str(ev.get("topic") or "")
+            event_type = "listing.new"
+            meta: dict = {}
+            if topic.endswith("relisted"):
+                event_type = "listing.new"
+                meta = {"relisted": True}
+            events.append(
+                {
+                    "ts": _iso(ts),
+                    "type": event_type,
+                    "listing_key": ev.get("listing_key"),
+                    "price_ton": ev.get("resell_amount"),
+                    "meta": meta,
+                }
+            )
+        race_feed = self.listings_race_v1(
+            limit=5000,
+            window="24h",
+            direction="ANY",
+            delta_pct_min=0.0,
+            only_pro_alerts=False,
+            include_low_priority=True,
+        )
+        for row in (race_feed.get("items") or []):
+            if str((row or {}).get("variant_id") or "") != variant_key:
+                continue
+            ts = _parse_ts(row.get("ts_detected"))
+            if ts < from_dt or ts > to_dt:
+                continue
+            events.append(
+                {
+                    "ts": _iso(ts),
+                    "type": "listing.price_changed",
+                    "listing_key": row.get("listing_key"),
+                    "price_ton": row.get("price_ton"),
+                    "meta": {
+                        "prev_price_ton": row.get("prev_price_ton"),
+                        "delta_pct": row.get("delta_pct"),
+                        "direction": row.get("direction"),
+                    },
+                }
+            )
+        for row in self._listing_removed_events_v1(since_dt=from_dt, variant_id=variant_key):
+            ts = _parse_ts(row.get("ts"))
+            if ts > to_dt:
+                continue
+            events.append(
+                {
+                    "ts": _iso(ts),
+                    "type": "listing.removed",
+                    "listing_key": row.get("listing_key"),
+                    "price_ton": row.get("price_ton"),
+                    "meta": row.get("meta") if isinstance(row.get("meta"), dict) else {},
+                }
+            )
+        events.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
+        return {
+            "variant_id": variant_key,
+            "from": _iso(from_dt),
+            "to": _iso(to_dt),
+            "resolution": res,
+            "series": {
+                "floor": [{"ts": str(p.get("ts") or ""), "v": float(p.get("value") or 0.0)} for p in floor_points],
+                "active_lots": [{"ts": str(p.get("ts") or ""), "v": float(p.get("value") or 0.0)} for p in active_points],
+                "sales_count": [{"ts": str(p.get("ts") or ""), "v": float(p.get("value") or 0.0)} for p in sales_points],
+                "volume_ton": [{"ts": str(p.get("ts") or ""), "v": float(p.get("value") or 0.0)} for p in volume_points],
+            },
+            "events": events[:2000],
+            "server_ts": _iso(now),
         }
 
     def listings_v1(
@@ -5490,6 +8250,7 @@ class GiftAnalyticsService:
         since_dt = _parse_ts(since) if since else (now - timedelta(seconds=window_sec))
         source = "fragment.verified_snapshot"
         source_error = ""
+        source_updated_at = self.state.get("updated_at")
         rows = []
         if self.listing_primary_source in {"auto", "mtproto", "mtproto_api"}:
             mt_rows, mt_status = self._refresh_mt_listing_source(force=False, window_sec=window_sec)
@@ -5497,11 +8258,17 @@ class GiftAnalyticsService:
                 rows = mt_rows
                 source = str(mt_status.get("source") or "mtproto_api")
                 source_error = str(mt_status.get("error") or "")
+                source_updated_at = mt_status.get("updated_at") or source_updated_at
             elif self.listing_primary_source in {"mtproto", "mtproto_api"}:
                 source_error = str(mt_status.get("error") or "mtproto_empty_payload")
         if not rows:
             rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
             source = "fragment.verified_snapshot"
+            source_updated_at = self.state.get("updated_at")
+        realtime_source_ok, _ = self._listing_new_realtime_source_ok(
+            {"source": source, "updated_at": source_updated_at},
+            now=now,
+        )
         events: list[dict] = []
         for row in rows if isinstance(rows, list) else []:
             if not isinstance(row, dict):
@@ -5537,7 +8304,8 @@ class GiftAnalyticsService:
                 )
 
             first_seen_dt = _parse_ts(row.get("first_seen_at"))
-            _append_event(first_seen_dt, "market.listing.new")
+            if realtime_source_ok and self._listing_new_row_is_fresh(row, now=now, window_sec=window_sec):
+                _append_event(first_seen_dt, "market.listing.new")
             if include_relisted:
                 relisted_dt = _parse_ts(row.get("last_relisted_at"))
                 _append_event(relisted_dt, "market.listing.relisted")
@@ -5589,17 +8357,83 @@ class GiftAnalyticsService:
             include_relisted=include_relisted,
         )
         out: list[dict] = []
+        seen_signal_ids: set[str] = set()
+        stars_per_ton = float((self.stars_rate() or {}).get("stars_per_ton") or 0.0)
+        resolve_cache: dict[tuple[str, str, str, str], str | None] = {}
         for ev in (events_payload.get("items") or []):
             if not isinstance(ev, dict):
                 continue
             variant_id = str(ev.get("variant_id") or "").strip()
             v = self.variants.get(variant_id) if variant_id else None
+            attrs = (ev.get("attributes") if isinstance(ev.get("attributes"), dict) else {}) or {}
+            if not v and variant_id:
+                mapped = self._listing_to_variant(variant_id)
+                if mapped:
+                    variant_id = mapped
+                    v = self.variants.get(variant_id)
+            if not v:
+                cid_raw = str(ev.get("gift_id") or "").strip()
+                title_raw = str(ev.get("title") or "").strip()
+                model_raw = str(attrs.get("model") or "").strip()
+                background_raw = str(attrs.get("background") or "").strip()
+                pattern_raw = str(attrs.get("pattern") or "").strip()
+                if cid_raw and model_raw:
+                    cache_key = (
+                        _trait_key(cid_raw),
+                        _trait_key(model_raw),
+                        _trait_key(background_raw),
+                        _trait_key(pattern_raw),
+                    )
+                    resolved_variant_id = resolve_cache.get(cache_key)
+                    if cache_key not in resolve_cache:
+                        resolved_variant_id = None
+                        collection_id_candidates: list[str] = []
+                        if cid_raw:
+                            collection_id_candidates.append(cid_raw)
+                            if cid_raw.endswith("s") and len(cid_raw) > 1:
+                                collection_id_candidates.append(cid_raw[:-1])
+                            else:
+                                collection_id_candidates.append(f"{cid_raw}s")
+                        title_candidates = [title_raw] if title_raw else []
+                        for cid_try in collection_id_candidates:
+                            resolved = self.variant_resolve_v1(
+                                collection_id=cid_try,
+                                model=model_raw,
+                                background=background_raw or None,
+                                pattern=pattern_raw or None,
+                                active_only=False,
+                                mode=eff_mode,
+                            )
+                            if isinstance(resolved, dict):
+                                resolved_variant_id = str(resolved.get("variant_id") or "").strip() or None
+                                if resolved_variant_id:
+                                    break
+                        if not resolved_variant_id:
+                            for title_try in title_candidates:
+                                resolved = self.variant_resolve_v1(
+                                    collection_id="",
+                                    collection=title_try,
+                                    model=model_raw,
+                                    background=background_raw or None,
+                                    pattern=pattern_raw or None,
+                                    active_only=False,
+                                    mode=eff_mode,
+                                )
+                                if isinstance(resolved, dict):
+                                    resolved_variant_id = str(resolved.get("variant_id") or "").strip() or None
+                                    if resolved_variant_id:
+                                        break
+                        resolve_cache[cache_key] = resolved_variant_id
+                    if resolved_variant_id:
+                        variant_id = resolved_variant_id
+                        v = self.variants.get(variant_id)
             if v:
                 base_sig = self._v1_signal(v, mode=eff_mode)
                 sig_type_val = str(base_sig.get("type") or "WATCH")
                 score100 = float(base_sig.get("score100") or 0.0)
                 conf_pct = float(base_sig.get("conf_pct") or 0.0)
                 preview_url = str(base_sig.get("preview_url") or v.get("preview_url") or "")
+                variant_label = str(base_sig.get("variant_label") or "")
                 forecast_min = float(base_sig.get("forecast24h_pct_min") or 0.0)
                 forecast_max = float(base_sig.get("forecast24h_pct_max") or 0.0)
                 expected_profit_pct = float(base_sig.get("expected_profit_pct") or 0.0)
@@ -5607,26 +8441,105 @@ class GiftAnalyticsService:
                 price_ton = base_sig.get("price_ton")
                 fair_ton = base_sig.get("fair_ton")
                 floor_ton = base_sig.get("floor_ton")
+                action_val = str(base_sig.get("action") or sig_type_val)
+                market_regime = str(base_sig.get("market_regime") or "")
+                market_regime_badge = str(base_sig.get("market_regime_badge") or "")
+                edge_rank_raw = base_sig.get("edgeRank_raw")
+                edge_rank100 = base_sig.get("edgeRank100")
+                edge_rank_profile = str(base_sig.get("edgeRank_profile") or market_regime or "")
+                liquidity_score = base_sig.get("liquidity_score")
+                absorption_30m = base_sig.get("absorption_30m")
+                listing_pressure = base_sig.get("listing_pressure")
+                volume_velocity = base_sig.get("volume_velocity")
+                depth_5pct_count = base_sig.get("depth_5pct_count")
+                depth_5pct_ton = base_sig.get("depth_5pct_ton")
+                model_name = str(base_sig.get("model") or "")
+                background_name = str(base_sig.get("background") or "")
+                pattern_name = str(base_sig.get("pattern") or "")
                 reasons = list(base_sig.get("reasons") or [])[:4]
                 risks = list(base_sig.get("risk_flags") or [])[:4]
             else:
                 is_relisted = str(ev.get("topic") or "").endswith("relisted")
-                sig_type_val = "WATCH" if is_relisted else "BUY"
-                score100 = 52.0 if is_relisted else 58.0
-                conf_pct = 46.0 if is_relisted else 52.0
-                forecast_min = -8.0 if is_relisted else -4.0
-                forecast_max = 6.0 if is_relisted else 10.0
-                expected_profit_pct = 0.0
-                undervalue = 0.0
-                price_ton = None
+                currency = str(ev.get("resell_currency") or "TON").strip().upper()
+                raw_amount = float(ev.get("resell_amount") or 0.0)
+                if currency == "STARS":
+                    price_ton = (raw_amount / stars_per_ton) if stars_per_ton > 0 else 0.0
+                else:
+                    price_ton = raw_amount
+                cid = str(ev.get("gift_id") or "").strip().lower()
+                base_obj = self.bases.get(cid) if cid else None
+                base_metrics = (getattr(base_obj, "metrics", {}) or {}) if base_obj else {}
+                floor_guess = float(base_metrics.get("floor_ton") or 0.0)
+                if floor_guess <= 0 and price_ton > 0:
+                    floor_guess = price_ton * (1.0 + (0.03 if is_relisted else 0.08))
+                floor_ton = round(max(0.0, floor_guess), 6) if floor_guess > 0 else None
+                if (not price_ton or price_ton <= 0) and floor_ton and floor_ton > 0:
+                    price_ton = float(floor_ton)
+                if floor_ton and price_ton and price_ton > 0:
+                    undervalue = (float(floor_ton) - float(price_ton)) / max(1e-6, float(floor_ton))
+                else:
+                    undervalue = 0.0
+                expected_profit_pct = max(0.0, undervalue * 0.65)
+                liq_hint = _clamp(float(base_metrics.get("liquidity_score_24h") or 0.0), 0.0, 1.0)
+                relist_shift = -0.05 if is_relisted else 0.04
+                score_norm = _clamp(0.52 + (undervalue * 1.20) + relist_shift + (0.10 * liq_hint), 0.15, 0.93)
+                conf_norm = _clamp(
+                    0.36 + min(0.36, abs(undervalue) * 0.90) + (0.08 if price_ton and price_ton > 0 else -0.06),
+                    0.20,
+                    0.92,
+                )
+                score100 = round(score_norm * 100.0, 1)
+                conf_pct = round(conf_norm * 100.0, 1)
+                vol_hint = _clamp(4.0 + (abs(undervalue) * 100.0), 4.0, 28.0)
+                if undervalue >= 0.08 and not is_relisted:
+                    sig_type_val = "BUY"
+                    forecast_min = -0.45 * vol_hint
+                    forecast_max = 0.95 * vol_hint
+                elif undervalue <= -0.12:
+                    sig_type_val = "SELL"
+                    forecast_min = -1.20 * vol_hint
+                    forecast_max = -max(2.5, 0.25 * vol_hint)
+                else:
+                    sig_type_val = "WATCH" if is_relisted else "BUY"
+                    forecast_min = -0.70 * vol_hint
+                    forecast_max = 0.50 * vol_hint
                 fair_ton = None
-                floor_ton = None
+                if floor_ton and floor_ton > 0:
+                    fair_ton = round(float(floor_ton) * (1.0 + max(0.0, undervalue * 0.20)), 6)
+                elif price_ton and price_ton > 0:
+                    fair_ton = round(float(price_ton) * (1.0 + max(0.0, undervalue)), 6)
+                action_val = sig_type_val
+                market_regime = ""
+                market_regime_badge = ""
+                edge_rank_raw = None
+                edge_rank100 = None
+                edge_rank_profile = ""
+                liquidity_score = None
+                absorption_30m = None
+                listing_pressure = None
+                volume_velocity = None
+                depth_5pct_count = None
+                depth_5pct_ton = None
+                model_name = str(attrs.get("model") or "")
+                background_name = str(attrs.get("background") or "")
+                pattern_name = str(attrs.get("pattern") or "")
+                variant_label = " • ".join(
+                    [
+                        str(ev.get("title") or ev.get("gift_id") or "Unknown"),
+                        model_name or "Unknown",
+                        background_name or "Unknown",
+                        pattern_name or "Unknown",
+                    ]
+                )
                 preview_url = str(ev.get("preview_url") or "")
                 if not preview_url:
-                    cid = str(ev.get("gift_id") or "").strip().lower()
                     if cid and cid in self.bases:
                         preview_url = str(getattr(self.bases[cid], "preview_url", "") or "")
-                reasons = ["Вариант пока прогревается в аналитике, используется быстрый listing-сигнал."]
+                reasons = [
+                    "Вариант прогревается в аналитике: рассчитан динамический listing-сигнал.",
+                    f"Цена листинга: {round(float(price_ton or 0.0), 4)} TON, ориентир floor: {round(float(floor_ton or 0.0), 4)} TON.",
+                    f"Недооценка: {round(float(undervalue) * 100.0, 2)}%, режим события: {'relisted' if is_relisted else 'new'}.",
+                ]
                 risks = ["WARMUP_VARIANT_METRICS"]
 
             if signal_type and sig_type_val != str(signal_type):
@@ -5635,6 +8548,9 @@ class GiftAnalyticsService:
                 continue
 
             signal_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"listing|{ev.get('topic')}|{ev.get('listing_key')}|{ev.get('ts')}"))
+            if signal_id in seen_signal_ids:
+                continue
+            seen_signal_ids.add(signal_id)
             out.append(
                 {
                     "signal_id": signal_id,
@@ -5643,23 +8559,39 @@ class GiftAnalyticsService:
                     "topic": ev.get("topic"),
                     "listing_key": ev.get("listing_key"),
                     "variant_id": variant_id,
+                    "variant_label": variant_label,
                     "collection_id": ev.get("gift_id"),
                     "collection": ev.get("title") or ev.get("gift_id"),
                     "preview_url": preview_url,
-                    "model": ((ev.get("attributes") or {}).get("model") if isinstance(ev.get("attributes"), dict) else None),
-                    "background": ((ev.get("attributes") or {}).get("background") if isinstance(ev.get("attributes"), dict) else None),
-                    "pattern": ((ev.get("attributes") or {}).get("pattern") if isinstance(ev.get("attributes"), dict) else None),
+                    "model": model_name or None,
+                    "background": background_name or None,
+                    "pattern": pattern_name or None,
+                    "action": action_val,
+                    "market_regime": market_regime or None,
+                    "market_regime_badge": market_regime_badge or None,
+                    "edgeRank_profile": edge_rank_profile or None,
+                    "edgeRank_raw": edge_rank_raw,
+                    "edgeRank100": edge_rank100,
                     "score100": round(score100, 1),
+                    "score_pct": round(score100, 1),
                     "conf_pct": round(conf_pct, 1),
+                    "confidence_pct": round(conf_pct, 1),
                     "price_ton": price_ton,
                     "floor_ton": floor_ton,
                     "fair_ton": fair_ton,
                     "undervalue": round(undervalue, 6),
+                    "undervalue_pct": round(float(undervalue) * 100.0, 3),
                     "expected_profit_pct": round(expected_profit_pct, 6),
                     "forecast24h_pct_min": round(forecast_min, 1),
                     "forecast24h_pct_max": round(forecast_max, 1),
                     "active_lots": None,
-                    "liquidity24h": None,
+                    "liquidity24h": None if liquidity_score is None else round(float(liquidity_score) / 100.0, 6),
+                    "liquidity_score": liquidity_score,
+                    "absorption_30m": absorption_30m,
+                    "listing_pressure": listing_pressure,
+                    "volume_velocity": volume_velocity,
+                    "depth_5pct_count": depth_5pct_count,
+                    "depth_5pct_ton": depth_5pct_ton,
                     "reasons": reasons,
                     "risk_flags": risks,
                     "engine_mode": eff_mode,

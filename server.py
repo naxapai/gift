@@ -9,6 +9,7 @@ import time
 import subprocess
 import hmac
 import hashlib
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -93,6 +94,142 @@ _REFRESH_STATUS = {
 }
 _TON_BALANCE_CACHE_LOCK = threading.Lock()
 _TON_BALANCE_CACHE: dict[str, dict] = {}
+
+HTTP_METRICS_WINDOW = max(200, int(os.getenv("HTTP_METRICS_WINDOW", "5000")))
+HTTP_METRICS_TOP_ROUTES = max(5, min(50, int(os.getenv("HTTP_METRICS_TOP_ROUTES", "20"))))
+_HTTP_METRICS_LOCK = threading.Lock()
+_HTTP_METRICS_STARTED_AT = time.time()
+_HTTP_METRICS_TOTAL = 0
+_HTTP_METRICS_BY_METHOD: dict[str, int] = defaultdict(int)
+_HTTP_METRICS_BY_STATUS: dict[str, int] = defaultdict(int)
+_HTTP_METRICS_BY_ROUTE: dict[str, int] = defaultdict(int)
+_HTTP_METRICS_LAT_ALL_MS: deque[float] = deque(maxlen=HTTP_METRICS_WINDOW)
+_HTTP_METRICS_LAT_BY_ROUTE: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=HTTP_METRICS_WINDOW))
+_SSE_METRICS_ACTIVE: dict[str, int] = defaultdict(int)
+_SSE_METRICS_OPENS: dict[str, int] = defaultdict(int)
+_SSE_METRICS_ABRUPT_CLOSES: dict[str, int] = defaultdict(int)
+
+
+def _observe_sse_open(stream: str) -> None:
+    key = str(stream or "unknown")
+    with _HTTP_METRICS_LOCK:
+        _SSE_METRICS_OPENS[key] += 1
+        _SSE_METRICS_ACTIVE[key] += 1
+
+
+def _observe_sse_close(stream: str, *, abrupt: bool) -> None:
+    key = str(stream or "unknown")
+    with _HTTP_METRICS_LOCK:
+        _SSE_METRICS_ACTIVE[key] = max(0, int(_SSE_METRICS_ACTIVE.get(key, 0)) - 1)
+        if abrupt:
+            _SSE_METRICS_ABRUPT_CLOSES[key] += 1
+
+
+def _sse_disconnect_rate_pct_locked(stream: str | None = None) -> float:
+    if stream:
+        opens = int(_SSE_METRICS_OPENS.get(stream, 0))
+        abrupt = int(_SSE_METRICS_ABRUPT_CLOSES.get(stream, 0))
+        return round((float(abrupt) / float(max(1, opens))) * 100.0, 4)
+    total_opens = int(sum(_SSE_METRICS_OPENS.values()))
+    total_abrupt = int(sum(_SSE_METRICS_ABRUPT_CLOSES.values()))
+    return round((float(total_abrupt) / float(max(1, total_opens))) * 100.0, 4)
+
+
+def _sse_disconnect_rate_pct(stream: str | None = None) -> float:
+    with _HTTP_METRICS_LOCK:
+        return _sse_disconnect_rate_pct_locked(stream)
+
+
+def _http_route_key(path: str) -> str:
+    p = urlparse(str(path or "")).path or "/"
+    if p.startswith("/v1/variants/") and p.count("/") >= 3 and not p.startswith("/v1/variants/resolve"):
+        return "/v1/variants/:id"
+    if p.startswith("/v1/collections/") and p.count("/") >= 3:
+        return "/v1/collections/:id"
+    if p.startswith("/v1/signals/") and p.count("/") >= 3 and not p.startswith("/v1/signals/stream"):
+        return "/v1/signals/:id"
+    if p.startswith("/api/alerts/") and p.count("/") >= 3:
+        return "/api/alerts/:id"
+    if p.startswith("/assets/"):
+        return "/assets/*"
+    return p
+
+
+def _http_percentile(samples: list[float], pct: float) -> float:
+    if not samples:
+        return 0.0
+    arr = sorted(samples)
+    idx = int(max(0, min(len(arr) - 1, round((pct / 100.0) * (len(arr) - 1)))))
+    return round(float(arr[idx]), 3)
+
+
+def _observe_http_request(method: str, path: str, status_code: int, duration_ms: float) -> None:
+    route = _http_route_key(path)
+    status_bucket = f"{int(status_code) // 100}xx" if status_code >= 100 else "unknown"
+    duration_ms = max(0.0, float(duration_ms))
+    with _HTTP_METRICS_LOCK:
+        global _HTTP_METRICS_TOTAL
+        _HTTP_METRICS_TOTAL += 1
+        _HTTP_METRICS_BY_METHOD[str(method or "UNKNOWN").upper()] += 1
+        _HTTP_METRICS_BY_STATUS[status_bucket] += 1
+        _HTTP_METRICS_BY_ROUTE[route] += 1
+        _HTTP_METRICS_LAT_ALL_MS.append(duration_ms)
+        _HTTP_METRICS_LAT_BY_ROUTE[route].append(duration_ms)
+
+
+def _http_metrics_snapshot() -> dict:
+    with _HTTP_METRICS_LOCK:
+        all_lat = list(_HTTP_METRICS_LAT_ALL_MS)
+        top_routes = sorted(_HTTP_METRICS_BY_ROUTE.items(), key=lambda x: x[1], reverse=True)[:HTTP_METRICS_TOP_ROUTES]
+        routes_payload = []
+        for route, count in top_routes:
+            route_lat = list(_HTTP_METRICS_LAT_BY_ROUTE.get(route) or [])
+            routes_payload.append(
+                {
+                    "route": route,
+                    "count": int(count),
+                    "p50_ms": _http_percentile(route_lat, 50),
+                    "p95_ms": _http_percentile(route_lat, 95),
+                    "p99_ms": _http_percentile(route_lat, 99),
+                }
+            )
+        return {
+            "ok": True,
+            "started_at": datetime.fromtimestamp(_HTTP_METRICS_STARTED_AT, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+            "uptime_sec": max(0, int(time.time() - _HTTP_METRICS_STARTED_AT)),
+            "window_size": HTTP_METRICS_WINDOW,
+            "total_requests": int(_HTTP_METRICS_TOTAL),
+            "methods": {k: int(v) for k, v in sorted(_HTTP_METRICS_BY_METHOD.items())},
+            "statuses": {k: int(v) for k, v in sorted(_HTTP_METRICS_BY_STATUS.items())},
+            "latency_ms": {
+                "p50": _http_percentile(all_lat, 50),
+                "p95": _http_percentile(all_lat, 95),
+                "p99": _http_percentile(all_lat, 99),
+            },
+            "sse": {
+                "active": {k: int(v) for k, v in sorted(_SSE_METRICS_ACTIVE.items())},
+                "opens": {k: int(v) for k, v in sorted(_SSE_METRICS_OPENS.items())},
+                "abrupt_closes": {k: int(v) for k, v in sorted(_SSE_METRICS_ABRUPT_CLOSES.items())},
+                "abrupt_disconnect_rate_pct": _sse_disconnect_rate_pct_locked(),
+            },
+            "top_routes": routes_payload,
+        }
+
+
+def _http_metrics_reset() -> dict:
+    with _HTTP_METRICS_LOCK:
+        global _HTTP_METRICS_STARTED_AT, _HTTP_METRICS_TOTAL
+        _HTTP_METRICS_STARTED_AT = time.time()
+        _HTTP_METRICS_TOTAL = 0
+        _HTTP_METRICS_BY_METHOD.clear()
+        _HTTP_METRICS_BY_STATUS.clear()
+        _HTTP_METRICS_BY_ROUTE.clear()
+        _HTTP_METRICS_LAT_ALL_MS.clear()
+        _HTTP_METRICS_LAT_BY_ROUTE.clear()
+        _SSE_METRICS_ACTIVE.clear()
+        _SSE_METRICS_OPENS.clear()
+        _SSE_METRICS_ABRUPT_CLOSES.clear()
+    return _http_metrics_snapshot()
 
 
 def _tz_now_iso() -> str:
@@ -449,8 +586,6 @@ def _listing_row_price_ton_equiv(state: GiftAnalyticsService, row: dict) -> floa
     if stars_per_ton > 0.0:
         return stars_val / stars_per_ton
     return 0.0
-
-
 def _parse_admin_ids() -> set[int]:
     out: set[int] = set()
     for raw in [ADMIN_TELEGRAM_USER_ID, ADMIN_TELEGRAM_USER_IDS_RAW]:
@@ -1451,6 +1586,27 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             raise
 
+    def send_response(self, code: int, message: str | None = None) -> None:
+        self._gmz_status_code = int(code)
+        super().send_response(code, message)
+        trace_id = str(getattr(self, "_gmz_trace_id", "") or "").strip()
+        if trace_id:
+            super().send_header("X-Trace-Id", trace_id)
+
+    def handle_one_request(self) -> None:
+        self._gmz_trace_id = secrets.token_hex(8)
+        self._gmz_status_code = 0
+        started = time.perf_counter()
+        try:
+            super().handle_one_request()
+        finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            method = str(getattr(self, "command", "") or "").upper()
+            path = str(getattr(self, "path", "") or "")
+            if method and path.startswith("/"):
+                status_code = int(getattr(self, "_gmz_status_code", 0) or 500)
+                _observe_http_request(method=method, path=path, status_code=status_code, duration_ms=elapsed_ms)
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
@@ -1709,6 +1865,43 @@ class RequestHandler(BaseHTTPRequestHandler):
                 _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             return
 
+        if path == "/v1/variants/resolve":
+            params = parse_qs(parsed.query)
+            collection_id = (params.get("collection_id") or [None])[0]
+            collection = (params.get("collection") or [None])[0]
+            model = (params.get("model") or [None])[0]
+            background = (params.get("background") or [None])[0]
+            pattern = (params.get("pattern") or [None])[0]
+            mode = (params.get("mode") or [None])[0]
+            active_only = ((params.get("active_only") or ["true"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            if (not str(collection_id or "").strip() and not str(collection or "").strip()) or not str(model or "").strip():
+                _json_response(
+                    self,
+                    {"ok": False, "error": "invalid_resolve_params"},
+                    status=HTTPStatus.BAD_REQUEST,
+                    cache_control="no-store",
+                )
+                return
+            data = _state().variant_resolve_v1(
+                collection_id=collection_id,
+                collection=collection,
+                model=model,
+                background=background,
+                pattern=pattern,
+                active_only=active_only,
+                mode=mode,
+            )
+            if not data:
+                _json_response(
+                    self,
+                    {"ok": False, "error": "variant_not_found_or_not_active"},
+                    status=HTTPStatus.NOT_FOUND,
+                    cache_control="no-store",
+                )
+                return
+            _json_response(self, data, cache_control="no-store")
+            return
+
         if path.startswith("/v1/variants/") and path.count("/") == 3:
             variant_id = unquote(path.split("/")[-1])
             params = parse_qs(parsed.query)
@@ -1720,9 +1913,51 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, data, cache_control="no-store")
             return
 
+        if path == "/v1/signals/calibration/report":
+            params = parse_qs(parsed.query)
+            mode = str((params.get("mode") or ["tz"])[0] or "tz").strip().lower()
+            if mode not in {"tz", "legacy", "tz_strict"}:
+                _json_response(self, {"ok": False, "error": "unsupported_mode"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                horizon_hours = int((params.get("horizon_hours") or ["24"])[0])
+                limit = int((params.get("limit") or ["1000"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_numeric_filter"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if horizon_hours < 1 or horizon_hours > 168:
+                _json_response(self, {"ok": False, "error": "invalid_horizon_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 5000:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                from scripts.backtest_tz_signals import run as backtest_run
+
+                svc = _state()
+                payload = backtest_run(
+                    horizon_hours=horizon_hours,
+                    mode=mode,
+                    limit=limit,
+                    signals_url=None,
+                    svc=svc,
+                    history=(svc.variant_history if isinstance(getattr(svc, "variant_history", None), dict) else None),
+                )
+                _json_response(self, payload, cache_control="no-store")
+            except Exception as exc:
+                _json_response(
+                    self,
+                    {"ok": False, "error": f"calibration_failed:{exc.__class__.__name__}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    cache_control="no-store",
+                )
+            return
+
         if path == "/v1/signals":
             params = parse_qs(parsed.query)
             signal_type = (params.get("type") or [None])[0]
+            action = [str(x) for x in (params.get("action") or [])]
+            market_regime = [str(x) for x in (params.get("market_regime") or [])]
             min_score_raw = (params.get("min_score") or [None])[0]
             if min_score_raw in (None, ""):
                 min_score = None
@@ -1734,6 +1969,33 @@ class RequestHandler(BaseHTTPRequestHandler):
                     return
             since = (params.get("since") or [None])[0]
             mode = (params.get("mode") or [None])[0]
+            edge_rank_raw = (params.get("edgeRank_min") or params.get("edgeRank100_min") or [None])[0]
+            conf_min_raw = (params.get("conf_min") or [None])[0]
+            profit_min_raw = (params.get("profit_min") or [None])[0]
+            liq_min_raw = (params.get("liq_min") or [None])[0]
+            lp_max_raw = (params.get("lp_max") or [None])[0]
+            ar_min_raw = (params.get("ar_min") or [None])[0]
+            vv_min_raw = (params.get("vv_min") or [None])[0]
+            min_undervalue_raw = (params.get("min_undervalue_pct") or params.get("min_undervalue") or [None])[0]
+            max_risk_raw = (params.get("max_risk") or [None])[0]
+            only_new_1h = ((params.get("only_new_1h") or params.get("only_new") or ["false"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            sort_by = (params.get("sort_by") or [None])[0]
+            sort_dir = (params.get("sort_dir") or [None])[0]
+            q = (params.get("q") or params.get("search") or [""])[0]
+            only_pro_alerts = ((params.get("only_pro_alerts") or ["false"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                edge_rank_min = float(edge_rank_raw) if edge_rank_raw not in (None, "") else None
+                conf_min = float(conf_min_raw) if conf_min_raw not in (None, "") else None
+                profit_min = float(profit_min_raw) if profit_min_raw not in (None, "") else None
+                liq_min = float(liq_min_raw) if liq_min_raw not in (None, "") else None
+                lp_max = float(lp_max_raw) if lp_max_raw not in (None, "") else None
+                ar_min = float(ar_min_raw) if ar_min_raw not in (None, "") else None
+                vv_min = float(vv_min_raw) if vv_min_raw not in (None, "") else None
+                min_undervalue_pct = float(min_undervalue_raw) if min_undervalue_raw not in (None, "") else None
+                max_risk = float(max_risk_raw) if max_risk_raw not in (None, "") else None
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_numeric_filter"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             try:
                 limit = int((params.get("limit") or ["50"])[0])
             except Exception:
@@ -1744,10 +2006,669 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             cursor = (params.get("cursor") or [None])[0]
             try:
-                data = _state().signals_v1(signal_type=signal_type, min_score=min_score, since=since, limit=limit, cursor=cursor, mode=mode)
+                data = _state().signals_v1(
+                    signal_type=signal_type,
+                    action=action,
+                    market_regime=market_regime,
+                    min_score=min_score,
+                    edgeRank_min=edge_rank_min,
+                    conf_min=conf_min,
+                    profit_min=profit_min,
+                    liq_min=liq_min,
+                    lp_max=lp_max,
+                    ar_min=ar_min,
+                    vv_min=vv_min,
+                    min_undervalue_pct=min_undervalue_pct,
+                    max_risk=max_risk,
+                    only_new_1h=only_new_1h,
+                    only_pro_alerts=only_pro_alerts,
+                    q=q,
+                    sort_by=sort_by,
+                    sort_dir=sort_dir,
+                    since=since,
+                    limit=limit,
+                    cursor=cursor,
+                    mode=mode,
+                )
+                # Compatibility safety net: enforce client filters at HTTP layer.
+                # Some older runtimes ignore part of query filters in core signals_v1.
+                items = data.get("items") if isinstance(data, dict) else None
+                if isinstance(items, list):
+                    filtered = list(items)
+                    signal_type_set = (
+                        {str(signal_type or "").strip().upper()}
+                        if str(signal_type or "").strip()
+                        else set()
+                    )
+                    action_set = {str(x or "").strip().upper() for x in action if str(x or "").strip()}
+                    regime_set = {str(x or "").strip().upper() for x in market_regime if str(x or "").strip()}
+                    q_norm = str(q or "").strip().lower()
+                    filters_applied = bool(signal_type_set or action_set or regime_set or q_norm)
+                    filters_applied = filters_applied or any(
+                        v is not None for v in (
+                            min_score,
+                            edge_rank_min,
+                            conf_min,
+                            profit_min,
+                            liq_min,
+                            lp_max,
+                            ar_min,
+                            vv_min,
+                            min_undervalue_pct,
+                            max_risk,
+                        )
+                    ) or bool(only_new_1h or only_pro_alerts)
+                    if signal_type_set:
+                        filtered = [
+                            row for row in filtered
+                            if str((row or {}).get("type") or (row or {}).get("action") or "").strip().upper() in signal_type_set
+                        ]
+                    if action_set:
+                        filtered = [
+                            row for row in filtered
+                            if str((row or {}).get("type") or (row or {}).get("action") or "").strip().upper() in action_set
+                        ]
+                    if regime_set:
+                        filtered = [
+                            row for row in filtered
+                            if str((row or {}).get("market_regime") or "").strip().upper() in regime_set
+                        ]
+                    if min_score is not None:
+                        ms = float(min_score) * 100.0
+                        filtered = [row for row in filtered if _safe_float((row or {}).get("score100"), 0.0) >= ms]
+                    if edge_rank_min is not None:
+                        filtered = [row for row in filtered if _safe_float((row or {}).get("edgeRank100"), 0.0) >= float(edge_rank_min)]
+                    if conf_min is not None:
+                        filtered = [row for row in filtered if _safe_float((row or {}).get("conf_pct"), 0.0) >= float(conf_min)]
+                    if profit_min is not None:
+                        filtered = [row for row in filtered if _safe_float((row or {}).get("expected_profit_pct"), 0.0) >= float(profit_min)]
+                    if liq_min is not None:
+                        filtered = [row for row in filtered if _safe_float((row or {}).get("liquidity_score"), 0.0) >= float(liq_min)]
+                    if lp_max is not None:
+                        filtered = [row for row in filtered if _safe_float((row or {}).get("listing_pressure"), 0.0) <= float(lp_max)]
+                    if ar_min is not None:
+                        filtered = [row for row in filtered if _safe_float((row or {}).get("absorption_30m"), 0.0) >= float(ar_min)]
+                    if vv_min is not None:
+                        filtered = [row for row in filtered if _safe_float((row or {}).get("volume_velocity"), 0.0) >= float(vv_min)]
+                    if min_undervalue_pct is not None:
+                        def _undervalue_pct(row: dict) -> float:
+                            u = row.get("undervalue_pct")
+                            if u not in (None, ""):
+                                return _safe_float(u, 0.0)
+                            return _safe_float(row.get("undervalue"), 0.0) * 100.0
+                        filtered = [row for row in filtered if _undervalue_pct(row if isinstance(row, dict) else {}) >= float(min_undervalue_pct)]
+                    if max_risk is not None:
+                        def _risk_proxy(row: dict) -> float:
+                            flags = (row or {}).get("risk_flags")
+                            if isinstance(flags, list):
+                                return min(1.0, len(flags) / 4.0)
+                            return 0.0
+                        filtered = [row for row in filtered if _risk_proxy(row if isinstance(row, dict) else {}) <= float(max_risk)]
+                    if only_new_1h:
+                        cutoff = datetime.now(timezone.utc).timestamp() - 3600
+                        tmp = []
+                        for row in filtered:
+                            ts_dt = _parse_iso_utc(str((row or {}).get("ts") or ""))
+                            if ts_dt is not None and ts_dt.timestamp() >= cutoff:
+                                tmp.append(row)
+                        filtered = tmp
+                    if only_pro_alerts:
+                        filtered = [
+                            row for row in filtered
+                            if _safe_float((row or {}).get("edgeRank100"), 0.0) >= 55.0
+                            and _safe_float((row or {}).get("conf_pct"), 0.0) >= 35.0
+                            and _safe_float((row or {}).get("expected_profit_pct"), 0.0) >= 8.0
+                        ]
+                    if q_norm:
+                        def _haystack(row: dict) -> str:
+                            parts = [
+                                str((row or {}).get("variant_id") or ""),
+                                str((row or {}).get("variant_label") or ""),
+                                str((row or {}).get("collection") or ""),
+                                str((row or {}).get("model") or ""),
+                                str((row or {}).get("background") or ""),
+                                str((row or {}).get("pattern") or ""),
+                            ]
+                            return " ".join(parts).lower()
+                        filtered = [row for row in filtered if q_norm in _haystack(row if isinstance(row, dict) else {})]
+                    if filters_applied:
+                        data["items"] = filtered
+                        data["total_count"] = len(filtered)
+                        data["next_cursor"] = None
+                        data["has_more"] = False
                 _json_response(self, data, cache_control="no-store")
             except ValueError as exc:
                 _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            return
+
+        if path == "/v1/market/status":
+            params = parse_qs(parsed.query)
+            window = (params.get("window") or ["30m"])[0]
+            try:
+                payload = _state().market_status_v1(window=window)
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if isinstance(payload, dict):
+                ex = payload.get("execution_health")
+                if isinstance(ex, dict):
+                    ex["sse_disconnect_rate"] = float(_sse_disconnect_rate_pct())
+                    payload["execution_health"] = ex
+            _json_response(self, payload, cache_control="no-store")
+            return
+
+        if path == "/v1/listings/new":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["200"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            cursor = (params.get("cursor") or [None])[0]
+            window = (params.get("window") or ["30m"])[0]
+            market_regime = [str(x) for x in (params.get("market_regime") or [])]
+            action = [str(x) for x in (params.get("action") or [])]
+            try:
+                edge_rank_min = float((params.get("edgeRank_min") or ["55"])[0])
+                conf_min = float((params.get("conf_min") or ["35"])[0])
+                profit_min = float((params.get("profit_min") or ["8"])[0])
+                undervalue_min = float((params.get("undervalue_min") or ["0"])[0])
+                liq_min = float((params.get("liq_min") or ["35"])[0])
+                lp_max = float((params.get("lp_max") or ["4"])[0])
+                ar_min = float((params.get("ar_min") or ["0.9"])[0])
+                vv_min = float((params.get("vv_min") or ["1"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_numeric_filter"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            only_pro_alerts = ((params.get("only_pro_alerts") or ["true"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            collection = (params.get("collection") or [""])[0]
+            model = (params.get("model") or [""])[0]
+            background = (params.get("background") or [""])[0]
+            pattern = (params.get("pattern") or [""])[0]
+            variant_id = (params.get("variant_id") or [""])[0]
+            q = (params.get("q") or [""])[0]
+            try:
+                window_raw, window_sec = _listing_window_to_sec(window, default="30m")
+                state = _state()
+                base = state.listings_v1(
+                    limit=500,
+                    cursor=None,
+                    only_new=True,
+                    new_window_sec=window_sec,
+                    collection_q=collection,
+                    model_q=model,
+                    background_q=background,
+                    pattern_q=pattern,
+                )
+                source = str((base or {}).get("source") or "fragment.verified_snapshot")
+                source_error = str((base or {}).get("source_error") or "")
+                rows = (base or {}).get("items") if isinstance(base, dict) else []
+                rows = rows if isinstance(rows, list) else []
+                now = datetime.now(timezone.utc)
+                market_regime_current, market_badge_current = _market_regime_snapshot_compat()
+
+                regime_filter = {str(x or "").strip().upper() for x in (market_regime or []) if str(x or "").strip()}
+                action_filter = {str(x or "").strip().upper() for x in (action or []) if str(x or "").strip()}
+                q_norm = str(q or "").strip().lower()
+                variant_q = str(variant_id or "").strip()
+
+                out: list[dict] = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    ts_detected = str(row.get("first_seen_at") or row.get("last_seen_at") or "")
+                    ts_dt = _parse_iso_utc(ts_detected)
+                    if ts_dt is None:
+                        continue
+                    if (now - ts_dt).total_seconds() > float(window_sec):
+                        continue
+
+                    row_variant_id = str(row.get("variant_id") or "").strip()
+                    if variant_q and variant_q != row_variant_id:
+                        continue
+                    attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+                    collection_name = str(row.get("collection") or row.get("title") or row.get("collection_id") or row.get("gift_id") or "")
+                    model_name = str(attrs.get("model") or "Unknown")
+                    background_name = str(attrs.get("background") or "Unknown")
+                    pattern_name = str(attrs.get("pattern") or "Unknown")
+                    variant = state.variants.get(row_variant_id) if row_variant_id else None
+                    preview_url = str(row.get("preview_url") or "")
+                    if isinstance(variant, dict):
+                        traits = variant.get("traits") if isinstance(variant.get("traits"), dict) else {}
+                        model_name = str(((traits.get("model") or {}).get("name")) or model_name or "Unknown")
+                        background_name = str(((traits.get("background") or {}).get("name")) or background_name or "Unknown")
+                        pattern_name = str(((traits.get("pattern") or {}).get("name")) or pattern_name or "Unknown")
+                        preview_url = str(variant.get("preview_url") or preview_url)
+                    variant_label = _listing_variant_label(collection_name, model_name, background_name, pattern_name)
+                    signal_payload = state._v1_signal(variant, mode="tz") if isinstance(variant, dict) else {}
+                    score100 = float(signal_payload.get("score100") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    conf_pct_val = float(signal_payload.get("conf_pct") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    expected_profit_pct = _norm_pct(float(signal_payload.get("expected_profit_pct") or 0.0)) if isinstance(signal_payload, dict) else 0.0
+                    undervalue_pct = _norm_pct(float(signal_payload.get("undervalue") or 0.0)) if isinstance(signal_payload, dict) else 0.0
+                    liquidity_score = _clamp(float(signal_payload.get("liquidity24h") or 0.0), 0.0, 1.0) * 100.0 if isinstance(signal_payload, dict) else 0.0
+                    absorption_30m = float(signal_payload.get("absorption_rate") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    listing_pressure = float(signal_payload.get("listing_pressure") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    volume_velocity = float(signal_payload.get("volume_velocity") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    action_val = str(signal_payload.get("type") or "WATCH") if isinstance(signal_payload, dict) else "WATCH"
+                    edge_rank = _clamp((score100 * conf_pct_val) / 100.0, 0.0, 100.0)
+
+                    if regime_filter and market_regime_current not in regime_filter:
+                        continue
+                    if action_filter and action_val.upper() not in action_filter:
+                        continue
+                    if edge_rank < edge_rank_min or conf_pct_val < conf_min:
+                        continue
+                    if expected_profit_pct < profit_min or undervalue_pct < undervalue_min:
+                        continue
+                    if liquidity_score < liq_min or listing_pressure > lp_max:
+                        continue
+                    if absorption_30m < ar_min or volume_velocity < vv_min:
+                        continue
+                    if only_pro_alerts and action_val.upper() not in {"BUY", "SELL"}:
+                        continue
+                    if q_norm:
+                        hay = " ".join([variant_label, row_variant_id, str(row.get("listing_key") or "")]).lower()
+                        if q_norm not in hay:
+                            continue
+
+                    out.append(
+                        {
+                            "listing_key": str(row.get("listing_key") or ""),
+                            "variant_id": row_variant_id or None,
+                            "collection_id": str(row.get("collection_id") or row.get("gift_id") or "") or None,
+                            "collection": collection_name or None,
+                            "model": model_name,
+                            "background": background_name,
+                            "pattern": pattern_name,
+                            "variant_label": variant_label,
+                            "preview_url": preview_url,
+                            "price_ton": round(_listing_row_price_ton_equiv(state, row), 6),
+                            "floor_ton": signal_payload.get("floor_ton") if isinstance(signal_payload, dict) else None,
+                            "fair_ton": signal_payload.get("fair_ton") if isinstance(signal_payload, dict) else None,
+                            "undervalue_pct": round(undervalue_pct, 2),
+                            "expected_profit_pct": round(expected_profit_pct, 2),
+                            "score100": round(score100, 1),
+                            "conf_pct": round(conf_pct_val, 1),
+                            "edgeRank100": round(edge_rank, 1),
+                            "edgeRank_raw": round(edge_rank / 100.0, 6),
+                            "action": action_val.upper(),
+                            "strength_tag": _signal_action_strength(action_val, score100),
+                            "liquidity_score": round(liquidity_score, 2),
+                            "absorption_30m": round(absorption_30m, 4),
+                            "listing_pressure": round(listing_pressure, 4),
+                            "volume_velocity": round(volume_velocity, 4),
+                            "market_regime": market_regime_current,
+                            "market_regime_badge": market_badge_current,
+                            "ts_detected": ts_detected,
+                            "latency_ms": max(0, int((now - ts_dt).total_seconds() * 1000.0)),
+                            "source": source,
+                        }
+                    )
+                out.sort(key=lambda x: (float(x.get("edgeRank100") or 0.0), float(x.get("expected_profit_pct") or 0.0), str(x.get("ts_detected") or "")), reverse=True)
+                off = 0
+                try:
+                    off = max(0, int(str(cursor or "0")))
+                except Exception:
+                    off = 0
+                chunk = out[off : off + limit]
+                next_cursor = str(off + limit) if (off + limit) < len(out) else None
+                _json_response(
+                    self,
+                    {
+                        "items": chunk,
+                        "next_cursor": next_cursor,
+                        "server_ts": _tz_now_iso(),
+                        "window": window_raw,
+                        "window_sec": window_sec,
+                        "source": source,
+                        "source_error": source_error,
+                    },
+                    cache_control="no-store",
+                )
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            except Exception as exc:
+                _json_response(
+                    self,
+                    {
+                        "items": [],
+                        "next_cursor": None,
+                        "server_ts": _tz_now_iso(),
+                        "window": str(window or "30m"),
+                        "window_sec": 0,
+                        "source": "runtime_error",
+                        "source_error": f"listings_new_runtime_error:{exc.__class__.__name__}:{exc}",
+                    },
+                    cache_control="no-store",
+                )
+            return
+
+        if path == "/v1/listings/race":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["200"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            cursor = (params.get("cursor") or [None])[0]
+            window = (params.get("window") or ["30m"])[0]
+            direction = (params.get("direction") or ["ANY"])[0]
+            try:
+                delta_pct_min = float((params.get("delta_pct_min") or ["0"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_delta_pct_min"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            only_pro_alerts = ((params.get("only_pro_alerts") or ["false"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            include_low_priority = ((params.get("include_low_priority") or ["false"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            q = (params.get("q") or [""])[0]
+            try:
+                window_raw, window_sec = _listing_window_to_sec(window, default="30m")
+                direction_norm = str(direction or "ANY").strip().upper()
+                if direction_norm not in {"UP", "DOWN", "ANY"}:
+                    raise ValueError(f"unsupported_direction:{direction_norm}")
+                state = _state()
+                base_payload = None
+                base_rows: list[dict] = []
+                try:
+                    mt_rows, mt_status = state._refresh_mt_listing_source(force=False, window_sec=max(window_sec, 120))
+                    if isinstance(mt_rows, list):
+                        base_rows = [x for x in mt_rows if isinstance(x, dict)]
+                    base_payload = {
+                        "items": base_rows,
+                        "source": str((mt_status or {}).get("source") or "mtproto_api"),
+                        "source_error": str((mt_status or {}).get("error") or ""),
+                    }
+                except Exception:
+                    base_payload = state.listings_v1(
+                        limit=500,
+                        cursor=None,
+                        only_new=False,
+                        new_window_sec=max(window_sec, 120),
+                        collection_q="",
+                        model_q="",
+                        background_q="",
+                        pattern_q="",
+                    )
+                    rows_raw = (base_payload or {}).get("items") if isinstance(base_payload, dict) else []
+                    base_rows = rows_raw if isinstance(rows_raw, list) else []
+                if isinstance(base_rows, list) and base_rows:
+                    _warmup_race_tracker_from_rows(state, base_rows, _tz_now_iso())
+                try:
+                    state._sync_listing_tracker_state(datetime.now(timezone.utc), persist=False)
+                except Exception:
+                    pass
+                market_regime_current, market_badge_current = _market_regime_snapshot_compat()
+                source = str((base_payload or {}).get("source") or "fragment.verified_snapshot")
+                source_error = str((base_payload or {}).get("source_error") or "")
+                q_norm = str(q or "").strip().lower()
+                now = datetime.now(timezone.utc)
+                out: list[dict] = []
+                tracker = state.listing_tracker_state if isinstance(state.listing_tracker_state, dict) else {}
+                for entry in tracker.values():
+                    if not isinstance(entry, dict):
+                        continue
+                    ts_detected = str(entry.get("last_price_changed_at") or entry.get("last_seen_at") or "")
+                    ts_dt = _parse_iso_utc(ts_detected)
+                    if ts_dt is None:
+                        continue
+                    if (now - ts_dt).total_seconds() > float(window_sec):
+                        continue
+                    prev_price = _safe_float(entry.get("prev_price_ton"), 0.0)
+                    price_ton = _safe_float(entry.get("last_price_ton"), 0.0)
+                    if prev_price <= 0.0 or price_ton <= 0.0:
+                        continue
+                    delta_ton = price_ton - prev_price
+                    if abs(delta_ton) < 1e-9:
+                        continue
+                    delta_pct = (delta_ton / max(prev_price, 1e-9)) * 100.0
+                    row_direction = "UP" if delta_ton > 0 else "DOWN"
+                    if direction_norm != "ANY" and row_direction != direction_norm:
+                        continue
+                    if abs(delta_pct) < max(0.0, float(delta_pct_min or 0.0)):
+                        continue
+                    low_priority = abs(delta_pct) < 0.5
+                    if low_priority and not include_low_priority:
+                        continue
+                    variant_id_row = str(entry.get("variant_id") or "")
+                    variant = state.variants.get(variant_id_row) if variant_id_row else None
+                    base_id = str(entry.get("base_id") or "")
+                    collection_name = base_id.replace("_", " ").title() if base_id else "Unknown"
+                    model_name = "Unknown"
+                    background_name = "Unknown"
+                    pattern_name = "Unknown"
+                    preview_url = str(entry.get("preview_url") or "")
+                    if isinstance(variant, dict):
+                        traits = variant.get("traits") if isinstance(variant.get("traits"), dict) else {}
+                        model_name = str(((traits.get("model") or {}).get("name")) or model_name)
+                        background_name = str(((traits.get("background") or {}).get("name")) or background_name)
+                        pattern_name = str(((traits.get("pattern") or {}).get("name")) or pattern_name)
+                        preview_url = str(variant.get("preview_url") or preview_url)
+                    label = _listing_variant_label(collection_name, model_name, background_name, pattern_name)
+                    signal_payload = state._v1_signal(variant, mode="tz") if isinstance(variant, dict) else {}
+                    score100 = float(signal_payload.get("score100") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    conf_pct_val = float(signal_payload.get("conf_pct") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    edge_rank = _clamp((score100 * conf_pct_val) / 100.0, 0.0, 100.0)
+                    action_val = str(signal_payload.get("type") or "WATCH") if isinstance(signal_payload, dict) else "WATCH"
+                    if only_pro_alerts and action_val.upper() not in {"BUY", "SELL"}:
+                        continue
+                    if q_norm:
+                        hay = " ".join([label, variant_id_row, str(entry.get("listing_key") or "")]).lower()
+                        if q_norm not in hay:
+                            continue
+                    out.append(
+                        {
+                            "listing_key": str(entry.get("listing_key") or ""),
+                            "variant_id": variant_id_row or None,
+                            "collection_id": base_id or None,
+                            "collection": collection_name,
+                            "model": model_name,
+                            "background": background_name,
+                            "pattern": pattern_name,
+                            "variant_label": label,
+                            "preview_url": preview_url,
+                            "prev_price_ton": round(prev_price, 6),
+                            "price_ton": round(price_ton, 6),
+                            "delta_ton": round(delta_ton, 6),
+                            "delta_pct": round(delta_pct, 6),
+                            "direction": row_direction,
+                            "low_priority": low_priority,
+                            "market_regime": market_regime_current,
+                            "market_regime_badge": market_badge_current,
+                            "edgeRank100": round(edge_rank, 1),
+                            "action": action_val.upper(),
+                            "ts_detected": ts_detected,
+                            "source": source,
+                        }
+                    )
+                out.sort(key=lambda x: (abs(float(x.get("delta_pct") or 0.0)), str(x.get("ts_detected") or "")), reverse=True)
+                off = 0
+                try:
+                    off = max(0, int(str(cursor or "0")))
+                except Exception:
+                    off = 0
+                chunk = out[off : off + limit]
+                next_cursor = str(off + limit) if (off + limit) < len(out) else None
+                _json_response(
+                    self,
+                    {
+                        "items": chunk,
+                        "next_cursor": next_cursor,
+                        "server_ts": _tz_now_iso(),
+                        "window": window_raw,
+                        "window_sec": window_sec,
+                        "source": source,
+                        "source_error": source_error,
+                    },
+                    cache_control="no-store",
+                )
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            except Exception as exc:
+                _json_response(
+                    self,
+                    {
+                        "items": [],
+                        "next_cursor": None,
+                        "server_ts": _tz_now_iso(),
+                        "window": str(window or "30m"),
+                        "window_sec": 0,
+                        "source": "runtime_error",
+                        "source_error": f"listings_race_runtime_error:{exc.__class__.__name__}:{exc}",
+                    },
+                    cache_control="no-store",
+                )
+            return
+
+        if path == "/v1/listings/history":
+            params = parse_qs(parsed.query)
+            variant_id = (params.get("variant_id") or [""])[0]
+            if not variant_id:
+                _json_response(self, {"ok": False, "error": "variant_id_required"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            from_ts = (params.get("from") or [None])[0]
+            to_ts = (params.get("to") or [None])[0]
+            resolution = (params.get("resolution") or ["1m"])[0]
+            try:
+                _json_response(
+                    self,
+                    _state().listings_history_v1(
+                        variant_id=variant_id,
+                        from_ts=from_ts,
+                        to_ts=to_ts,
+                        resolution=resolution,
+                    ),
+                    cache_control="no-store",
+                )
+            except ValueError as exc:
+                code = HTTPStatus.BAD_REQUEST
+                if str(exc) == "variant_not_found_or_not_active":
+                    code = HTTPStatus.NOT_FOUND
+                _json_response(self, {"ok": False, "error": str(exc)}, status=code, cache_control="no-store")
+            return
+
+        if path == "/v1/stream/listings":
+            params = parse_qs(parsed.query)
+            since = (params.get("since") or [None])[0]
+            window = (params.get("window") or ["30m"])[0]
+            include_low_priority = ((params.get("include_low_priority") or ["false"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                limit = int((params.get("limit") or ["200"])[0])
+            except Exception:
+                limit = 200
+            limit = max(1, min(limit, 500))
+            try:
+                interval_sec = float((params.get("interval_sec") or ["2.0"])[0])
+            except Exception:
+                interval_sec = 2.0
+            interval_sec = max(0.8, min(interval_sec, 10.0))
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            stream_key = "v1/stream/listings"
+            _observe_sse_open(stream_key)
+
+            abrupt_close = False
+            try:
+                last_seen_ts = since or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                sent_ids: set[str] = set()
+                sent_listing_keys: dict[str, float] = {}
+                dedupe_ttl = float(max(60, int(getattr(_state(), "listing_event_dedupe_ttl_sec", 600))))
+                deadline = time.time() + 25
+                while time.time() < deadline:
+                    try:
+                        new_payload = _state().listings_new_v1(limit=limit, window=window, only_pro_alerts=False)
+                        race_payload = _state().listings_race_v1(
+                            limit=limit,
+                            window=window,
+                            direction="ANY",
+                            delta_pct_min=0.0,
+                            only_pro_alerts=False,
+                            include_low_priority=include_low_priority,
+                        )
+                        removed_payload = _state()._listing_removed_events_v1()  # noqa: SLF001
+                    except Exception:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                        time.sleep(interval_sec)
+                        continue
+
+                    out_events: list[tuple[str, str, dict]] = []
+                    now_mono = time.monotonic()
+                    for key, seen_ts in list(sent_listing_keys.items()):
+                        if (now_mono - seen_ts) >= dedupe_ttl:
+                            sent_listing_keys.pop(key, None)
+                    for row in (new_payload.get("items") or []):
+                        if not isinstance(row, dict):
+                            continue
+                        ts = str(row.get("ts_detected") or "")
+                        if not ts or ts <= last_seen_ts:
+                            continue
+                        listing_key = str(row.get("listing_key") or "")
+                        dedupe_key = f"listing.new|{listing_key}"
+                        if listing_key and dedupe_key in sent_listing_keys:
+                            continue
+                        if listing_key:
+                            sent_listing_keys[dedupe_key] = now_mono
+                        out_events.append(("listing.new", ts, row))
+                    for row in (race_payload.get("items") or []):
+                        if not isinstance(row, dict):
+                            continue
+                        ts = str(row.get("ts_detected") or "")
+                        if not ts or ts <= last_seen_ts:
+                            continue
+                        listing_key = str(row.get("listing_key") or "")
+                        dedupe_key = f"listing.price_changed|{listing_key}"
+                        if listing_key and dedupe_key in sent_listing_keys:
+                            continue
+                        if listing_key:
+                            sent_listing_keys[dedupe_key] = now_mono
+                        out_events.append(("listing.price_changed", ts, row))
+                    for row in (removed_payload or []):
+                        if not isinstance(row, dict):
+                            continue
+                        ts = str(row.get("ts") or "")
+                        if not ts or ts <= last_seen_ts:
+                            continue
+                        out_events.append(("listing.removed", ts, row))
+
+                    out_events.sort(key=lambda x: x[1])
+                    max_ts = last_seen_ts
+                    sent = 0
+                    for ev_name, ts, payload in out_events:
+                        event_id = f"{ev_name}|{payload.get('listing_key')}|{ts}"
+                        if event_id in sent_ids:
+                            continue
+                        sent_ids.add(event_id)
+                        self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
+                        self.wfile.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+                        sent += 1
+                        if ts > max_ts:
+                            max_ts = ts
+                    if len(sent_ids) > 10000:
+                        sent_ids.clear()
+                    health_payload = {
+                        "source": "listing.stream.v1",
+                        "count": sent,
+                        "ts": max_ts,
+                    }
+                    self.wfile.write(b"event: listing.feed.health\n")
+                    self.wfile.write(f"data: {json.dumps(health_payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    last_seen_ts = max_ts
+                    time.sleep(interval_sec)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                abrupt_close = True
+            finally:
+                _observe_sse_close(stream_key, abrupt=abrupt_close)
             return
 
         if path == "/v1/listings":
@@ -2260,56 +3181,78 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
+            stream_key = "v1/listings/stream"
+            _observe_sse_open(stream_key)
 
-            last_seen_ts = since or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            sent_ids: set[str] = set()
-            deadline = time.time() + 25
-            while time.time() < deadline:
-                payload = _state().listings_events_v1(
-                    limit=limit,
-                    cursor=None,
-                    since=last_seen_ts,
-                    new_window_sec=new_window_sec,
-                    include_relisted=include_relisted,
-                )
-                items = payload.get("items") if isinstance(payload, dict) else []
-                fresh = []
-                max_ts = last_seen_ts
-                for ev in reversed(items if isinstance(items, list) else []):
-                    ts = str(ev.get("ts") or "")
-                    event_id = f"{ev.get('topic')}|{ev.get('listing_key')}|{ts}"
-                    if not ts or event_id in sent_ids:
-                        continue
-                    sent_ids.add(event_id)
-                    fresh.append(ev)
-                    if ts > max_ts:
-                        max_ts = ts
+            abrupt_close = False
+            try:
+                last_seen_ts = since or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                sent_ids: set[str] = set()
+                sent_listing_keys: dict[str, float] = {}
+                dedupe_ttl = float(max(60, int(getattr(_state(), "listing_event_dedupe_ttl_sec", 600))))
+                deadline = time.time() + 25
+                while time.time() < deadline:
+                    payload = _state().listings_events_v1(
+                        limit=limit,
+                        cursor=None,
+                        since=last_seen_ts,
+                        new_window_sec=new_window_sec,
+                        include_relisted=include_relisted,
+                    )
+                    items = payload.get("items") if isinstance(payload, dict) else []
+                    fresh = []
+                    max_ts = last_seen_ts
+                    now_mono = time.monotonic()
+                    for key, seen_ts in list(sent_listing_keys.items()):
+                        if (now_mono - seen_ts) >= dedupe_ttl:
+                            sent_listing_keys.pop(key, None)
+                    for ev in reversed(items if isinstance(items, list) else []):
+                        ts = str(ev.get("ts") or "")
+                        event_id = f"{ev.get('topic')}|{ev.get('listing_key')}|{ts}"
+                        if not ts or event_id in sent_ids:
+                            continue
+                        topic = str(ev.get("topic") or "")
+                        if topic in {"market.listing.new", "listing.new", "listing.price_changed", "market.listing.price_changed"}:
+                            listing_key = str(ev.get("listing_key") or "")
+                            dedupe_key = f"{topic}|{listing_key}"
+                            if listing_key and dedupe_key in sent_listing_keys:
+                                continue
+                            if listing_key:
+                                sent_listing_keys[dedupe_key] = now_mono
+                        sent_ids.add(event_id)
+                        fresh.append(ev)
+                        if ts > max_ts:
+                            max_ts = ts
 
-                if len(sent_ids) > 10000:
-                    sent_ids.clear()
+                    if len(sent_ids) > 10000:
+                        sent_ids.clear()
 
-                if fresh:
-                    for ev in fresh:
-                        ev_name = str(ev.get("topic") or "market.listing.new")
-                        self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
-                        self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
-                    health_payload = {
-                        "source": payload.get("source"),
-                        "source_error": payload.get("source_error"),
-                        "count": len(fresh),
-                        "ts": max_ts,
-                    }
-                    self.wfile.write(b"event: listing.feed.health\n")
-                    self.wfile.write(f"data: {json.dumps(health_payload, ensure_ascii=False)}\n\n".encode("utf-8"))
-                    last_seen_ts = max_ts
-                else:
-                    self.wfile.write(b": keepalive\n\n")
-                self.wfile.flush()
-                time.sleep(interval_sec)
+                    if fresh:
+                        for ev in fresh:
+                            ev_name = str(ev.get("topic") or "market.listing.new")
+                            self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
+                            self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
+                        health_payload = {
+                            "source": payload.get("source"),
+                            "source_error": payload.get("source_error"),
+                            "count": len(fresh),
+                            "ts": max_ts,
+                        }
+                        self.wfile.write(b"event: listing.feed.health\n")
+                        self.wfile.write(f"data: {json.dumps(health_payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+                        last_seen_ts = max_ts
+                    else:
+                        self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    time.sleep(interval_sec)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                abrupt_close = True
+            finally:
+                _observe_sse_close(stream_key, abrupt=abrupt_close)
             return
 
         if path == "/api/listing/source-status":
-            _json_response(self, _state().listing_source_status_v1(), cache_control="no-store")
+            _json_response(self, _state().listing_source_status_v1(allow_remote=False), cache_control="no-store")
             return
 
         if path.startswith("/v1/signals/") and path.count("/") == 3:
@@ -2435,34 +3378,133 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
-            last_updated = ""
-            deadline = time.time() + 25
-            while time.time() < deadline:
-                overview = _state().overview_v1()
-                updated = str((_state().state or {}).get("updated_at") or "")
-                try:
-                    if updated != last_updated:
-                        last_updated = updated
-                        for ev in _state().stream_events_v1(
-                            types=types,
-                            mode=mode,
-                            variant_id=variant_id_filter,
-                            collection_id=collection_id_filter,
-                        ):
-                            ev_name = str(ev.get("type") or "provider.health")
-                            self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
-                            self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
-                    else:
-                        self.wfile.write(b": keepalive\n\n")
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    break
-                time.sleep(sleep_sec)
+            stream_key = "v1/stream"
+            _observe_sse_open(stream_key)
+            abrupt_close = False
+            try:
+                last_updated = ""
+                deadline = time.time() + 25
+                while time.time() < deadline:
+                    overview = _state().overview_v1()
+                    updated = str((_state().state or {}).get("updated_at") or "")
+                    try:
+                        if updated != last_updated:
+                            last_updated = updated
+                            for ev in _state().stream_events_v1(
+                                types=types,
+                                mode=mode,
+                                variant_id=variant_id_filter,
+                                collection_id=collection_id_filter,
+                            ):
+                                ev_name = str(ev.get("type") or "provider.health")
+                                self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
+                                self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
+                        else:
+                            self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        abrupt_close = True
+                        break
+                    time.sleep(sleep_sec)
+            finally:
+                _observe_sse_close(stream_key, abrupt=abrupt_close)
+            return
+
+        if path == "/v1/stream/signals":
+            params = parse_qs(parsed.query)
+            mode = (params.get("mode") or [None])[0]
+            try:
+                heartbeat_ms = int((params.get("heartbeat") or ["15000"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_heartbeat"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if heartbeat_ms < 5000 or heartbeat_ms > 60000:
+                _json_response(self, {"ok": False, "error": "invalid_heartbeat_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                limit = int((params.get("limit") or ["100"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                dedupe_ttl_sec = int((params.get("dedupe_ttl_sec") or ["600"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_dedupe_ttl_sec"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if dedupe_ttl_sec < 60 or dedupe_ttl_sec > 3600:
+                _json_response(self, {"ok": False, "error": "invalid_dedupe_ttl_sec_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            sleep_sec = max(1.0, heartbeat_ms / 1000.0)
+            sent_signal_ids: dict[str, float] = {}
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            stream_key = "v1/stream/signals"
+            _observe_sse_open(stream_key)
+            abrupt_close = False
+            try:
+                deadline = time.time() + 25
+                while time.time() < deadline:
+                    now = time.time()
+                    try:
+                        sent_signal_ids = {k: v for k, v in sent_signal_ids.items() if (now - v) <= float(dedupe_ttl_sec)}
+                        payload = _state().signals_v1(limit=limit, mode=mode)
+                        rows = payload.get("items") if isinstance(payload.get("items"), list) else []
+                        emitted = 0
+                        for row in reversed(rows):
+                            sid = str((row or {}).get("signal_id") or "")
+                            if not sid:
+                                continue
+                            if sid in sent_signal_ids:
+                                continue
+                            sent_signal_ids[sid] = now
+                            env = _state().build_signal_created_event_v2(row, ts=_tz_now_iso())
+                            self.wfile.write(b"event: signal.created\n")
+                            self.wfile.write(f"data: {json.dumps(env, ensure_ascii=False)}\n\n".encode("utf-8"))
+                            emitted += 1
+                        if emitted == 0:
+                            self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        abrupt_close = True
+                        break
+                    time.sleep(sleep_sec)
+            finally:
+                _observe_sse_close(stream_key, abrupt=abrupt_close)
             return
 
         if path.startswith("/api/") and not path.startswith("/api/auth/"):
             if not _require_auth(self):
                 return
+
+        if path == "/api/admin/runtime/http-metrics":
+            if AUTH_REQUIRED and (not _require_admin(self)):
+                return
+            _json_response(self, _http_metrics_snapshot(), cache_control="no-store")
+            return
+
+        if path == "/api/admin/listings/errors":
+            if AUTH_REQUIRED and (not _require_admin(self)):
+                return
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["50"])[0])
+            except Exception:
+                limit = 50
+            limit = max(1, min(limit, 500))
+            block = (params.get("block") or [None])[0]
+            _json_response(
+                self,
+                _state().listing_runtime_errors_v1(limit=limit, block=block),
+                cache_control="no-store",
+            )
+            return
 
         if path == "/api/admin/signal-engine/config":
             if not _require_admin(self):
@@ -2832,6 +3874,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/admin/refresh":
             _json_response(self, _start_manual_refresh(), cache_control="no-store")
             return
+        if parsed.path == "/api/admin/runtime/http-metrics/reset":
+            if AUTH_REQUIRED and (not _require_admin(self)):
+                return
+            _json_response(self, _http_metrics_reset(), cache_control="no-store")
+            return
         if parsed.path == "/api/admin/signal-engine/config/reset":
             if not _require_admin(self):
                 return
@@ -2923,7 +3970,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 def run() -> None:
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8091"))
+    port = int(os.getenv("PORT", "8080"))
     server = ThreadingHTTPServer((host, port), RequestHandler)
     # Warm-up analytics state in background: healthcheck becomes fast while data stack initializes.
     threading.Thread(target=_state, daemon=True, name="state-warmup").start()
