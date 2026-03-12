@@ -649,6 +649,7 @@ class GiftAnalyticsService:
         self.listing_new_window_sec = max(30, int(os.getenv("LISTING_NEW_WINDOW_SEC", "120")))
         self.listing_tracker_retention_sec = max(3600, int(os.getenv("LISTING_TRACKER_RETENTION_SEC", "1209600")))
         self.listing_primary_source = str(os.getenv("LISTING_PRIMARY_SOURCE", "auto") or "auto").strip().lower()
+        self.listing_strict_primary = str(os.getenv("LISTING_STRICT_PRIMARY", "false") or "").strip().lower() in {"1", "true", "yes", "on"}
         self.listing_mt_api_url = str(os.getenv("LISTING_MT_API_URL", "") or "").strip()
         self.listing_mt_api_token = str(os.getenv("LISTING_MT_API_TOKEN", "") or "").strip()
         self.listing_mt_api_token_header = str(os.getenv("LISTING_MT_API_TOKEN_HEADER", "Authorization") or "Authorization").strip()
@@ -7163,7 +7164,8 @@ class GiftAnalyticsService:
                     "error": str(mt_status.get("error") or "mtproto_empty_payload"),
                     "updated_at": mt_status.get("updated_at") or self.state.get("updated_at"),
                 }
-        if not rows:
+        strict_primary = bool(self.listing_strict_primary and primary_mode in {"mtproto", "mtproto_api"})
+        if not rows and not strict_primary:
             rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
             if not str(source_status.get("source") or "").startswith("mtproto"):
                 source_status = {
@@ -7171,6 +7173,12 @@ class GiftAnalyticsService:
                     "error": str(source_status.get("error") or ""),
                     "updated_at": self.state.get("updated_at"),
                 }
+        elif not rows and strict_primary:
+            source_status = {
+                "source": str(source_status.get("source") or "mtproto_api"),
+                "error": str(source_status.get("error") or "mtproto_empty_payload"),
+                "updated_at": source_status.get("updated_at") or self.state.get("updated_at"),
+            }
         return rows, source_status
 
     def _listing_new_realtime_source_ok(self, source_status: dict, now: datetime | None = None) -> tuple[bool, str]:
@@ -8349,30 +8357,8 @@ class GiftAnalyticsService:
         pattern_q: str = "",
     ) -> dict:
         now = _now()
-        self._sync_listing_tracker_state(now, persist=False)
         window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
-        source_status = {"source": "fragment.verified_snapshot", "error": "", "updated_at": self.state.get("updated_at")}
-        rows = []
-        primary_mode = self.listing_primary_source
-        if primary_mode in {"auto", "mtproto", "mtproto_api"}:
-            mt_rows, mt_status = self._refresh_mt_listing_source(force=False, window_sec=window_sec)
-            source_status = mt_status
-            if mt_rows:
-                rows = mt_rows
-            elif primary_mode in {"mtproto", "mtproto_api"}:
-                source_status = {
-                    "source": "fragment.verified_snapshot",
-                    "error": str(mt_status.get("error") or "mtproto_empty_payload"),
-                    "updated_at": self.state.get("updated_at"),
-                }
-        if not rows:
-            rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
-            if not str(source_status.get("source") or "").startswith("mtproto"):
-                source_status = {
-                    "source": "fragment.verified_snapshot",
-                    "error": str(source_status.get("error") or ""),
-                    "updated_at": self.state.get("updated_at"),
-                }
+        rows, source_status = self._listing_source_rows_v1(window_sec=window_sec, allow_remote=True, sync_tracker=True)
         rows = self._apply_listing_filters(
             rows,
             only_new=only_new,
@@ -8395,22 +8381,10 @@ class GiftAnalyticsService:
 
     def listings_summary_v1(self, new_window_sec: int | None = None) -> dict:
         now = _now()
-        self._sync_listing_tracker_state(now, persist=False)
         window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
-        source = "fragment.verified_snapshot"
-        source_error = ""
-        rows = []
-        mt_status = {}
-        if self.listing_primary_source in {"auto", "mtproto", "mtproto_api"}:
-            mt_rows, mt_status = self._refresh_mt_listing_source(force=False, window_sec=window_sec)
-            if mt_rows:
-                rows = mt_rows
-                source = str(mt_status.get("source") or "mtproto_api")
-                source_error = str(mt_status.get("error") or "")
-            elif self.listing_primary_source in {"mtproto", "mtproto_api"}:
-                source_error = str(mt_status.get("error") or "mtproto_empty_payload")
-        if not rows:
-            rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
+        rows, source_status = self._listing_source_rows_v1(window_sec=window_sec, allow_remote=True, sync_tracker=True)
+        source = str(source_status.get("source") or "fragment.verified_snapshot")
+        source_error = str(source_status.get("error") or "")
         by_collection: Dict[str, int] = {}
         active_total = len(rows)
         new_total = 0
@@ -8477,23 +8451,10 @@ class GiftAnalyticsService:
         now = _now()
         window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
         since_dt = _parse_ts(since) if since else (now - timedelta(seconds=window_sec))
-        source = "fragment.verified_snapshot"
-        source_error = ""
-        source_updated_at = self.state.get("updated_at")
-        rows = []
-        if self.listing_primary_source in {"auto", "mtproto", "mtproto_api"}:
-            mt_rows, mt_status = self._refresh_mt_listing_source(force=False, window_sec=window_sec)
-            if mt_rows:
-                rows = mt_rows
-                source = str(mt_status.get("source") or "mtproto_api")
-                source_error = str(mt_status.get("error") or "")
-                source_updated_at = mt_status.get("updated_at") or source_updated_at
-            elif self.listing_primary_source in {"mtproto", "mtproto_api"}:
-                source_error = str(mt_status.get("error") or "mtproto_empty_payload")
-        if not rows:
-            rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
-            source = "fragment.verified_snapshot"
-            source_updated_at = self.state.get("updated_at")
+        rows, source_status = self._listing_source_rows_v1(window_sec=window_sec, allow_remote=True, sync_tracker=True)
+        source = str(source_status.get("source") or "fragment.verified_snapshot")
+        source_error = str(source_status.get("error") or "")
+        source_updated_at = source_status.get("updated_at") or self.state.get("updated_at")
         realtime_source_ok, _ = self._listing_new_realtime_source_ok(
             {"source": source, "updated_at": source_updated_at},
             now=now,

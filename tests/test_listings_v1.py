@@ -137,6 +137,48 @@ class TestListingsV1(unittest.TestCase):
             # Even in mtproto mode system must remain available via runtime fallback.
             self.assertTrue(str(payload.get("source") or "").strip() != "")
 
+    def test_listings_v1_strict_primary_disables_fragment_fallback(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "LISTING_PRIMARY_SOURCE": "mtproto",
+                "LISTING_MT_API_URL": "http://127.0.0.1:9/never",
+                "LISTING_STRICT_PRIMARY": "true",
+            },
+            clear=False,
+        ):
+            svc = GiftAnalyticsService()
+        with patch.object(
+            svc,
+            "_refresh_mt_listing_source",
+            return_value=([], {"source": "mtproto_api", "error": "upstream_failed", "updated_at": "2026-03-12T00:00:00Z"}),
+        ):
+            payload = svc.listings_v1(limit=20, only_new=False, new_window_sec=3600)
+        self.assertEqual(payload.get("items"), [])
+        self.assertEqual(str(payload.get("source") or ""), "mtproto_api")
+        self.assertIn("upstream_failed", str(payload.get("source_error") or ""))
+
+    def test_listings_events_v1_strict_primary_disables_fragment_fallback(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "LISTING_PRIMARY_SOURCE": "mtproto",
+                "LISTING_MT_API_URL": "http://127.0.0.1:9/never",
+                "LISTING_STRICT_PRIMARY": "true",
+            },
+            clear=False,
+        ):
+            svc = GiftAnalyticsService()
+        with patch.object(
+            svc,
+            "_refresh_mt_listing_source",
+            return_value=([], {"source": "mtproto_api", "error": "upstream_failed", "updated_at": "2026-03-12T00:00:00Z"}),
+        ):
+            payload = svc.listings_events_v1(limit=20, new_window_sec=3600)
+        self.assertEqual(payload.get("items"), [])
+        self.assertEqual(str(payload.get("source") or ""), "mtproto_api")
+        self.assertIn("upstream_failed", str(payload.get("source_error") or ""))
+
     def test_listings_summary_prefers_mtproto_snapshot_without_surface_error(self) -> None:
         with patch.dict("os.environ", {"LISTING_PRIMARY_SOURCE": "mtproto", "LISTING_MT_API_URL": "http://127.0.0.1:9/never"}, clear=False):
             svc = GiftAnalyticsService()
