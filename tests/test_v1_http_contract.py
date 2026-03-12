@@ -446,6 +446,43 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertIn("source", payload_source)
         self.assertIn("degraded", payload_source)
 
+    def test_listings_new_and_race_endpoints_success_contract(self) -> None:
+        svc = server._STATE
+        if isinstance(svc, GiftAnalyticsService):
+            now_iso = "2026-02-26T00:00:00Z"
+            svc.listing_tracker_state["x:test"] = {
+                "listing_key": "x:test",
+                "variant_id": "x|m|b|p",
+                "base_id": "x",
+                "prev_price_ton": 5.0,
+                "last_price_ton": 6.0,
+                "last_price_changed_at": now_iso,
+                "last_seen_at": now_iso,
+                "preview_url": "",
+            }
+            svc.listing_state["test-listing"] = {
+                "listing_id": "test-listing",
+                "base_id": "x",
+                "variant_id": "x|m|b|p",
+                "price_ton": 6.0,
+                "status": "ACTIVE",
+                "sale_type": "FIXED",
+                "preview_url": "",
+                "last_seen": now_iso,
+            }
+
+        status_new, payload_new = self._get_json("/v1/listings/new?limit=5&window=24h&only_pro_alerts=false")
+        self.assertEqual(status_new, 200)
+        self.assertIn("items", payload_new)
+        self.assertIn("source", payload_new)
+        self.assertIn("source_error", payload_new)
+
+        status_race, payload_race = self._get_json("/v1/listings/race?limit=5&window=24h&include_low_priority=true")
+        self.assertEqual(status_race, 200)
+        self.assertIn("items", payload_race)
+        self.assertIn("source", payload_race)
+        self.assertIn("source_error", payload_race)
+
     def test_listings_endpoints_validation(self) -> None:
         with self.assertRaises(HTTPError) as cm_list_limit:
             urlopen(f"http://127.0.0.1:{self.port}/v1/listings?limit=0", timeout=10)
@@ -474,6 +511,14 @@ class TestV1HttpContract(unittest.TestCase):
         with self.assertRaises(HTTPError) as cm_signals_score:
             urlopen(f"http://127.0.0.1:{self.port}/v1/listings/signals?min_score=abc", timeout=10)
         self.assertEqual(cm_signals_score.exception.code, 400)
+
+        with self.assertRaises(HTTPError) as cm_new_window:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/new?window=2h", timeout=10)
+        self.assertEqual(cm_new_window.exception.code, 400)
+
+        with self.assertRaises(HTTPError) as cm_race_direction:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/race?direction=SIDE", timeout=10)
+        self.assertEqual(cm_race_direction.exception.code, 400)
 
 
 if __name__ == "__main__":

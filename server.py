@@ -281,6 +281,72 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(default)
 
 
+_LISTING_WINDOWS_SEC = {
+    "10m": 10 * 60,
+    "30m": 30 * 60,
+    "1h": 60 * 60,
+    "6h": 6 * 60 * 60,
+    "24h": 24 * 60 * 60,
+}
+
+
+def _listing_window_to_sec(value: str | None, default: str = "30m") -> tuple[str, int]:
+    raw = str(value or default).strip().lower()
+    if raw not in _LISTING_WINDOWS_SEC:
+        raise ValueError(f"unsupported_window:{raw}")
+    return raw, int(_LISTING_WINDOWS_SEC[raw])
+
+
+def _parse_iso_utc(value: str | None) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _norm_pct(value: float | None) -> float:
+    v = _safe_float(value, 0.0)
+    if abs(v) <= 1.5:
+        return v * 100.0
+    return v
+
+
+def _listing_variant_label(collection: str, model: str, background: str, pattern: str) -> str:
+    parts = [str(collection or "").strip(), str(model or "").strip(), str(background or "").strip(), str(pattern or "").strip()]
+    return " • ".join([x for x in parts if x]) or "—"
+
+
+def _signal_action_strength(action: str, score100: float) -> str:
+    a = str(action or "WATCH").strip().upper()
+    s = float(score100 or 0.0)
+    if a == "BUY" and s >= 80.0:
+        return "STRONG_BUY"
+    if a == "SELL" and s >= 80.0:
+        return "STRONG_SELL"
+    return "NONE"
+
+
+def _market_regime_snapshot_compat() -> tuple[str, str]:
+    try:
+        payload = _state().market_overview()
+    except Exception:
+        payload = {}
+    state_ru = str((payload or {}).get("market_state") or "").strip().lower()
+    if state_ru == "рост":
+        return "RISK_ON", "🟢"
+    if state_ru == "падение":
+        return "RISK_OFF", "🔴"
+    if state_ru == "panic":
+        return "PANIC", "⚠"
+    return "MEAN_REVERT", "🟡"
+
+
 def _parse_admin_ids() -> set[int]:
     out: set[int] = set()
     for raw in [ADMIN_TELEGRAM_USER_ID, ADMIN_TELEGRAM_USER_IDS_RAW]:
@@ -1612,6 +1678,327 @@ class RequestHandler(BaseHTTPRequestHandler):
                 pattern_q=pattern_q,
             )
             _json_response(self, data, cache_control="no-store")
+            return
+
+        if path == "/v1/listings/new":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["200"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            cursor = (params.get("cursor") or [None])[0]
+            try:
+                window_raw, window_sec = _listing_window_to_sec((params.get("window") or ["30m"])[0], default="30m")
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+
+            market_regime = {str(x or "").strip().upper() for x in (params.get("market_regime") or []) if str(x or "").strip()}
+            action_filter = {str(x or "").strip().upper() for x in (params.get("action") or []) if str(x or "").strip()}
+            bad_regimes = sorted([x for x in market_regime if x not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}])
+            if bad_regimes:
+                _json_response(self, {"ok": False, "error": f"unsupported_market_regime:{','.join(bad_regimes)}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            bad_actions = sorted([x for x in action_filter if x not in {"BUY", "SELL", "WATCH", "SKIP"}])
+            if bad_actions:
+                _json_response(self, {"ok": False, "error": f"unsupported_action:{','.join(bad_actions)}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+
+            try:
+                edge_rank_min = _clamp(float((params.get("edgeRank_min") or ["55"])[0]), 0.0, 100.0)
+                conf_min = _clamp(float((params.get("conf_min") or ["35"])[0]), 0.0, 100.0)
+                profit_min = float((params.get("profit_min") or ["8"])[0])
+                undervalue_min = float((params.get("undervalue_min") or ["0"])[0])
+                liq_min = _clamp(float((params.get("liq_min") or ["35"])[0]), 0.0, 100.0)
+                lp_max = max(0.0, float((params.get("lp_max") or ["4"])[0]))
+                ar_min = float((params.get("ar_min") or ["0.9"])[0])
+                vv_min = float((params.get("vv_min") or ["1"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_numeric_filter"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+
+            only_pro_alerts = ((params.get("only_pro_alerts") or ["true"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            collection_q = (params.get("collection") or [""])[0]
+            model_q = (params.get("model") or [""])[0]
+            background_q = (params.get("background") or [""])[0]
+            pattern_q = (params.get("pattern") or [""])[0]
+            variant_q = (params.get("variant_id") or [""])[0].strip()
+            free_q = (params.get("q") or [""])[0].strip().lower()
+
+            state = _state()
+            base = state.listings_v1(
+                limit=500,
+                cursor=None,
+                only_new=True,
+                new_window_sec=window_sec,
+                collection_q=collection_q,
+                model_q=model_q,
+                background_q=background_q,
+                pattern_q=pattern_q,
+            )
+            source = str((base or {}).get("source") or "fragment.verified_snapshot")
+            source_error = str((base or {}).get("source_error") or "")
+            rows = (base or {}).get("items") if isinstance(base, dict) else []
+            rows = rows if isinstance(rows, list) else []
+            market_regime_current, market_badge_current = _market_regime_snapshot_compat()
+            now = datetime.now(timezone.utc)
+
+            out: list[dict] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                ts_detected = str(row.get("first_seen_at") or row.get("last_seen_at") or "")
+                ts_dt = _parse_iso_utc(ts_detected)
+                if ts_dt is None:
+                    continue
+                if (now - ts_dt).total_seconds() > float(window_sec):
+                    continue
+
+                variant_id = str(row.get("variant_id") or "").strip()
+                if variant_q and variant_q != variant_id:
+                    continue
+                attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+                collection = str(row.get("collection") or row.get("title") or row.get("collection_id") or row.get("gift_id") or "")
+                model = str(attrs.get("model") or "Unknown")
+                background = str(attrs.get("background") or "Unknown")
+                pattern = str(attrs.get("pattern") or "Unknown")
+                variant = state.variants.get(variant_id) if variant_id else None
+                preview_url = str(row.get("preview_url") or "")
+                if isinstance(variant, dict):
+                    traits = variant.get("traits") if isinstance(variant.get("traits"), dict) else {}
+                    model = str(((traits.get("model") or {}).get("name")) or model or "Unknown")
+                    background = str(((traits.get("background") or {}).get("name")) or background or "Unknown")
+                    pattern = str(((traits.get("pattern") or {}).get("name")) or pattern or "Unknown")
+                    preview_url = str(variant.get("preview_url") or preview_url)
+                variant_label = _listing_variant_label(collection, model, background, pattern)
+                signal_payload = state._v1_signal(variant, mode="tz") if isinstance(variant, dict) else {}
+                score100 = float(signal_payload.get("score100") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                conf_pct = float(signal_payload.get("conf_pct") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                expected_profit_pct = _norm_pct(float(signal_payload.get("expected_profit_pct") or 0.0)) if isinstance(signal_payload, dict) else 0.0
+                undervalue_pct = _norm_pct(float(signal_payload.get("undervalue") or 0.0)) if isinstance(signal_payload, dict) else 0.0
+                liquidity_score = _clamp(float(signal_payload.get("liquidity24h") or 0.0), 0.0, 1.0) * 100.0 if isinstance(signal_payload, dict) else 0.0
+                absorption_30m = float(signal_payload.get("absorption_rate") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                listing_pressure = float(signal_payload.get("listing_pressure") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                volume_velocity = float(signal_payload.get("volume_velocity") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                action = str(signal_payload.get("type") or "WATCH") if isinstance(signal_payload, dict) else "WATCH"
+                edge_rank = _clamp((score100 * conf_pct) / 100.0, 0.0, 100.0)
+                if market_regime and market_regime_current not in market_regime:
+                    continue
+                if action_filter and action.upper() not in action_filter:
+                    continue
+                if edge_rank < edge_rank_min or conf_pct < conf_min:
+                    continue
+                if expected_profit_pct < profit_min or undervalue_pct < undervalue_min:
+                    continue
+                if liquidity_score < liq_min or listing_pressure > lp_max:
+                    continue
+                if absorption_30m < ar_min or volume_velocity < vv_min:
+                    continue
+                if only_pro_alerts and action.upper() not in {"BUY", "SELL"}:
+                    continue
+                if free_q:
+                    hay = " ".join([variant_label, variant_id, str(row.get("listing_key") or "")]).lower()
+                    if free_q not in hay:
+                        continue
+                item = {
+                    "listing_key": str(row.get("listing_key") or ""),
+                    "variant_id": variant_id or None,
+                    "collection_id": str(row.get("collection_id") or row.get("gift_id") or "") or None,
+                    "collection": collection or None,
+                    "model": model,
+                    "background": background,
+                    "pattern": pattern,
+                    "variant_label": variant_label,
+                    "preview_url": preview_url,
+                    "price_ton": _safe_float(row.get("resell_amount_ton"), 0.0),
+                    "floor_ton": signal_payload.get("floor_ton") if isinstance(signal_payload, dict) else None,
+                    "fair_ton": signal_payload.get("fair_ton") if isinstance(signal_payload, dict) else None,
+                    "undervalue_pct": round(undervalue_pct, 2),
+                    "expected_profit_pct": round(expected_profit_pct, 2),
+                    "score100": round(score100, 1),
+                    "conf_pct": round(conf_pct, 1),
+                    "edgeRank100": round(edge_rank, 1),
+                    "edgeRank_raw": round(edge_rank / 100.0, 6),
+                    "action": action.upper(),
+                    "strength_tag": _signal_action_strength(action, score100),
+                    "liquidity_score": round(liquidity_score, 2),
+                    "absorption_30m": round(absorption_30m, 4),
+                    "listing_pressure": round(listing_pressure, 4),
+                    "volume_velocity": round(volume_velocity, 4),
+                    "market_regime": market_regime_current,
+                    "market_regime_badge": market_badge_current,
+                    "ts_detected": ts_detected,
+                    "latency_ms": max(0, int((now - ts_dt).total_seconds() * 1000.0)),
+                    "source": source,
+                }
+                out.append(item)
+            out.sort(key=lambda x: (float(x.get("edgeRank100") or 0.0), float(x.get("expected_profit_pct") or 0.0), str(x.get("ts_detected") or "")), reverse=True)
+            off = 0
+            try:
+                off = max(0, int(str(cursor or "0")))
+            except Exception:
+                off = 0
+            chunk = out[off : off + limit]
+            next_cursor = str(off + limit) if (off + limit) < len(out) else None
+            _json_response(
+                self,
+                {
+                    "items": chunk,
+                    "next_cursor": next_cursor,
+                    "server_ts": _tz_now_iso(),
+                    "window": window_raw,
+                    "window_sec": window_sec,
+                    "source": source,
+                    "source_error": source_error,
+                },
+                cache_control="no-store",
+            )
+            return
+
+        if path == "/v1/listings/race":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["200"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            cursor = (params.get("cursor") or [None])[0]
+            try:
+                window_raw, window_sec = _listing_window_to_sec((params.get("window") or ["30m"])[0], default="30m")
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            direction = str((params.get("direction") or ["ANY"])[0] or "ANY").strip().upper()
+            if direction not in {"UP", "DOWN", "ANY"}:
+                _json_response(self, {"ok": False, "error": f"unsupported_direction:{direction}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                delta_pct_min = max(0.0, float((params.get("delta_pct_min") or ["0"])[0]))
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_delta_pct_min"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            only_pro_alerts = ((params.get("only_pro_alerts") or ["false"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            include_low_priority = ((params.get("include_low_priority") or ["false"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            q = (params.get("q") or [""])[0].strip().lower()
+
+            state = _state()
+            now = datetime.now(timezone.utc)
+            try:
+                state._sync_listing_tracker_state(now, persist=False)
+            except Exception:
+                pass
+            market_regime_current, market_badge_current = _market_regime_snapshot_compat()
+            source_status = state.listing_source_status_v1()
+            source = str((source_status or {}).get("source") or "fragment.verified_snapshot")
+            source_error = str((source_status or {}).get("error") or "")
+
+            out: list[dict] = []
+            tracker = state.listing_tracker_state if isinstance(state.listing_tracker_state, dict) else {}
+            for entry in tracker.values():
+                if not isinstance(entry, dict):
+                    continue
+                ts_detected = str(entry.get("last_price_changed_at") or entry.get("last_seen_at") or "")
+                ts_dt = _parse_iso_utc(ts_detected)
+                if ts_dt is None:
+                    continue
+                if (now - ts_dt).total_seconds() > float(window_sec):
+                    continue
+                prev_price = _safe_float(entry.get("prev_price_ton"), 0.0)
+                price_ton = _safe_float(entry.get("last_price_ton"), 0.0)
+                if prev_price <= 0.0 or price_ton <= 0.0:
+                    continue
+                delta_ton = price_ton - prev_price
+                if abs(delta_ton) < 1e-9:
+                    continue
+                delta_pct = (delta_ton / max(prev_price, 1e-9)) * 100.0
+                row_direction = "UP" if delta_ton > 0 else "DOWN"
+                if direction != "ANY" and row_direction != direction:
+                    continue
+                if abs(delta_pct) < delta_pct_min:
+                    continue
+                low_priority = abs(delta_pct) < 0.5
+                if low_priority and not include_low_priority:
+                    continue
+                variant_id = str(entry.get("variant_id") or "")
+                variant = state.variants.get(variant_id) if variant_id else None
+                base_id = str(entry.get("base_id") or "")
+                collection = base_id.replace("_", " ").title() if base_id else "Unknown"
+                model = "Unknown"
+                background = "Unknown"
+                pattern = "Unknown"
+                preview_url = str(entry.get("preview_url") or "")
+                if isinstance(variant, dict):
+                    traits = variant.get("traits") if isinstance(variant.get("traits"), dict) else {}
+                    model = str(((traits.get("model") or {}).get("name")) or model)
+                    background = str(((traits.get("background") or {}).get("name")) or background)
+                    pattern = str(((traits.get("pattern") or {}).get("name")) or pattern)
+                    preview_url = str(variant.get("preview_url") or preview_url)
+                label = _listing_variant_label(collection, model, background, pattern)
+                signal_payload = state._v1_signal(variant, mode="tz") if isinstance(variant, dict) else {}
+                score100 = float(signal_payload.get("score100") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                conf_pct = float(signal_payload.get("conf_pct") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                edge_rank = _clamp((score100 * conf_pct) / 100.0, 0.0, 100.0)
+                action = str(signal_payload.get("type") or "WATCH") if isinstance(signal_payload, dict) else "WATCH"
+                if only_pro_alerts and action.upper() not in {"BUY", "SELL"}:
+                    continue
+                if q:
+                    hay = " ".join([label, variant_id, str(entry.get("listing_key") or "")]).lower()
+                    if q not in hay:
+                        continue
+                out.append(
+                    {
+                        "listing_key": str(entry.get("listing_key") or ""),
+                        "variant_id": variant_id or None,
+                        "collection_id": base_id or None,
+                        "collection": collection,
+                        "model": model,
+                        "background": background,
+                        "pattern": pattern,
+                        "variant_label": label,
+                        "preview_url": preview_url,
+                        "prev_price_ton": round(prev_price, 6),
+                        "price_ton": round(price_ton, 6),
+                        "delta_ton": round(delta_ton, 6),
+                        "delta_pct": round(delta_pct, 6),
+                        "direction": row_direction,
+                        "low_priority": low_priority,
+                        "market_regime": market_regime_current,
+                        "market_regime_badge": market_badge_current,
+                        "edgeRank100": round(edge_rank, 1),
+                        "action": action.upper(),
+                        "ts_detected": ts_detected,
+                        "source": source,
+                    }
+                )
+
+            out.sort(key=lambda x: (abs(float(x.get("delta_pct") or 0.0)), str(x.get("ts_detected") or "")), reverse=True)
+            off = 0
+            try:
+                off = max(0, int(str(cursor or "0")))
+            except Exception:
+                off = 0
+            chunk = out[off : off + limit]
+            next_cursor = str(off + limit) if (off + limit) < len(out) else None
+            _json_response(
+                self,
+                {
+                    "items": chunk,
+                    "next_cursor": next_cursor,
+                    "server_ts": _tz_now_iso(),
+                    "window": window_raw,
+                    "window_sec": window_sec,
+                    "source": source,
+                    "source_error": source_error,
+                },
+                cache_control="no-store",
+            )
             return
 
         if path == "/v1/listings/summary":
