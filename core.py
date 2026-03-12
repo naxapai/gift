@@ -7975,6 +7975,9 @@ class GiftAnalyticsService:
     ) -> dict:
         now = _now()
         window_sec = self._listing_window_to_seconds(window, default="30m")
+        source_status = self.listing_source_status_v1(allow_remote=False)
+        source_name = str(source_status.get("source") or "fragment.verified_snapshot")
+        source_error_base = str(source_status.get("error") or "")
         direction_norm = str(direction or "ANY").strip().upper()
         if direction_norm not in {"UP", "DOWN", "ANY"}:
             raise ValueError(f"unsupported_direction:{direction_norm}")
@@ -8212,18 +8215,25 @@ class GiftAnalyticsService:
                     "ts_detected": str(last.get("ts_detected") or ""),
                 }
             )
-        source_error = ""
+        source_error = str(source_error_base or "")
+        mtproto_present = any(str((row or {}).get("source") or "").strip().lower().startswith("mtproto") for row in out)
+        if mtproto_present:
+            source_name = "mtproto_api"
+        elif source_name in {"mtproto_cache_empty", "mtproto_warmup"}:
+            source_name = "fragment.verified_snapshot" if out else str(source_status.get("source") or source_name)
         if row_failures > 0:
             source_error = f"row_processing_errors:{row_failures}"
             if row_failure_samples:
                 source_error = f"{source_error}; sample={','.join(row_failure_samples)}"
+            if source_error_base:
+                source_error = f"{source_error_base}; {source_error}"
         return {
             "items": chunk,
             "next_cursor": next_cursor,
             "server_ts": _iso(now),
             "window": str(window or "30m"),
             "window_sec": window_sec,
-            "source": "hybrid_runtime",
+            "source": source_name,
             "source_error": source_error,
             "row_processing_errors": row_failures,
             "row_processing_error_samples": row_failure_samples,

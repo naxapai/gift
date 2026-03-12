@@ -606,6 +606,38 @@ class TestListingsV1(unittest.TestCase):
         items = payload.get("items") or []
         self.assertEqual(len(items), 1)
 
+    def test_listings_race_v1_reports_mtproto_source_when_mtproto_rows_present(self) -> None:
+        svc = GiftAnalyticsService()
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        svc._listing_mt_runtime_cache = {  # noqa: SLF001
+            "race_events": [
+                {
+                    "listing_key": "x:1",
+                    "variant_id": "x|m|b|p",
+                    "collection_id": "x",
+                    "collection": "X",
+                    "model": "M",
+                    "background": "B",
+                    "pattern": "P",
+                    "prev_price_ton": 10.0,
+                    "price_ton": 12.0,
+                    "delta_ton": 2.0,
+                    "delta_pct": 20.0,
+                    "direction": "UP",
+                    "ts_detected": now_iso,
+                    "source": "mtproto_api",
+                }
+            ]
+        }
+        with patch.object(
+            svc,
+            "listing_source_status_v1",
+            return_value={"source": "mtproto_api", "error": "", "updated_at": now_iso},
+        ):
+            payload = svc.listings_race_v1(limit=20, window="30m", direction="ANY", delta_pct_min=0)
+        self.assertEqual(str(payload.get("source") or ""), "mtproto_api")
+        self.assertGreaterEqual(len(payload.get("items") or []), 1)
+
     def test_market_status_v1_contract(self) -> None:
         svc = GiftAnalyticsService()
         payload = svc.market_status_v1(window="30m")
