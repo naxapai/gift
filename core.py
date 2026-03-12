@@ -4909,6 +4909,150 @@ class GiftAnalyticsService:
             "active_only": bool(active_only),
         }
 
+    def _listing_collection_key_candidates(self, *values: str) -> list[str]:
+        keys: list[str] = []
+        seen: set[str] = set()
+
+        def _push(value: str) -> None:
+            key = _trait_key(value)
+            if not key or key in seen:
+                return
+            seen.add(key)
+            keys.append(key)
+            if key.endswith("s") and len(key) > 1:
+                alt = key[:-1]
+                if alt and alt not in seen:
+                    seen.add(alt)
+                    keys.append(alt)
+            else:
+                alt = f"{key}s"
+                if alt not in seen:
+                    seen.add(alt)
+                    keys.append(alt)
+
+        for raw in values:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            _push(text)
+            if "|" in text:
+                first = str(text.split("|", 1)[0] or "").strip()
+                if first:
+                    _push(first)
+        return keys
+
+    def _resolve_listing_signal_variant_id(
+        self,
+        *,
+        raw_variant_id: str | None = None,
+        gift_id: str | None = None,
+        title: str | None = None,
+        model: str | None = None,
+        background: str | None = None,
+        pattern: str | None = None,
+        mode: str | None = None,
+    ) -> str | None:
+        eff_mode = self._effective_v1_mode(mode)
+        raw_vid = str(raw_variant_id or "").strip()
+        if raw_vid:
+            for candidate in [raw_vid, self._listing_to_variant(raw_vid)]:
+                cand = str(candidate or "").strip()
+                if cand and cand in self.variants:
+                    return cand
+            if "|" in raw_vid:
+                parts = [str(x or "").strip() for x in raw_vid.split("|")]
+                if len(parts) >= 4:
+                    base_keys = self._listing_collection_key_candidates(parts[0], gift_id or "", title or "")
+                    for base_key in base_keys:
+                        normalized = (
+                            f"{base_key}|{_trait_key(parts[1]) or 'unknown'}|"
+                            f"{_trait_key(parts[2]) or 'unknown'}|{_trait_key(parts[3]) or 'unknown'}"
+                        )
+                        if normalized in self.variants:
+                            return normalized
+
+        model_raw = str(model or "").strip()
+        background_raw = str(background or "").strip()
+        pattern_raw = str(pattern or "").strip()
+        if raw_vid and "|" in raw_vid:
+            parts = [str(x or "").strip() for x in raw_vid.split("|")]
+            if len(parts) >= 4:
+                if (not model_raw) or (_trait_key(model_raw) == "unknown"):
+                    model_raw = model_raw or parts[1]
+                if (not background_raw) or (_trait_key(background_raw) == "unknown"):
+                    background_raw = background_raw or parts[2]
+                if (not pattern_raw) or (_trait_key(pattern_raw) == "unknown"):
+                    pattern_raw = pattern_raw or parts[3]
+
+        model_key = _trait_key(model_raw)
+        if not model_key:
+            return None
+        background_key = _trait_key(background_raw)
+        pattern_key = _trait_key(pattern_raw)
+        collection_keys = self._listing_collection_key_candidates(gift_id or "", title or "", raw_vid)
+
+        for cid_key in collection_keys:
+            resolved = self.variant_resolve_v1(
+                collection_id=cid_key,
+                model=model_raw,
+                background=background_raw or None,
+                pattern=pattern_raw or None,
+                active_only=False,
+                mode=eff_mode,
+            )
+            if isinstance(resolved, dict):
+                rid = str(resolved.get("variant_id") or "").strip()
+                if rid:
+                    return rid
+
+        title_text = str(title or "").strip()
+        if title_text:
+            resolved = self.variant_resolve_v1(
+                collection=title_text,
+                model=model_raw,
+                background=background_raw or None,
+                pattern=pattern_raw or None,
+                active_only=False,
+                mode=eff_mode,
+            )
+            if isinstance(resolved, dict):
+                rid = str(resolved.get("variant_id") or "").strip()
+                if rid:
+                    return rid
+
+        best_variant_id: str | None = None
+        best_rank: tuple[int, float, float] | None = None
+        for variant_id, variant in self.variants.items():
+            if not isinstance(variant, dict):
+                continue
+            traits = variant.get("traits") if isinstance(variant.get("traits"), dict) else {}
+            model_name = str(((traits.get("model") or {}).get("name")) or "").strip()
+            if _trait_key(model_name) != model_key:
+                continue
+            bg_name = str(((traits.get("background") or {}).get("name")) or "").strip()
+            if background_key and _trait_key(bg_name) != background_key:
+                continue
+            pattern_name = str(((traits.get("pattern") or {}).get("name")) or "").strip()
+            if pattern_key and _trait_key(pattern_name) != pattern_key:
+                continue
+
+            base_id = str(variant.get("base_id") or "").strip()
+            base_name = str(getattr(self.bases.get(base_id), "name", base_id) or "").strip()
+            if collection_keys:
+                base_keys = self._listing_collection_key_candidates(base_id, base_name)
+                if not any(k in collection_keys for k in base_keys):
+                    continue
+
+            metrics = variant.get("metrics") if isinstance(variant.get("metrics"), dict) else {}
+            active_lots = int(metrics.get("active_listings") or 0)
+            trades24h = float(metrics.get("trades_count_24h") or 0.0)
+            liq = float(metrics.get("liquidity_score_24h") or 0.0)
+            rank = (active_lots, trades24h, liq)
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best_variant_id = str(variant_id)
+        return best_variant_id
+
     def signals_v1(
         self,
         signal_type: str | None = None,
@@ -8495,7 +8639,7 @@ class GiftAnalyticsService:
         out: list[dict] = []
         seen_signal_ids: set[str] = set()
         stars_per_ton = float((self.stars_rate() or {}).get("stars_per_ton") or 0.0)
-        resolve_cache: dict[tuple[str, str, str, str], str | None] = {}
+        resolve_cache: dict[tuple[str, str, str, str, str, str], str | None] = {}
         for ev in (events_payload.get("items") or []):
             if not isinstance(ev, dict):
                 continue
@@ -8513,56 +8657,29 @@ class GiftAnalyticsService:
                 model_raw = str(attrs.get("model") or "").strip()
                 background_raw = str(attrs.get("background") or "").strip()
                 pattern_raw = str(attrs.get("pattern") or "").strip()
-                if cid_raw and model_raw:
-                    cache_key = (
-                        _trait_key(cid_raw),
-                        _trait_key(model_raw),
-                        _trait_key(background_raw),
-                        _trait_key(pattern_raw),
+                cache_key = (
+                    _trait_key(variant_id),
+                    _trait_key(cid_raw),
+                    _trait_key(title_raw),
+                    _trait_key(model_raw),
+                    _trait_key(background_raw),
+                    _trait_key(pattern_raw),
+                )
+                resolved_variant_id = resolve_cache.get(cache_key)
+                if cache_key not in resolve_cache:
+                    resolved_variant_id = self._resolve_listing_signal_variant_id(
+                        raw_variant_id=variant_id,
+                        gift_id=cid_raw,
+                        title=title_raw,
+                        model=model_raw,
+                        background=background_raw,
+                        pattern=pattern_raw,
+                        mode=eff_mode,
                     )
-                    resolved_variant_id = resolve_cache.get(cache_key)
-                    if cache_key not in resolve_cache:
-                        resolved_variant_id = None
-                        collection_id_candidates: list[str] = []
-                        if cid_raw:
-                            collection_id_candidates.append(cid_raw)
-                            if cid_raw.endswith("s") and len(cid_raw) > 1:
-                                collection_id_candidates.append(cid_raw[:-1])
-                            else:
-                                collection_id_candidates.append(f"{cid_raw}s")
-                        title_candidates = [title_raw] if title_raw else []
-                        for cid_try in collection_id_candidates:
-                            resolved = self.variant_resolve_v1(
-                                collection_id=cid_try,
-                                model=model_raw,
-                                background=background_raw or None,
-                                pattern=pattern_raw or None,
-                                active_only=False,
-                                mode=eff_mode,
-                            )
-                            if isinstance(resolved, dict):
-                                resolved_variant_id = str(resolved.get("variant_id") or "").strip() or None
-                                if resolved_variant_id:
-                                    break
-                        if not resolved_variant_id:
-                            for title_try in title_candidates:
-                                resolved = self.variant_resolve_v1(
-                                    collection_id="",
-                                    collection=title_try,
-                                    model=model_raw,
-                                    background=background_raw or None,
-                                    pattern=pattern_raw or None,
-                                    active_only=False,
-                                    mode=eff_mode,
-                                )
-                                if isinstance(resolved, dict):
-                                    resolved_variant_id = str(resolved.get("variant_id") or "").strip() or None
-                                    if resolved_variant_id:
-                                        break
-                        resolve_cache[cache_key] = resolved_variant_id
-                    if resolved_variant_id:
-                        variant_id = resolved_variant_id
-                        v = self.variants.get(variant_id)
+                    resolve_cache[cache_key] = resolved_variant_id
+                if resolved_variant_id:
+                    variant_id = str(resolved_variant_id)
+                    v = self.variants.get(variant_id)
             if v:
                 base_sig = self._v1_signal(v, mode=eff_mode)
                 sig_type_val = str(base_sig.get("type") or "WATCH")

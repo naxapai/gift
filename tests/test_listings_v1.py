@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from core import GiftAnalyticsService
@@ -437,6 +438,62 @@ class TestListingsV1(unittest.TestCase):
         self.assertIn("confidence_pct", row)
         self.assertEqual(row.get("score_pct"), row.get("score100"))
         self.assertEqual(row.get("confidence_pct"), row.get("conf_pct"))
+
+    def test_listings_signals_resolves_singular_collection_id_to_canonical_variant(self) -> None:
+        svc = GiftAnalyticsService()
+        variant_id = "moneypots|porridge|grape|paper_crane"
+        svc.bases = {
+            "moneypots": SimpleNamespace(name="Money Pots", preview_url="https://example.com/money-pots.png"),
+        }
+        svc.variants = {
+            variant_id: {
+                "variant_id": variant_id,
+                "base_id": "moneypots",
+                "metrics": {
+                    "floor_ton": 1.0,
+                    "median_ton": 7.0,
+                    "trades_count_24h": 140,
+                    "trades_count_1h": 9,
+                    "volume_ton_24h": 950.0,
+                    "active_listings": 22,
+                    "liquidity_score_24h": 0.58,
+                    "price_ton": 1.0,
+                },
+                "traits": {
+                    "model": {"name": "Porridge"},
+                    "background": {"name": "Grape"},
+                    "pattern": {"name": "Paper Crane"},
+                },
+            }
+        }
+        expected_action = str(svc._v1_signal(svc.variants[variant_id], mode="tz").get("action") or "")
+        mocked_events = {
+            "items": [
+                {
+                    "topic": "market.listing.new",
+                    "ts": "2026-03-12T01:00:00Z",
+                    "source": "mtproto_api",
+                    "gift_id": "moneypot",
+                    "title": "Money Pots",
+                    "listing_key": "moneypot:100",
+                    "variant_id": "moneypot|unknown|unknown|unknown",
+                    "preview_url": "",
+                    "resell_currency": "TON",
+                    "resell_amount": 1.0,
+                    "attributes": {"model": "Porridge", "background": "Grape", "pattern": "Paper Crane"},
+                }
+            ],
+            "source": "mtproto_api",
+            "source_error": "",
+        }
+        with patch.object(svc, "listings_events_v1", return_value=mocked_events):
+            payload = svc.listings_signals_v1(limit=10, mode="tz")
+        rows = payload.get("items") or []
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(str(row.get("variant_id") or ""), variant_id)
+        self.assertEqual(str(row.get("action") or ""), expected_action)
+        self.assertIsNotNone(row.get("edgeRank100"))
 
     def test_listings_signals_v1_warmup_scores_are_dynamic(self) -> None:
         svc = GiftAnalyticsService()
