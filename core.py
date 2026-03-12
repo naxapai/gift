@@ -706,6 +706,10 @@ class GiftAnalyticsService:
             "error_ttl_sec": self.listing_mt_error_cache_ttl_sec,
             "updated_at": None,
         }
+        self._listing_mt_warmup_lock = threading.Lock()
+        self._listing_mt_warmup_running = False
+        self._listing_mt_warmup_started_at: str | None = None
+        self._listing_mt_warmup_last_error = ""
         self._restore_from_listing_state()
         self._sync_listing_tracker_state(_now(), persist=True)
         allow_bootstrap_from_file = self.verified_source in {"file", "fragment", "hybrid"}
@@ -6824,6 +6828,30 @@ class GiftAnalyticsService:
             "url_used": url_used or None,
         }
 
+    def _start_listing_mt_warmup_async(self) -> bool:
+        with self._listing_mt_warmup_lock:
+            if self._listing_mt_warmup_running:
+                return False
+            self._listing_mt_warmup_running = True
+            self._listing_mt_warmup_started_at = _iso(_now())
+            self._listing_mt_warmup_last_error = ""
+
+        def _run():
+            try:
+                self._refresh_mt_listing_source(force=True)
+            except Exception as exc:
+                self._listing_mt_warmup_last_error = f"{exc.__class__.__name__}: {exc}"
+            finally:
+                with self._listing_mt_warmup_lock:
+                    self._listing_mt_warmup_running = False
+
+        threading.Thread(
+            target=_run,
+            daemon=True,
+            name="listing-mtproto-warmup",
+        ).start()
+        return True
+
     def _apply_listing_filters(
         self,
         rows: List[dict],
@@ -6875,6 +6903,24 @@ class GiftAnalyticsService:
                 "rows_count": len(cached_rows),
                 "url_used": cache.get("url_used"),
             }
+        warmup_started = False
+        if (
+            not allow_remote
+            and self.listing_primary_source in {"auto", "mtproto", "mtproto_api"}
+            and bool(self.listing_mt_api_url)
+        ):
+            source_probe = str(status.get("source") or "")
+            rows_probe = int(status.get("rows_count") or 0)
+            if source_probe in {"disabled", "mtproto_cache_empty"} and rows_probe <= 0:
+                warmup_started = self._start_listing_mt_warmup_async()
+                if warmup_started:
+                    status["source"] = "mtproto_warmup"
+                    if not str(status.get("error") or "").strip():
+                        status["error"] = "mtproto_cache_cold_warmup_started"
+                elif self._listing_mt_warmup_running:
+                    status["source"] = "mtproto_warmup"
+                    if not str(status.get("error") or "").strip():
+                        status["error"] = "mtproto_cache_cold_warmup_in_progress"
         source = str(status.get("source") or "")
         if source in {"disabled", "mtproto_cache_empty"} and self.listing_primary_source in {"auto", "fragment"}:
             active_rows = 0
@@ -6903,10 +6949,15 @@ class GiftAnalyticsService:
             "error": error,
             "updated_at": status.get("updated_at"),
             "cache_ttl_sec": self.listing_mt_cache_ttl_sec,
+            "error_cache_ttl_sec": self.listing_mt_error_cache_ttl_sec,
             "rows_count": rows_count,
             "degraded": degraded,
             "url_used": status.get("url_used"),
             "url_candidates": self._mt_api_candidate_urls()[:5],
+            "warmup_running": bool(self._listing_mt_warmup_running),
+            "warmup_started_at": self._listing_mt_warmup_started_at,
+            "warmup_started": bool(warmup_started),
+            "warmup_last_error": str(self._listing_mt_warmup_last_error or ""),
         }
 
     def _listing_window_to_seconds(self, window: str | None, default: str = "30m") -> int:
