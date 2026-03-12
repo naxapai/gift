@@ -3343,7 +3343,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, {"items": items}, cache_control="no-store")
             return
 
-        if path in {"/v1/stream", "/v1/stream/events"}:
+        if path == "/v1/stream" or path == "/v1/stream/events":
             params = parse_qs(parsed.query)
             types_csv = str((params.get("types") or [""])[0] or "").strip()
             if types_csv:
