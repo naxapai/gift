@@ -528,6 +528,41 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertEqual(float(entry2.get("last_price_ton") or 0.0), 6.25)
         self.assertEqual(str(entry2.get("last_price_changed_at") or ""), "2026-02-26T00:00:40Z")
 
+    def test_race_warmup_supports_stars_to_ton_equivalent(self) -> None:
+        svc = server._STATE
+        self.assertIsInstance(svc, GiftAnalyticsService)
+        assert isinstance(svc, GiftAnalyticsService)
+        svc.listing_tracker_state = {}
+        svc.stars.set_derived_rate(1000.0)  # 1000 stars = 1 TON
+        rows_first = [
+            {
+                "listing_key": "x:def",
+                "collection_id": "x",
+                "unique_id": "def",
+                "variant_id": "x|m|b|p",
+                "resell_amount_stars_est": 2000,
+                "last_seen_at": "2026-02-26T00:01:00Z",
+            }
+        ]
+        server._warmup_race_tracker_from_rows(svc, rows_first, "2026-02-26T00:01:00Z")
+        rows_second = [
+            {
+                "listing_key": "x:def",
+                "collection_id": "x",
+                "unique_id": "def",
+                "variant_id": "x|m|b|p",
+                "resell_amount_stars_est": 3000,
+                "last_seen_at": "2026-02-26T00:01:30Z",
+            }
+        ]
+        server._warmup_race_tracker_from_rows(svc, rows_second, "2026-02-26T00:01:30Z")
+        entry = svc.listing_tracker_state.get("x:def") if isinstance(svc.listing_tracker_state, dict) else None
+        self.assertIsInstance(entry, dict)
+        assert isinstance(entry, dict)
+        self.assertAlmostEqual(float(entry.get("prev_price_ton") or 0.0), 2.0, places=6)
+        self.assertAlmostEqual(float(entry.get("last_price_ton") or 0.0), 3.0, places=6)
+        self.assertEqual(str(entry.get("last_price_changed_at") or ""), "2026-02-26T00:01:30Z")
+
     def test_listings_endpoints_validation(self) -> None:
         with self.assertRaises(HTTPError) as cm_list_limit:
             urlopen(f"http://127.0.0.1:{self.port}/v1/listings?limit=0", timeout=10)

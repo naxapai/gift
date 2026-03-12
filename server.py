@@ -365,7 +365,7 @@ def _warmup_race_tracker_from_rows(state: GiftAnalyticsService, rows: list[dict]
             if not base_id or not listing_id:
                 continue
             listing_key = f"{base_id}:{listing_id}"
-        price_ton = _safe_float(row.get("resell_amount_ton"), 0.0)
+        price_ton = _listing_row_price_ton_equiv(state, row)
         if price_ton <= 0.0:
             continue
         ts_seen = str(row.get("last_seen_at") or row.get("ts_detected") or now_iso)
@@ -432,6 +432,23 @@ def _warmup_race_tracker_from_rows(state: GiftAnalyticsService, rows: list[dict]
         except Exception:
             pass
     return changed
+
+
+def _listing_row_price_ton_equiv(state: GiftAnalyticsService, row: dict) -> float:
+    ton = _safe_float((row or {}).get("resell_amount_ton"), 0.0)
+    if ton > 0.0:
+        return ton
+    stars_val = _safe_float((row or {}).get("resell_amount_stars_est"), 0.0)
+    if stars_val <= 0.0:
+        return 0.0
+    rate = state.stars_rate() if hasattr(state, "stars_rate") else {}
+    ton_per_star = _safe_float((rate or {}).get("ton_per_star"), 0.0)
+    if ton_per_star > 0.0:
+        return stars_val * ton_per_star
+    stars_per_ton = _safe_float((rate or {}).get("stars_per_ton"), 0.0)
+    if stars_per_ton > 0.0:
+        return stars_val / stars_per_ton
+    return 0.0
 
 
 def _parse_admin_ids() -> set[int]:
@@ -1891,6 +1908,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     hay = " ".join([variant_label, variant_id, str(row.get("listing_key") or "")]).lower()
                     if free_q not in hay:
                         continue
+                row_price_ton = _listing_row_price_ton_equiv(state, row)
                 item = {
                     "listing_key": str(row.get("listing_key") or ""),
                     "variant_id": variant_id or None,
@@ -1901,7 +1919,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "pattern": pattern,
                     "variant_label": variant_label,
                     "preview_url": preview_url,
-                    "price_ton": _safe_float(row.get("resell_amount_ton"), 0.0),
+                    "price_ton": round(row_price_ton, 6),
                     "floor_ton": signal_payload.get("floor_ton") if isinstance(signal_payload, dict) else None,
                     "fair_ton": signal_payload.get("fair_ton") if isinstance(signal_payload, dict) else None,
                     "undervalue_pct": round(undervalue_pct, 2),
