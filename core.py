@@ -634,6 +634,9 @@ class GiftAnalyticsService:
         self._data_version = 0
         self._reco_version = -1
         self._view_cache: Dict[tuple, tuple[int, dict | list]] = {}
+        self._rt_view_cache: Dict[tuple, tuple[float, dict]] = {}
+        self.rt_view_cache_ttl_sec = max(0.2, float(os.getenv("RT_VIEW_CACHE_TTL_SEC", "1.5")))
+        self.rt_view_cache_max_items = max(32, min(int(os.getenv("RT_VIEW_CACHE_MAX_ITEMS", "512")), 4096))
         self.source_totals: Dict[str, int] = {
             "for_sale": 0,
             "sold": 0,
@@ -721,6 +724,7 @@ class GiftAnalyticsService:
 
     def _invalidate_view_cache(self) -> None:
         self._view_cache.clear()
+        self._rt_view_cache.clear()
 
     def _cache_get(self, key: tuple):
         cached = self._view_cache.get(key)
@@ -737,6 +741,22 @@ class GiftAnalyticsService:
         if len(self._view_cache) > 128:
             self._view_cache.clear()
         self._view_cache[key] = (self._data_version, payload)
+
+    def _rt_cache_get(self, key: tuple, ttl_sec: float | None = None):
+        ttl = max(0.2, float(ttl_sec if ttl_sec is not None else self.rt_view_cache_ttl_sec))
+        cached = self._rt_view_cache.get(key)
+        if not cached:
+            return None
+        ts_mono, payload = cached
+        if (time.monotonic() - float(ts_mono)) > ttl:
+            self._rt_view_cache.pop(key, None)
+            return None
+        return payload
+
+    def _rt_cache_set(self, key: tuple, payload):
+        if len(self._rt_view_cache) > self.rt_view_cache_max_items:
+            self._rt_view_cache.clear()
+        self._rt_view_cache[key] = (time.monotonic(), payload)
 
     def _listing_row_debug_context(self, row: dict | None) -> dict:
         if not isinstance(row, dict):
@@ -8296,6 +8316,20 @@ class GiftAnalyticsService:
         new_window_sec: int | None = None,
         include_relisted: bool = True,
     ) -> dict:
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "listings_events_v1",
+            int(limit or 100),
+            str(cursor or ""),
+            str(since or ""),
+            int(new_window_sec or 0),
+            bool(include_relisted),
+            str(self.listing_primary_source or "auto"),
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
+
         now = _now()
         window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
         since_dt = _parse_ts(since) if since else (now - timedelta(seconds=window_sec))
@@ -8366,13 +8400,15 @@ class GiftAnalyticsService:
         lim = max(1, min(int(limit or 100), 1000))
         chunk = events[off : off + lim]
         next_cursor = str(off + lim) if (off + lim) < len(events) else None
-        return {
+        payload = {
             "items": chunk,
             "next_cursor": next_cursor,
             "window_sec": window_sec,
             "source": source,
             "source_error": source_error,
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def listings_signals_v1(
         self,
@@ -8400,6 +8436,55 @@ class GiftAnalyticsService:
             raise ValueError("invalid_min_score_range")
 
         eff_mode = self._effective_v1_mode(mode)
+        sort_field = str(sort_by or "ts").strip().lower()
+        sort_direction = str(sort_dir or "desc").strip().lower()
+        allowed_sort_fields = {
+            "ts",
+            "score100",
+            "conf_pct",
+            "type",
+            "collection",
+            "variant_id",
+            "forecast24h_pct_max",
+        }
+        if sort_field not in allowed_sort_fields:
+            raise ValueError(f"unsupported_sort_field:{sort_field}")
+        if sort_direction not in {"asc", "desc"}:
+            raise ValueError(f"unsupported_sort_dir:{sort_direction}")
+
+        page_cache_value = None
+        if page is not None:
+            try:
+                page_cache_value = int(page)
+            except Exception:
+                page_cache_value = str(page)
+        page_size_cache_value = None
+        if page_size is not None:
+            try:
+                page_size_cache_value = int(page_size)
+            except Exception:
+                page_size_cache_value = str(page_size)
+
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "listings_signals_v1",
+            int(limit or 50),
+            str(cursor or ""),
+            str(since or ""),
+            int(new_window_sec or 0),
+            bool(include_relisted),
+            str(signal_type or ""),
+            None if min_score is None else round(float(min_score), 6),
+            str(eff_mode or "legacy"),
+            page_cache_value,
+            page_size_cache_value,
+            sort_field,
+            sort_direction,
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
+
         events_payload = self.listings_events_v1(
             limit=5000,
             cursor=None,
@@ -8650,21 +8735,6 @@ class GiftAnalyticsService:
                 }
             )
 
-        sort_field = str(sort_by or "ts").strip().lower()
-        sort_direction = str(sort_dir or "desc").strip().lower()
-        allowed_sort_fields = {
-            "ts",
-            "score100",
-            "conf_pct",
-            "type",
-            "collection",
-            "variant_id",
-            "forecast24h_pct_max",
-        }
-        if sort_field not in allowed_sort_fields:
-            raise ValueError(f"unsupported_sort_field:{sort_field}")
-        if sort_direction not in {"asc", "desc"}:
-            raise ValueError(f"unsupported_sort_dir:{sort_direction}")
         reverse = sort_direction != "asc"
 
         def _sort_key(row: dict):
@@ -8705,7 +8775,7 @@ class GiftAnalyticsService:
         chunk = out[off : off + lim]
         next_cursor = str(off + lim) if (off + lim) < total else None
         total_pages = max(1, int(math.ceil(total / float(lim)))) if lim else 1
-        return {
+        payload = {
             "items": chunk,
             "next_cursor": next_cursor,
             "engine_mode": eff_mode,
@@ -8718,6 +8788,8 @@ class GiftAnalyticsService:
             "sort_by": sort_field,
             "sort_dir": "asc" if not reverse else "desc",
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def _evaluate_alerts(self, now: datetime) -> None:
         if self.is_stale() and os.getenv("ALERTS_SUSPEND_ON_STALE", "true").lower() in {"1", "true", "yes", "on"}:
