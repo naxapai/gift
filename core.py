@@ -7108,6 +7108,8 @@ class GiftAnalyticsService:
         if degraded and not error:
             error = "mtproto_empty_payload"
         return {
+            "ok": not bool(error),
+            "status": "degraded" if degraded else "ok",
             "primary_mode": self.listing_primary_source,
             "strict_primary": bool(self.listing_strict_primary),
             "effective_mode": (
@@ -7118,6 +7120,7 @@ class GiftAnalyticsService:
             "url_configured": bool(self.listing_mt_api_url),
             "source": source,
             "error": error,
+            "last_error": error,
             "updated_at": status.get("updated_at"),
             "cache_ttl_sec": self.listing_mt_cache_ttl_sec,
             "error_cache_ttl_sec": self.listing_mt_error_cache_ttl_sec,
