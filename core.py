@@ -7109,6 +7109,12 @@ class GiftAnalyticsService:
             error = "mtproto_empty_payload"
         return {
             "primary_mode": self.listing_primary_source,
+            "strict_primary": bool(self.listing_strict_primary),
+            "effective_mode": (
+                "mtproto_api_only"
+                if bool(self.listing_strict_primary and self.listing_primary_source in {"mtproto", "mtproto_api"})
+                else str(self.listing_primary_source or "auto")
+            ),
             "url_configured": bool(self.listing_mt_api_url),
             "source": source,
             "error": error,
@@ -8617,17 +8623,53 @@ class GiftAnalyticsService:
             variant_id = str(ev.get("variant_id") or "").strip()
             v = self.variants.get(variant_id) if variant_id else None
             attrs = (ev.get("attributes") if isinstance(ev.get("attributes"), dict) else {}) or {}
+            def _pick_text(*values: object) -> str:
+                for value in values:
+                    text = str(value or "").strip()
+                    if text:
+                        return text
+                return ""
             if not v and variant_id:
                 mapped = self._listing_to_variant(variant_id)
                 if mapped:
                     variant_id = mapped
                     v = self.variants.get(variant_id)
             if not v:
-                cid_raw = str(ev.get("gift_id") or "").strip()
-                title_raw = str(ev.get("title") or "").strip()
-                model_raw = str(attrs.get("model") or "").strip()
-                background_raw = str(attrs.get("background") or "").strip()
-                pattern_raw = str(attrs.get("pattern") or "").strip()
+                cid_raw = _pick_text(
+                    ev.get("gift_id"),
+                    ev.get("collection_id"),
+                    ev.get("collection"),
+                    ev.get("collection_name"),
+                    ev.get("base_id"),
+                )
+                title_raw = _pick_text(
+                    ev.get("title"),
+                    ev.get("name"),
+                    ev.get("gift_name"),
+                    ev.get("collection_name"),
+                    ev.get("collection"),
+                )
+                model_raw = _pick_text(
+                    attrs.get("model"),
+                    attrs.get("model_name"),
+                    attrs.get("modelName"),
+                    ev.get("model"),
+                )
+                background_raw = _pick_text(
+                    attrs.get("background"),
+                    attrs.get("background_name"),
+                    attrs.get("backgroundName"),
+                    attrs.get("backdrop"),
+                    ev.get("background"),
+                )
+                pattern_raw = _pick_text(
+                    attrs.get("pattern"),
+                    attrs.get("pattern_name"),
+                    attrs.get("patternName"),
+                    attrs.get("symbol"),
+                    attrs.get("symbol_name"),
+                    ev.get("pattern"),
+                )
                 cache_key = (
                     _trait_key(variant_id),
                     _trait_key(cid_raw),
