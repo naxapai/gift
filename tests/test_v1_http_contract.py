@@ -686,12 +686,18 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertIn("items", payload_new)
         self.assertIn("source", payload_new)
         self.assertIn("source_error", payload_new)
+        # Canonical v1 core route includes row processing diagnostics.
+        self.assertIn("row_processing_errors", payload_new)
+        self.assertIn("row_processing_error_samples", payload_new)
 
         status_race, payload_race = self._get_json("/v1/listings/race?limit=5&window=24h&include_low_priority=true")
         self.assertEqual(status_race, 200)
         self.assertIn("items", payload_race)
         self.assertIn("source", payload_race)
         self.assertIn("source_error", payload_race)
+        # Canonical v1 core route includes row processing diagnostics.
+        self.assertIn("row_processing_errors", payload_race)
+        self.assertIn("row_processing_error_samples", payload_race)
 
     def test_race_warmup_tracker_records_price_changes(self) -> None:
         svc = server._STATE
