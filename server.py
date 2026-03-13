@@ -2157,6 +2157,134 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, payload, cache_control="no-store")
             return
 
+        # Canonical v1 listing endpoints: always delegate to core service methods.
+        # Keep legacy duplicated handlers below unreachable to avoid divergent logic.
+        if path == "/v1/listings/new":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["200"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            cursor = (params.get("cursor") or [None])[0]
+            window = (params.get("window") or ["30m"])[0]
+            market_regime = [str(x) for x in (params.get("market_regime") or [])]
+            action = [str(x) for x in (params.get("action") or [])]
+            try:
+                edge_rank_min = float((params.get("edgeRank_min") or ["55"])[0])
+                conf_min = float((params.get("conf_min") or ["35"])[0])
+                profit_min = float((params.get("profit_min") or ["8"])[0])
+                undervalue_min = float((params.get("undervalue_min") or ["0"])[0])
+                liq_min = float((params.get("liq_min") or ["35"])[0])
+                lp_max = float((params.get("lp_max") or ["4"])[0])
+                ar_min = float((params.get("ar_min") or ["0.9"])[0])
+                vv_min = float((params.get("vv_min") or ["1"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_numeric_filter"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            only_pro_alerts = ((params.get("only_pro_alerts") or ["true"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            collection = (params.get("collection") or [""])[0]
+            model = (params.get("model") or [""])[0]
+            background = (params.get("background") or [""])[0]
+            pattern = (params.get("pattern") or [""])[0]
+            variant_id = (params.get("variant_id") or [""])[0]
+            q = (params.get("q") or [""])[0]
+            try:
+                payload = _state().listings_new_v1(
+                    limit=limit,
+                    cursor=cursor,
+                    window=window,
+                    market_regime=market_regime,
+                    action=action,
+                    edgeRank_min=edge_rank_min,
+                    conf_min=conf_min,
+                    profit_min=profit_min,
+                    undervalue_min=undervalue_min,
+                    liq_min=liq_min,
+                    lp_max=lp_max,
+                    ar_min=ar_min,
+                    vv_min=vv_min,
+                    only_pro_alerts=only_pro_alerts,
+                    collection=collection,
+                    model=model,
+                    background=background,
+                    pattern=pattern,
+                    variant_id=variant_id,
+                    q=q,
+                )
+                _json_response(self, payload, cache_control="no-store")
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            except Exception as exc:
+                _json_response(
+                    self,
+                    {
+                        "items": [],
+                        "next_cursor": None,
+                        "server_ts": _tz_now_iso(),
+                        "window": str(window or "30m"),
+                        "window_sec": 0,
+                        "source": "runtime_error",
+                        "source_error": f"listings_new_runtime_error:{exc.__class__.__name__}:{exc}",
+                    },
+                    cache_control="no-store",
+                )
+            return
+
+        if path == "/v1/listings/race":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["200"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            cursor = (params.get("cursor") or [None])[0]
+            window = (params.get("window") or ["30m"])[0]
+            direction = (params.get("direction") or ["ANY"])[0]
+            try:
+                delta_pct_min = float((params.get("delta_pct_min") or ["0"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_delta_pct_min"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            only_pro_alerts = ((params.get("only_pro_alerts") or ["false"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            include_low_priority = ((params.get("include_low_priority") or ["false"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            q = (params.get("q") or [""])[0]
+            try:
+                payload = _state().listings_race_v1(
+                    limit=limit,
+                    cursor=cursor,
+                    window=window,
+                    direction=direction,
+                    delta_pct_min=delta_pct_min,
+                    only_pro_alerts=only_pro_alerts,
+                    include_low_priority=include_low_priority,
+                    q=q,
+                )
+                _json_response(self, payload, cache_control="no-store")
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            except Exception as exc:
+                _json_response(
+                    self,
+                    {
+                        "items": [],
+                        "next_cursor": None,
+                        "server_ts": _tz_now_iso(),
+                        "window": str(window or "30m"),
+                        "window_sec": 0,
+                        "source": "runtime_error",
+                        "source_error": f"listings_race_runtime_error:{exc.__class__.__name__}:{exc}",
+                    },
+                    cache_control="no-store",
+                )
+            return
+
         if path == "/v1/listings/new":
             params = parse_qs(parsed.query)
             try:

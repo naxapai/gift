@@ -1,7 +1,8 @@
 #!/bin/zsh
 set -u
 
-cd '/Users/nexapai/Downloads/подарки' || exit 1
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT" || exit 1
 
 # Optional local overrides (API keys, model, timeouts).
 if [ -f ".env.local" ]; then
@@ -29,9 +30,23 @@ echo $$ > "$PID_FILE"
 cleanup() {
   rm -f "$PID_FILE"
 }
-trap cleanup EXIT INT TERM
+on_signal() {
+  cleanup
+  exit 0
+}
+trap cleanup EXIT
+trap on_signal INT TERM
 
 start_server() {
+  # If backend is already healthy on target URL (possibly started elsewhere),
+  # do not spawn a competing process.
+  CODE_EXISTING=$(curl -s -m 2 -o /dev/null -w "%{http_code}" "$CHECK_URL" 2>/dev/null || true)
+  if [ "${CODE_EXISTING:-000}" = "200" ]; then
+    SERVER_PID=""
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] server_reuse_existing healthy_url=$CHECK_URL" >> "$LOG_FILE"
+    return
+  fi
+
   VERIFIED_SOURCE_RUNTIME="${VERIFIED_SOURCE:-hybrid}"
   VERIFIED_REFRESH_RUNTIME="${VERIFIED_REFRESH_SEC:-300}"
   INGEST_INTERVAL_RUNTIME="${INGEST_INTERVAL_SEC:-300}"
@@ -77,10 +92,17 @@ start_server
 
 while true; do
   if [ -n "${SERVER_PID:-}" ] && ! kill -0 "$SERVER_PID" 2>/dev/null; then
-    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] server_exit pid=$SERVER_PID restart" >> "$LOG_FILE"
-    FAILS=0
-    start_server
-    sleep 2
+    CODE_EXISTING=$(curl -s -m 2 -o /dev/null -w "%{http_code}" "$CHECK_URL" 2>/dev/null || true)
+    if [ "${CODE_EXISTING:-000}" = "200" ]; then
+      echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] server_exit pid=$SERVER_PID external_backend_detected" >> "$LOG_FILE"
+      SERVER_PID=""
+      FAILS=0
+    else
+      echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] server_exit pid=$SERVER_PID restart" >> "$LOG_FILE"
+      FAILS=0
+      start_server
+      sleep 2
+    fi
   fi
 
   CODE=$(curl -s -m 2 -o /dev/null -w "%{http_code}" "$CHECK_URL" 2>/dev/null || true)
