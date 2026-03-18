@@ -3379,7 +3379,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 _observe_sse_close(stream_key, abrupt=abrupt_close)
             return
 
-        if path == "/api/listing/source-status":
+        if path == "/api/listing/source-status" or path == "/v1/listings/source-status":
             _json_response(self, _state().listing_source_status_v1(allow_remote=False), cache_control="no-store")
             return
 

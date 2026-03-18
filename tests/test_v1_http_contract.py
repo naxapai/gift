@@ -346,6 +346,22 @@ class TestV1HttpContract(unittest.TestCase):
         _, kwargs = mocked.call_args
         self.assertFalse(bool(kwargs.get("allow_remote", True)))
 
+    def test_listing_source_status_v1_alias_uses_cached_mode_without_remote_probe(self) -> None:
+        svc = server._STATE
+        self.assertTrue(isinstance(svc, GiftAnalyticsService))
+        with patch.object(
+            svc,
+            "listing_source_status_v1",
+            return_value={"source": "mtproto_api", "rows_count": 12, "degraded": False, "status": "ok"},
+        ) as mocked:
+            status, payload = self._get_json("/v1/listings/source-status")
+        self.assertEqual(status, 200)
+        self.assertEqual(str(payload.get("source") or ""), "mtproto_api")
+        self.assertEqual(str(payload.get("status") or ""), "ok")
+        mocked.assert_called_once()
+        _, kwargs = mocked.call_args
+        self.assertFalse(bool(kwargs.get("allow_remote", True)))
+
     def test_metrics_endpoint_tz_strict_mode_success(self) -> None:
         status, payload = self._get_json(
             f"/v1/metrics?metric=EDGE_SCORE&scope=VARIANT&variant_id={quote('x|m|b|p')}&mode=tz_strict"
@@ -655,6 +671,11 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertEqual(status_source, 200)
         self.assertIn("source", payload_source)
         self.assertIn("degraded", payload_source)
+
+        status_source_v1, payload_source_v1 = self._get_json("/v1/listings/source-status")
+        self.assertEqual(status_source_v1, 200)
+        self.assertIn("source", payload_source_v1)
+        self.assertIn("degraded", payload_source_v1)
 
     def test_listings_new_and_race_endpoints_success_contract(self) -> None:
         svc = server._STATE
