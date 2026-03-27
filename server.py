@@ -2052,7 +2052,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             _serve_file(self, "index.html")
             return
         if path.startswith("/assets/"):
-            _serve_file(self, path.replace("/assets/", ""))
+            _serve_file(self, path.lstrip("/"))
+            return
+        if path in {"/favicon.png", "/logo.png", "/vite.svg"}:
+            _serve_file(self, path.lstrip("/"))
             return
         if path in SPA_FRONTEND_ROUTES or path.startswith("/variant/"):
             _serve_file(self, "index.html")

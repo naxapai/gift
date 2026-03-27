@@ -394,6 +394,23 @@ class TestV1HttpContract(unittest.TestCase):
             content_type = str(resp.headers.get("Content-Type") or "")
             self.assertIn("text/event-stream", content_type)
 
+    def test_static_assets_are_served_from_assets_directory(self) -> None:
+        status_index, _, _ = self._get_json_with_headers("/healthz")
+        self.assertEqual(status_index, 200)
+        with urlopen(f"http://127.0.0.1:{self.port}/", timeout=10) as resp:
+            html = resp.read().decode("utf-8")
+        self.assertIn('/assets/', html)
+        marker = 'src="/assets/'
+        start = html.find(marker)
+        self.assertGreaterEqual(start, 0)
+        start += len('src="')
+        end = html.find('"', start)
+        asset_path = html[start:end]
+        with urlopen(f"http://127.0.0.1:{self.port}{asset_path}", timeout=10) as resp_asset:
+            body = resp_asset.read().decode("utf-8")
+            self.assertEqual(resp_asset.status, 200)
+            self.assertTrue(len(body) > 100)
+
     def test_catalog_stream_endpoint_emits_contract_event(self) -> None:
         svc = server._STATE
         assert isinstance(svc, GiftAnalyticsService)
