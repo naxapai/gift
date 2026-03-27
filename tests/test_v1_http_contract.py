@@ -411,6 +411,9 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertEqual(resp_asset.status, 200)
             self.assertTrue(len(body) > 100)
 
+    def test_legacy_signal_bot_is_not_enabled_by_default(self) -> None:
+        self.assertFalse(server.BOT_AUTORUN)
+
     def test_catalog_stream_endpoint_emits_contract_event(self) -> None:
         svc = server._STATE
         assert isinstance(svc, GiftAnalyticsService)
