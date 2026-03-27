@@ -30,6 +30,30 @@ cd /Users/nexapai/Downloads/подарки
 python3 server.py
 ```
 
+## React фронт (локально)
+
+Для локальной разработки React-версии:
+
+```bash
+cd /Users/nexapai/Downloads/подарки
+./scripts/react_start.sh
+```
+
+Проверка:
+
+```bash
+curl -sS -o /dev/null -w "react_code=%{http_code}\n" http://127.0.0.1:5173/
+```
+
+Фронт использует `/v1/*` как основной контракт.  
+Legacy fallback на `/api/market/overview` по умолчанию выключен, чтобы в dev не было лишних `401` в консоли.
+
+Если нужен принудительный legacy fallback:
+
+```bash
+VITE_ENABLE_LEGACY_MARKET_OVERVIEW_FALLBACK=true ./scripts/react_start.sh
+```
+
 ### AI рекомендации (OpenAI)
 
 Для стабильной работы AI-пайплайна в карточке подарка, скринерах, каталоге и Telegram-боте:
@@ -327,7 +351,7 @@ BRIDGE_API_TOKEN=<тот_же_Random_Long_Secret>
 Проверка bridge:
 
 ```bash
-curl -sS "https://telegram-gifts-market.onrender.com/bridge/gifts/verified" \
+curl -sS "https://giftmarketzone.com/bridge/gifts/verified" \
   -H "Authorization: Bearer <RANDOM_LONG_SECRET>" | head -c 400
 ```
 
@@ -426,5 +450,5 @@ curl -sS -X POST "https://gift-api-bridge.onrender.com/api/bridge/ingest" \
   -H "Authorization: Bearer <BRIDGE_ADMIN_TOKEN>"
 
 # main backend runtime source
-curl -sS "https://telegram-gifts-market.onrender.com/api/market/overview" | jq '.runtime_source,.gifts_count,.base_count,.model_count'
+curl -sS "https://giftmarketzone.com/api/market/overview" | jq '.runtime_source,.gifts_count,.base_count,.model_count'
 ```

@@ -1,0 +1,40 @@
+{
+  "profiles": {
+    "RISK_ON": {
+      "edge_buy": 58,
+      "profit_min": 0.07,
+      "lp_max": 3.5,
+      "ar_min": 0.85,
+      "liq_min": 30,
+      "conf_min": 35,
+      "lp_sell": 4.0
+    },
+    "MEAN_REVERT": {
+      "edge_buy": 60,
+      "profit_min": 0.08,
+      "lp_max": 3.0,
+      "ar_min": 0.9,
+      "liq_min": 35,
+      "conf_min": 35,
+      "lp_sell": 4.0
+    },
+    "RISK_OFF": {
+      "edge_buy": 62,
+      "profit_min": 0.1,
+      "lp_max": 2.8,
+      "ar_min": 1.0,
+      "liq_min": 40,
+      "conf_min": 40,
+      "lp_sell": 3.8
+    },
+    "PANIC": {
+      "edge_buy": 65,
+      "profit_min": 0.12,
+      "lp_max": 2.2,
+      "ar_min": 1.1,
+      "liq_min": 45,
+      "conf_min": 45,
+      "lp_sell": 3.5
+    }
+  }
+}

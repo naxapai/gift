@@ -1,0 +1,26 @@
+# Telegram PRO Template Engine — правила (v1)
+Два типа сообщений:
+1) market_status (рынок)
+2) gift_signal (подарок/вариант)
+
+## Publish Gates (для gift_signal)
+EdgeRank100 >= 55 AND Conf >= 35 AND ExpectedProfit >= 8
+
+## Формирование reasons / risk_flags
+- reasons и risk_flags должны быть стабильны и коротки
+- max_reasons=3, max_risks=3 (остальное сворачивать)
+
+### Авто-reasons (если пусто)
+- WATCH и undervalue_pct < regime.min_U → NEAR_ENTRY (missing_metric="недооценки")
+- absorption_rate_30m в диапазоне 0.85..1.1 → GOOD_ABSORPTION
+- liquidity_score >= 50 → STRONG_LIQ
+
+### Авто-risks (если пусто)
+- depth_5pct_lots <= 3 → LOW_DEPTH_5PCT
+- listing_pressure >= 4.0 → HIGH_PRESSURE
+- conf_pct < 35 → LOW_CONF
+- data_health != OK → DATA_DEGRADED
+
+## Динамические пороги под режим рынка
+- market_status секция “Тактика” берётся из decision_engine_render.regime_tactics_map
+- gift_signal секция “План” обязана выводить BUY-trigger пороги режима и “чего не хватает” (1–2 метрики)

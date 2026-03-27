@@ -10,6 +10,12 @@ services:
     envVars:
       - key: HOST
         value: 0.0.0.0
+      - key: PUBLIC_BASE_URL
+        value: "https://giftmarketzone.com"
+      - key: CORS_ALLOWED_ORIGINS
+        value: "https://giftmarketzone.com,https://telegram-gifts-market.onrender.com,http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173"
+      - key: TON_PROOF_ALLOWED_DOMAINS
+        value: "giftmarketzone.com,telegram-gifts-market.onrender.com,localhost,127.0.0.1"
       - key: VERIFIED_ONLY
         value: "true"
       - key: VERIFIED_SOURCE
@@ -150,6 +156,14 @@ services:
         sync: false
       - key: TG_CHAT_ID
         sync: false
+      - key: TELEGRAM_OWNED_GIFTS_API_URL
+        value: "https://giftmarketzone.com/bridge/gifts/owned"
+      - key: TELEGRAM_OWNED_GIFTS_API_TOKEN
+        sync: false
+      - key: TELEGRAM_OWNED_GIFTS_TIMEOUT_SEC
+        value: "8"
+      - key: TELEGRAM_OWNED_GIFTS_CACHE_TTL_SEC
+        value: "60"
       - key: TG_WEBHOOK_SECRET
         sync: false
 
@@ -164,6 +178,8 @@ services:
     envVars:
       - key: BRIDGE_HOST
         value: 0.0.0.0
+      - key: PUBLIC_BASE_URL
+        value: "https://giftmarketzone.com"
       - key: BRIDGE_PORT
         value: "10000"
       - key: BRIDGE_REFRESH_SEC
@@ -212,6 +228,8 @@ services:
         value: "data/verified_gifts.json"
       - key: VERIFIED_API_TIMEOUT_SEC
         value: "25"
+      - key: OWNED_GIFTS_FILE
+        value: "data/owned_gifts_by_user.json"
       - key: VERIFIED_MIN_GIFTS_ABS
         value: "200"
       - key: VERIFIED_MIN_GIFTS_RATIO
@@ -357,7 +375,7 @@ services:
       - key: TZ_GATES_LIMIT
         value: "1000"
       - key: TZ_GATES_SIGNALS_URL
-        value: "https://telegram-gifts-market.onrender.com/v1/signals"
+        value: "https://giftmarketzone.com/v1/signals"
       - key: TZ_GATES_STATUS_FILE
         value: "data/tz_gates_status.json"
       - key: TZ_GATES_BUY_MIN

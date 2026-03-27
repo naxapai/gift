@@ -1,0 +1,56 @@
+{
+  "normalizations": {
+    "S": "S = score100 / 100",
+    "C": "C = conf_pct / 100",
+    "EP": "EP = clamp(expected_profit_pct/30, 0, 1)  # 30% reference",
+    "L": "L = liquidity_score/100  # or liquidity_norm",
+    "AR": "AR = clamp(absorption_30m/2.0, 0, 1)",
+    "D": "D = clamp(depth_score, 0, 1)",
+    "LP": "LP = clamp(listing_pressure/6.0, 0, 1)"
+  },
+  "profiles": {
+    "MEAN_REVERT": {
+      "EP": 0.35,
+      "S": 0.25,
+      "L": 0.15,
+      "AR": 0.1,
+      "D": 0.1,
+      "LP": -0.15
+    },
+    "RISK_ON": {
+      "EP": 0.3,
+      "S": 0.2,
+      "L": 0.2,
+      "AR": 0.15,
+      "D": 0.1,
+      "LP": -0.1
+    },
+    "RISK_OFF": {
+      "EP": 0.3,
+      "S": 0.25,
+      "L": 0.2,
+      "AR": 0.1,
+      "D": 0.1,
+      "LP": -0.2
+    },
+    "PANIC": {
+      "EP": 0.35,
+      "S": 0.2,
+      "L": 0.15,
+      "AR": 0.1,
+      "D": 0.1,
+      "LP": -0.15,
+      "VV_bonus": 0.1
+    }
+  },
+  "formula": {
+    "EdgeRank_raw": "EdgeRank_raw = wEP*EP + wS*S + wL*L + wAR*AR + wD*D + wLP*LP (+ wVV*VV_norm for PANIC)",
+    "EdgeRank": "EdgeRank = clamp(EdgeRank_raw,0,1) * C",
+    "EdgeRank100": "EdgeRank100 = round(EdgeRank*100)"
+  },
+  "panic_bonus": {
+    "VV_norm": "VV_norm = clamp((volume_velocity - 0.8)/1.0, 0, 1)",
+    "apply_if": "market_regime == PANIC",
+    "note": "В PANIC важен импульс: добавляем бонус от VV_norm"
+  }
+}

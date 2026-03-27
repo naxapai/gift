@@ -1,0 +1,286 @@
+openapi_patch:
+  info:
+    version: 1.8.0
+  components:
+    schemas:
+      MarketRegime:
+        type: string
+        description: Режим рынка (влияет на пороги DecisionEngine и ранжирование;
+          EdgeRank фиксирован).
+        enum:
+        - RISK_ON
+        - MEAN_REVERT
+        - RISK_OFF
+        - PANIC
+      SignalAction:
+        type: string
+        description: Действие (BUY/SELL/WATCH/SKIP).
+        enum:
+        - BUY
+        - SELL
+        - WATCH
+        - SKIP
+      CatalogRowPro:
+        type: object
+        additionalProperties: false
+        description: 'Строка каталога (PRO). EdgeRank фиксированная формула: EdgeRank_raw
+          = 0.35*EP + 0.25*S + 0.15*L + 0.10*AR + 0.10*D - 0.15*LP; EdgeRank = clamp(EdgeRank_raw,0,1)
+          * C. Адаптация под режим рынка: пороги DecisionEngine + пресеты/ранжирование
+          + reasons/risk_flags.'
+        required:
+        - variant_id
+        - variant_label
+        - floor_ton
+        - fair_ton
+        - edgeRank100
+        - score100
+        - conf_pct
+        - market_regime
+        - action
+        - updated_at
+        properties:
+          variant_id:
+            type: string
+          variant_label:
+            type: string
+          collection:
+            type: string
+          model:
+            type: string
+          background:
+            type: string
+          pattern:
+            type: string
+          price_ton:
+            type: number
+            nullable: true
+          floor_ton:
+            type: number
+          fair_ton:
+            type: number
+          median_24h_ton:
+            type: number
+            nullable: true
+          undervalue_pct:
+            type: number
+          expected_profit_pct:
+            type: number
+          active_lots:
+            type: integer
+          listed_share:
+            type: number
+            description: Доля listed (0..1).
+          liquidity_score:
+            type: number
+            description: 0..100
+          absorption_30m:
+            type: number
+          listing_pressure:
+            type: number
+          depth_score:
+            type: number
+            description: 0..1
+          score100:
+            type: number
+            description: 0..100
+          conf_pct:
+            type: number
+            description: 0..100
+          edgeRank_raw:
+            type: number
+            description: 0..1
+          edgeRank100:
+            type: number
+            description: 0..100
+          market_regime:
+            $ref: '#/components/schemas/MarketRegime'
+          action:
+            $ref: '#/components/schemas/SignalAction'
+          reasons:
+            type: array
+            items:
+              type: string
+          risk_flags:
+            type: array
+            items:
+              type: string
+          decision_trace:
+            type: object
+            additionalProperties: true
+          sort_key:
+            type: number
+            description: Внутренний ключ ранжирования (EdgeRank100 + boosts).
+            nullable: true
+          updated_at:
+            type: string
+            format: date-time
+          age_sec:
+            type: integer
+            nullable: true
+      CatalogFeedResponse:
+        type: object
+        additionalProperties: false
+        required:
+        - items
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/CatalogRowPro'
+          next_cursor:
+            type: string
+            nullable: true
+  paths:
+    /v1/catalog/feed:
+      get:
+        summary: Каталог (PRO) — лента
+        parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: action
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SignalAction'
+        - name: market_regime
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/MarketRegime'
+        - name: edgeRank_min
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: conf_min
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: profit_min_pct
+          in: query
+          required: false
+          schema:
+            type: number
+            description: доля
+        - name: liq_min
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: depth_min
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: ar_min
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: lp_max
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: active_lots_min
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: active_lots_max
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: listed_share_min
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: listed_share_max
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: preset
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+            - TOP_BUY
+            - WATCHLIST
+            - RISK_OFF_SAFE
+            - UNDERVALUED
+            - SELL_PRESSURE
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+            - edgerank
+            - profit
+            - liquidity
+            - undervalue
+            - updated
+        - name: dir
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+            - asc
+            - desc
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 200
+            minimum: 1
+            maximum: 1000
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            nullable: true
+        responses:
+          '200':
+            description: OK
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/CatalogFeedResponse'
+    /v1/catalog/variant/{variant_id}:
+      get:
+        summary: Каталог (PRO) — детали варианта
+        parameters:
+        - name: variant_id
+          in: path
+          required: true
+          schema:
+            type: string
+        responses:
+          '200':
+            description: OK
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/CatalogRowPro'
+    /v1/stream/catalog:
+      get:
+        summary: SSE Catalog (PRO)
+        description: 'SSE для /#catalog. event: catalog.row'
+        responses:
+          '200':
+            description: SSE stream
+            content:
+              text/event-stream:
+                schema:
+                  type: string

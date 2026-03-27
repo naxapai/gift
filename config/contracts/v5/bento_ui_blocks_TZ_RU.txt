@@ -1,0 +1,117 @@
+======================================================================
+GiftMarketZone — Frontend Bento UI (Overview + Variant) — Production TZ
+Версия: 1.0
+Дата: 2026-03-03
+Файл конфигурации: bento_ui_blocks.json
+======================================================================
+
+Цель
+- Зафиксировать структуру страниц Overview и Variant в формате Bento Grid.
+- Для каждого блока определить: размеры, метрики, источники данных, realtime-подписки, поведение UI.
+
+Общие принципы
+1) Сетка: 12 колонок (xl/lg), 8 (md), 4 (sm). Gap 12px. RowHeight 88px.
+2) Все тексты UI на русском языке.
+3) Realtime: SSE (или WebSocket), события:
+   - signal.created (новые сигналы)
+   - market.status (статус рынка)
+   - metrics.updated (обновления метрик variant)
+
+Источники данных (HTTP):
+- Market Status: GET /v1/market/status?window=30m
+- Signals Feed: GET /v1/signals?limit=200&sort=ts&dir=desc
+- Variant Details: GET /v1/variants/{variant_id}?window=30m
+
+------------------------------------------------------------------
+1) Страница Overview (MARKET) — /#overview
+------------------------------------------------------------------
+
+Блоки (в порядке сверху вниз):
+
+A) Режим рынка (ov_market_regime, 6x2)
+- Метрики: market_regime(+badge), velocity_score, vol_level, data_health, data_conf_pct
+- Источник: market.status (HTTP + realtime)
+- UX: по клику открыть drawer с деталями рынка и "Тактика сейчас".
+
+B) Поток рынка (ov_flow, 6x2)
+- Метрики: volume_velocity, absorption, listing_pressure
+- Пороги (цвета):
+  VV: good>=1.10, warn>=0.90
+  AR: good>=1.10, warn>=0.80
+  LP: good<=3.0, warn<=4.0
+- Источник: market.status
+
+C) Ликвидность и глубина (ov_liquidity_depth, 6x2)
+- Метрики: liquidity_score, depth_5pct.lots, depth_5pct.ton
+- Пороги:
+  Liquidity good>=45 warn>=35
+  Depth lots good>=10 warn>=5
+- Источник: market.status
+
+D) Предложение (ov_supply, 6x2)
+- Метрики: active_lots, delta_lots_1h, listing_velocity_10m, listing_velocity_norm
+- Источник: market.status
+
+E) Лучшие возможности (ov_top_signals, 12x4)
+- Таблица: BUY/SELL/WATCH по рынку, сортировка по EdgeRank.
+- Пресет: "PRO-алерты" = edgeRank>=55 && conf>=35 && profit>=8
+- Источник: signals_feed (HTTP) + signal.created (realtime)
+- UX: по клику строки открыть Variant page.
+
+F) Лента статуса рынка (ov_market_status_feed, 12x3)
+- Таймлайн: последние market.status, max 50.
+- Источник: market.status realtime.
+
+------------------------------------------------------------------
+2) Страница Variant (VARIANT) — /variant/{variant_id}
+------------------------------------------------------------------
+
+A) Заголовок (v_header, 12x1)
+- Коллекция/Модель и атрибуты (фон/узор).
+
+B) Решение (v_trade_decision, 6x2)
+- Метрики: action, edgeRank100, score100, conf_pct, expected_profit_pct, undervalue_pct, target_ton, stop_ton.
+- Источники: variant_details + signal.created (realtime).
+- UX: drawer "Signal details" (reasons, risk_flags, watch_trigger).
+
+C) Цена и Fair (v_price_card, 6x2)
+- Метрики: price_ton, floor_ton, fair_ton, undervalue_pct.
+- Чарт: floor_history (series.floor_1m).
+- Источники: variant_details + metrics.updated (realtime).
+
+D) Поток и микроструктура (v_flow_micro, 6x2)
+- Метрики: VV, AR(30m), LP, Liquidity, Depth.
+- Источник: metrics.updated.
+
+E) Тепловая карта ликвидности (v_liquidity_heatmap, 6x3)
+- Heatmap: heatmap.liquidity_bins.
+- Источник: metrics.updated.
+
+F) Новые листинги (v_listings_feed, 12x4)
+- Таблица: feeds.new_listings.
+- Источник: metrics.updated.
+
+G) История сигналов (v_signals_history, 12x3)
+- Таблица: /v1/signals с фильтром variant_id.
+- Источник: HTTP + signal.created.
+
+------------------------------------------------------------------
+3) Перекрёстные требования
+------------------------------------------------------------------
+- На всех страницах отображать бейдж режима рынка (🟢🟡🔴⚠) и подпись.
+- При data_health=DEGRADED показывать banner "Данные деградированы" и помечать Conf как ограниченное.
+- Цвета:
+  - Action badges: BUY зелёный, SELL красный, WATCH жёлтый, SKIP серый.
+  - EdgeRank heatmap: чем выше — тем ярче строка/ячейка.
+
+------------------------------------------------------------------
+4) Фильтры Signals Page (использовать frontend_signals_ui_mapping.json)
+------------------------------------------------------------------
+- default sort: EdgeRank desc, Conf desc, ts desc
+- обязательные фильтры: action, market_regime, EdgeRank>=55, Conf>=35, Profit>=8
+- дополнительные: Liquidity>=35, LP<=4, AR>=0.9, VV>=1.0
+- toggle "Только PRO-алерты": edgeRank>=55 && conf>=35 && profit>=8
+
+======================================================================
+Конец ТЗ
+======================================================================

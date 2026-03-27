@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://giftmarketz.one/schemas/signal.created.v2.json",
+  "title": "signal.created",
+  "type": "object",
+  "required": [
+    "type",
+    "ts",
+    "version",
+    "key",
+    "payload"
+  ],
+  "properties": {
+    "type": {
+      "const": "signal.created"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "version": {
+      "type": "integer",
+      "const": 2
+    },
+    "key": {
+      "type": "string",
+      "description": "variant_id"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "signal_id",
+        "ts",
+        "action",
+        "market_regime",
+        "edgeRank100",
+        "score100",
+        "conf_pct",
+        "expected_profit_pct",
+        "variant_id",
+        "collection",
+        "model",
+        "background",
+        "pattern",
+        "price_ton",
+        "floor_ton",
+        "fair_ton",
+        "undervalue_pct",
+        "liquidity_score",
+        "absorption_30m",
+        "listing_pressure",
+        "volume_velocity",
+        "depth_5pct_count",
+        "depth_5pct_ton",
+        "reasons",
+        "risk_flags"
+      ],
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "BUY",
+            "SELL",
+            "WATCH",
+            "SKIP"
+          ]
+        },
+        "strength_tag": {
+          "type": "string",
+          "enum": [
+            "NONE",
+            "STRONG_BUY",
+            "STRONG_SELL"
+          ],
+          "default": "NONE"
+        },
+        "market_regime": {
+          "type": "string",
+          "enum": [
+            "RISK_ON",
+            "MEAN_REVERT",
+            "RISK_OFF",
+            "PANIC"
+          ]
+        },
+        "edgeRank_profile": {
+          "type": "string",
+          "enum": [
+            "BASE",
+            "RISK_ON",
+            "MEAN_REVERT",
+            "RISK_OFF",
+            "PANIC"
+          ],
+          "default": "BASE"
+        },
+        "edgeRank_raw": {
+          "type": "number"
+        },
+        "edgeRank100": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "score100": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "conf_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "expected_profit_pct": {
+          "type": "number"
+        },
+        "variant_id": {
+          "type": "string"
+        },
+        "collection_id": {
+          "type": "string"
+        },
+        "collection": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "background": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "price_ton": {
+          "type": "number"
+        },
+        "floor_ton": {
+          "type": "number"
+        },
+        "fair_ton": {
+          "type": "number"
+        },
+        "undervalue_pct": {
+          "type": "number"
+        },
+        "target_ton": {
+          "type": "number"
+        },
+        "stop_ton": {
+          "type": "number"
+        },
+        "liquidity_score": {
+          "type": "number"
+        },
+        "absorption_30m": {
+          "type": "number"
+        },
+        "listing_pressure": {
+          "type": "number"
+        },
+        "volume_velocity": {
+          "type": "number"
+        },
+        "depth_5pct_count": {
+          "type": "integer"
+        },
+        "depth_5pct_ton": {
+          "type": "number"
+        },
+        "whale_ratio_pct": {
+          "type": "number"
+        },
+        "buy_wall_score": {
+          "type": "number"
+        },
+        "forecast_24h_pct_min": {
+          "type": "number"
+        },
+        "forecast_24h_pct_max": {
+          "type": "number"
+        },
+        "watch_trigger": {
+          "type": "string"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3
+        },
+        "risk_flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3
+        }
+      }
+    }
+  }
+}

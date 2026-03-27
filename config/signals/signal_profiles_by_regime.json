@@ -1,0 +1,145 @@
+{
+  "gates": {
+    "skip_if": {
+      "conf_lt": 20,
+      "sales24h_lt": 2
+    },
+    "watch_if": {
+      "conf_gte": 20,
+      "conf_lt": 30
+    }
+  },
+  "telegram_publish_gate": {
+    "edgeRank100_gte": 55,
+    "conf_pct_gte": 35,
+    "expected_profit_pct_gte": 8
+  },
+  "profiles": {
+    "RISK_ON": {
+      "buy_all": {
+        "score100_gte": 65,
+        "undervalue_gte": 0.06,
+        "expected_profit_pct_gte": 8,
+        "liquidity_norm_gte": 0.3,
+        "absorption_gte": 0.95,
+        "listing_pressure_lte": 3.5
+      },
+      "sell_any": [
+        {
+          "listing_pressure_gte": 5.0,
+          "absorption_lte": 0.75
+        },
+        {
+          "undervalue_lte": -0.02
+        }
+      ],
+      "watch_band": {
+        "score100_gte": 52,
+        "score100_lt": 65
+      }
+    },
+    "MEAN_REVERT": {
+      "buy_all": {
+        "score100_gte": 70,
+        "undervalue_gte": 0.08,
+        "expected_profit_pct_gte": 10,
+        "liquidity_norm_gte": 0.35,
+        "absorption_gte": 0.9,
+        "listing_pressure_lte": 3.0
+      },
+      "sell_any": [
+        {
+          "listing_pressure_gte": 4.0,
+          "absorption_lte": 0.8
+        },
+        {
+          "undervalue_lte": -0.03
+        }
+      ],
+      "watch_band": {
+        "score100_gte": 55,
+        "score100_lt": 70
+      }
+    },
+    "RISK_OFF": {
+      "buy_all": {
+        "score100_gte": 75,
+        "undervalue_gte": 0.1,
+        "expected_profit_pct_gte": 12,
+        "liquidity_norm_gte": 0.4,
+        "absorption_gte": 0.95,
+        "listing_pressure_lte": 2.8,
+        "depth_score_gte": 0.25
+      },
+      "sell_any": [
+        {
+          "listing_pressure_gte": 4.0,
+          "absorption_lte": 0.85
+        },
+        {
+          "undervalue_lte": -0.03
+        }
+      ],
+      "watch_band": {
+        "score100_gte": 60,
+        "score100_lt": 75
+      }
+    },
+    "PANIC": {
+      "buy_all": {
+        "score100_gte": 72,
+        "undervalue_gte": 0.06,
+        "expected_profit_pct_gte": 10,
+        "liquidity_norm_gte": 0.35,
+        "absorption_gte": 0.8,
+        "listing_pressure_lte": 4.5,
+        "depth_score_gte": 0.2,
+        "volume_velocity_gte": 1.2
+      },
+      "sell_any": [
+        {
+          "listing_pressure_gte": 6.0
+        },
+        {
+          "absorption_lte": 0.6
+        },
+        {
+          "undervalue_lte": -0.02
+        }
+      ],
+      "watch_band": {
+        "score100_gte": 58,
+        "score100_lt": 72
+      }
+    }
+  },
+  "post_rules": {
+    "watch_triggers": [
+      {
+        "if_missing": "undervalue",
+        "trigger": "Вход при цене ≤ Fair*(1-threshold_undervalue)"
+      },
+      {
+        "if_missing": "absorption",
+        "trigger": "Вход при AR ≥ threshold_absorption"
+      },
+      {
+        "if_missing": "liquidity",
+        "trigger": "Вход при Liquidity ≥ threshold_liquidity*100/100"
+      },
+      {
+        "if_missing": "volume_velocity",
+        "trigger": "Вход при VV ≥ threshold_vv (PANIC)"
+      }
+    ],
+    "skip_if": [
+      {
+        "expected_profit_pct_lt": 5
+      },
+      {
+        "liquidity_norm_lt": 0.25,
+        "depth_score_lt": 0.2
+      }
+    ]
+  }
+}

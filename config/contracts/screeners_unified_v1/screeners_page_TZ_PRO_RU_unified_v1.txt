@@ -1,0 +1,196 @@
+# GiftMarketZone — ТЗ PRO: Screeners (/ #screeners)
+Версия: unified-v1 (единая логика как в прошлых PRO-ТЗ)
+Дата: 2026-03-05
+
+## 0) Цель
+Страница **Screeners** — PRO-сканер возможностей: показывает лучшие трейд-идеи (варианты + тип скринера), ранжирует по **фиксированному EdgeRank**, применяет **единый DecisionEngine BUY/SELL/WATCH/SKIP с адаптацией под режим рынка** и дает объяснимость (reasons/risk_flags/decision_trace).
+
+URL: https://giftmarketzone.com/#screeners
+
+Ключевой принцип унификации (как в прошлых ТЗ):
+- **EdgeRank фиксирован** (веса не меняются).
+- **Адаптация под режим рынка** выполняется через:
+  1) динамические пороги DecisionEngine
+  2) ранжирование/boost (правила сортировки/приоритетов ScreenerType)
+  3) reasons/risk_flags (шаблоны и приоритеты причин/рисков)
+
+---
+## 1) Источники данных и события
+Screeners строится поверх общего event-driven пайплайна:
+- stream:listings: listing.new / listing.price_changed / listing.removed
+- stream:market: market.status.updated (включает market_regime)
+- stream:signals: signal.generated (опционально, если хотите переиспользовать вычисления)
+И публикует:
+- stream:screeners: screener.row
+
+Для фронта:
+- GET /v1/screeners/feed
+- GET /v1/stream/screeners (SSE)
+- GET /v1/market/status (режим рынка и агрегаты)
+
+---
+## 2) Сущности
+### 2.1 variant
+variant = (collection + model + background + pattern)
+variant_id — стабильный ключ.
+
+### 2.2 ScreenerRowPro
+Строка в таблице Screeners (PRO). Минимальный состав:
+- variant_id, variant_label + атрибуты (collection/model/background/pattern)
+- price_ton, floor_ton, fair_ton
+- undervalue_pct, expected_profit_pct
+- liquidity_score (0..100), absorption_30m, listing_pressure, depth_score (0..1)
+- score100 (0..100), conf_pct (0..100)
+- edgeRank_raw (0..1), edgeRank100 (0..100)
+- market_regime, action
+- reasons[], risk_flags[]
+- decision_trace (объяснимость: нормализации, пороги, “чего не хватило”, режим)
+
+---
+## 3) EdgeRank (ФИКСИРОВАННАЯ ФОРМУЛА)
+Формула должна быть строго такой (без динамических весов):
+
+EdgeRank_raw =
+  0.35*EP
++ 0.25*S
++ 0.15*L
++ 0.10*AR
++ 0.10*D
+- 0.15*LP
+
+EdgeRank = clamp(EdgeRank_raw,0,1) * C
+
+Где:
+- C  = conf_pct/100
+- EP = clamp(expected_profit_pct/0.30,0,1)
+- S  = clamp(score100/100,0,1)
+- L  = clamp(liquidity_score/100,0,1)
+- AR = clamp(absorption_30m/2.0,0,1)
+- D  = clamp(depth_score,0,1)
+- LP = clamp(listing_pressure/8.0,0,1)
+
+EdgeRank100 = round(EdgeRank*100).
+
+---
+## 4) DecisionEngine BUY/SELL/WATCH/SKIP (адаптация под режим рынка)
+ВАЖНО: это тот же движок, что на других страницах (Signals/New Listings/Variant).
+
+### 4.1 Quality gates (сначала)
+1) если conf_pct < 20 OR sales24h < 2 => action = SKIP (мало данных)
+2) если conf_pct ∈ [20..35) => action = WATCH
+
+### 4.2 База (MEAN_REVERT)
+BUY если выполняются ВСЕ:
+- EdgeRank100 >= 60
+- conf_pct >= 35
+- expected_profit_pct >= 0.08
+- liquidity_score >= 35
+- absorption_30m >= 0.9
+- listing_pressure <= 3.0
+
+SELL если:
+A) давление:
+- listing_pressure >= 4.0 AND absorption_30m <= 0.8
+ИЛИ
+B) переоценка:
+- undervalue_pct <= -0.03
+
+WATCH если:
+- EdgeRank100 ∈ [55..60) AND conf_pct >= 35
+и не хватает 1–2 условий BUY (обязательно показать “триггер входа” в decision_trace)
+
+SKIP иначе.
+
+### 4.3 Режимные пороги (динамика)
+Режим влияет ТОЛЬКО на пороги (а не на EdgeRank). Параметры вынести в конфиг `screeners_thresholds.json`.
+
+Рекомендованные пороги:
+- RISK_ON:
+  - edge_buy=58, profit_min=0.07, lp_max=3.5, ar_min=0.85, liq_min=30, conf_min=35
+- MEAN_REVERT:
+  - edge_buy=60, profit_min=0.08, lp_max=3.0, ar_min=0.90, liq_min=35, conf_min=35
+- RISK_OFF:
+  - edge_buy=62, profit_min=0.10, lp_max=2.8, ar_min=1.00, liq_min=40, conf_min=40
+- PANIC:
+  - edge_buy=65, profit_min=0.12, lp_max=2.2, ar_min=1.10, liq_min=45, conf_min=45
+
+SELL-гейты также могут быть режимными (например, в PANIC продавцов “штрафуем” раньше): lp_sell=3.5.
+
+---
+## 5) ScreenerType (витрины) + Ranking/Boost (режимная адаптация)
+Enum:
+- NEW_LISTINGS
+- RACE_MODE
+- UNDERVALUED
+- MOMENTUM_BUY
+- BREAKDOWN_SELL
+- WHALE_ACTIVITY
+- LIQUIDITY_SPIKE
+- VOLATILITY_SURGE
+
+### 5.1 Общая сортировка (по умолчанию)
+- EdgeRank100 desc
+- expected_profit_pct desc
+- age asc
+
+### 5.2 Boost правила (пример)
+Boost — это режимная адаптация ранжирования (без изменения EdgeRank):
+- RISK_ON: +приоритет UNDERVALUED/MOMENTUM_BUY/NEW_LISTINGS
+- RISK_OFF: +приоритет LIQUIDITY_SPIKE/WHALE_ACTIVITY (если есть) и строгие фильтры по liq/ar/depth
+- PANIC: понижать вес NEW_LISTINGS, повышать требование к depth/liq и поднимать BREAKDOWN_SELL
+
+Реализация: `screener_priority_score = EdgeRank100 + screener_boost(r, type)`,
+где screener_boost ∈ [-5..+5].
+
+---
+## 6) Reasons / Risk flags (шаблонизатор PRO)
+Требование: сообщения “одинаковые и трейдерские”, детерминированный порядок.
+
+### 6.1 Reasons (2–3 строки)
+Выбрать топ драйверы:
+- "EdgeRank=78 (выше порога BUY=60)"
+- "Профит после fees: 11.2%"
+- "Недооценка: +9.4% (floor ниже fair)"
+
+### 6.2 Risk flags (2–3 строки)
+Выбрать топ риски:
+- "Давление продавцов: LP=4.6"
+- "Глубина слабая: depth=0.22"
+- "Низкая уверенность: Conf=36%"
+
+### 6.3 Decision trace (обязательно)
+decision_trace должен включать:
+- regime: market_regime
+- thresholds: активные пороги режима (edge_buy, profit_min, liq_min, ar_min, lp_max, conf_min)
+- normalized: EP,S,L,AR,D,LP
+- gates: список пройденных/проваленных гейтов
+- missing_for_buy: список условий, которых не хватило (для WATCH)
+- boost: screener_boost и итоговый sort_key (если используете)
+
+---
+## 7) API / SSE / Redis
+OpenAPI патч: `openapi_patch_v1.8_screeners_unified_v1.yaml` (влить в общий openapi).
+
+REST:
+- GET /v1/screeners/feed (filters + cursor)
+
+SSE:
+- GET /v1/stream/screeners
+- event: screener.row
+
+Redis:
+- stream:screeners
+- cg:screeners (агрегатор)
+- cg:api_sse (доставка)
+
+---
+## 8) UI/UX (Bento UI, PRO)
+Файлы для фронта:
+- `screeners_page_pro_ui_mapping_unified_v1.json`
+- `bento_ui_screeners_blocks_unified_v1.json`
+
+Требования:
+- дефолтные фильтры PRO: EdgeRank>=55, Conf>=35, Profit>=8%
+- сортировка: EdgeRank desc, Profit desc, Age asc
+- раскрытие строки: reasons / risk_flags / decision_trace
+- язык UI: русский

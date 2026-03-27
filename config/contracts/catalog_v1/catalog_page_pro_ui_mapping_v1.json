@@ -1,0 +1,259 @@
+{
+  "page": "catalog",
+  "route": "/#catalog",
+  "language": "ru",
+  "primary_data_source": "/v1/catalog/feed",
+  "realtime_sse": "/v1/stream/catalog",
+  "realtime_event": "catalog.row",
+  "actions": [
+    "BUY",
+    "SELL",
+    "WATCH",
+    "SKIP"
+  ],
+  "edgerank_formula": {
+    "EdgeRank_raw": "0.35*EP + 0.25*S + 0.15*L + 0.10*AR + 0.10*D - 0.15*LP",
+    "EdgeRank": "clamp(EdgeRank_raw,0,1) * C"
+  },
+  "market_regime_adaptation": {
+    "method": "decision_thresholds + ranking_boost + reasons/risk_flags",
+    "note": "EdgeRank фиксирован. Режим влияет на пороги и приоритизацию/пресеты."
+  },
+  "default_sort": [
+    "sort_key desc",
+    "edgeRank100 desc",
+    "expected_profit_pct desc",
+    "updated_at desc"
+  ],
+  "columns": [
+    {
+      "id": "variant_label",
+      "label": "Вариант",
+      "type": "text"
+    },
+    {
+      "id": "floor_ton",
+      "label": "Floor",
+      "type": "ton"
+    },
+    {
+      "id": "fair_ton",
+      "label": "Fair",
+      "type": "ton"
+    },
+    {
+      "id": "undervalue_pct",
+      "label": "Недооценка",
+      "type": "pct",
+      "heat": true
+    },
+    {
+      "id": "expected_profit_pct",
+      "label": "Профит",
+      "type": "pct",
+      "heat": true
+    },
+    {
+      "id": "edgeRank100",
+      "label": "EdgeRank",
+      "type": "score100",
+      "heat": true
+    },
+    {
+      "id": "conf_pct",
+      "label": "Conf",
+      "type": "pct"
+    },
+    {
+      "id": "liquidity_score",
+      "label": "Ликвидность",
+      "type": "score100"
+    },
+    {
+      "id": "absorption_30m",
+      "label": "Поглощение 30м",
+      "type": "number"
+    },
+    {
+      "id": "listing_pressure",
+      "label": "Давление (LP)",
+      "type": "number",
+      "heat": true
+    },
+    {
+      "id": "depth_score",
+      "label": "Глубина",
+      "type": "number",
+      "heat": true
+    },
+    {
+      "id": "active_lots",
+      "label": "Активные лоты",
+      "type": "int"
+    },
+    {
+      "id": "listed_share",
+      "label": "Доля в продаже",
+      "type": "pct"
+    },
+    {
+      "id": "market_regime",
+      "label": "Режим",
+      "type": "badge"
+    },
+    {
+      "id": "action",
+      "label": "Действие",
+      "type": "action_badge"
+    },
+    {
+      "id": "updated_at",
+      "label": "Обновлено",
+      "type": "datetime"
+    },
+    {
+      "id": "age_sec",
+      "label": "Возраст",
+      "type": "age_sec"
+    }
+  ],
+  "filters": [
+    {
+      "id": "q",
+      "label": "Поиск",
+      "type": "search"
+    },
+    {
+      "id": "action",
+      "label": "Действие",
+      "type": "multi_select",
+      "source": "enum:SignalAction"
+    },
+    {
+      "id": "market_regime",
+      "label": "Режим",
+      "type": "multi_select",
+      "source": "enum:MarketRegime"
+    },
+    {
+      "id": "edgeRank_min",
+      "label": "EdgeRank ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 55
+    },
+    {
+      "id": "conf_min",
+      "label": "Conf ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 35
+    },
+    {
+      "id": "profit_min_pct",
+      "label": "Профит ≥ %",
+      "type": "slider_pct",
+      "min": 0,
+      "max": 30,
+      "step": 1,
+      "default": 8
+    },
+    {
+      "id": "liq_min",
+      "label": "Ликвидность ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 35
+    },
+    {
+      "id": "depth_min",
+      "label": "Глубина ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "default": 0.2
+    },
+    {
+      "id": "ar_min",
+      "label": "Поглощение ≥",
+      "type": "number",
+      "default": 0.9
+    },
+    {
+      "id": "lp_max",
+      "label": "LP ≤",
+      "type": "number",
+      "default": 4.0
+    },
+    {
+      "id": "active_lots_min",
+      "label": "Лоты ≥",
+      "type": "number",
+      "default": 0
+    },
+    {
+      "id": "active_lots_max",
+      "label": "Лоты ≤",
+      "type": "number",
+      "default": 9999
+    },
+    {
+      "id": "listed_share_min",
+      "label": "Доля ≥",
+      "type": "slider_pct",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 0
+    },
+    {
+      "id": "listed_share_max",
+      "label": "Доля ≤",
+      "type": "slider_pct",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 100
+    },
+    {
+      "id": "preset",
+      "label": "Пресет",
+      "type": "preset_tabs",
+      "values": [
+        "TOP_BUY",
+        "WATCHLIST",
+        "RISK_OFF_SAFE",
+        "UNDERVALUED",
+        "SELL_PRESSURE"
+      ]
+    }
+  ],
+  "row_expand": {
+    "sections": [
+      {
+        "title": "Причины",
+        "field": "reasons"
+      },
+      {
+        "title": "Риски",
+        "field": "risk_flags"
+      },
+      {
+        "title": "Decision Trace",
+        "field": "decision_trace"
+      }
+    ]
+  },
+  "side_panel": {
+    "id": "variant_quick_view",
+    "title": "Быстрый просмотр варианта",
+    "data_source": "/v1/catalog/variant/{variant_id}"
+  }
+}

@@ -114,20 +114,31 @@ def _collect_all_signals_remote(signals_base_url: str, mode: str, limit: int) ->
     return out[:limit]
 
 
-def run(horizon_hours: int, mode: str, limit: int, signals_url: str | None = None) -> dict[str, Any]:
-    svc = GiftAnalyticsService()
+def run(
+    horizon_hours: int,
+    mode: str,
+    limit: int,
+    signals_url: str | None = None,
+    svc: GiftAnalyticsService | None = None,
+    history: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    svc_obj = svc if isinstance(svc, GiftAnalyticsService) else GiftAnalyticsService()
     source = "local"
     if signals_url:
         try:
             signals = _collect_all_signals_remote(signals_url, mode=mode, limit=limit)
             source = "remote"
         except Exception:  # noqa: BLE001
-            signals = _collect_all_signals_local(svc, mode=mode, limit=limit)
+            signals = _collect_all_signals_local(svc_obj, mode=mode, limit=limit)
             source = "local_fallback"
     else:
-        signals = _collect_all_signals_local(svc, mode=mode, limit=limit)
-    history_path = Path("data/variant_history.json")
-    history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else {}
+        signals = _collect_all_signals_local(svc_obj, mode=mode, limit=limit)
+    if not isinstance(history, dict):
+        if isinstance(getattr(svc_obj, "variant_history", None), dict):
+            history = getattr(svc_obj, "variant_history")
+        else:
+            history_path = Path("data/variant_history.json")
+            history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else {}
 
     now = datetime.now(timezone.utc)
     horizon_start = now - timedelta(hours=horizon_hours)
@@ -235,7 +246,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument(
         "--signals-url",
-        default="https://telegram-gifts-market.onrender.com/v1/signals",
+        default="https://giftmarketzone.com/v1/signals",
         help="Optional remote /v1/signals endpoint. Set empty string to use local service signals.",
     )
     args = parser.parse_args()

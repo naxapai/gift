@@ -1,0 +1,236 @@
+{
+  "version": "1.0",
+  "locale": "ru-RU",
+  "time_format": "YYYY-MM-DD HH:mm:ss z",
+  "money": {
+    "unit": "TON",
+    "decimals": 2
+  },
+  "scores": {
+    "edge": {
+      "min": 0,
+      "max": 100
+    },
+    "score100": {
+      "min": 0,
+      "max": 100
+    },
+    "conf_pct": {
+      "min": 0,
+      "max": 100
+    }
+  },
+  "publish_gates": {
+    "gift_signal_channel": {
+      "all": [
+        {
+          "metric": "edgeRank100",
+          "op": ">=",
+          "value": 55
+        },
+        {
+          "metric": "conf_pct",
+          "op": ">=",
+          "value": 35
+        },
+        {
+          "metric": "expected_profit_pct",
+          "op": ">=",
+          "value": 8
+        }
+      ]
+    }
+  },
+  "enums": {
+    "market_regime": [
+      "RISK_ON",
+      "MEAN_REVERT",
+      "RISK_OFF",
+      "PANIC"
+    ],
+    "action": [
+      "BUY",
+      "SELL",
+      "WATCH",
+      "SKIP",
+      "AVOID"
+    ],
+    "data_health": [
+      "OK",
+      "DEGRADED",
+      "STALE",
+      "DOWN"
+    ]
+  },
+  "rendering": {
+    "emojis": {
+      "regime_badge": {
+        "RISK_ON": "🟢",
+        "MEAN_REVERT": "🟠",
+        "RISK_OFF": "🔴",
+        "PANIC": "🟥"
+      },
+      "action_badge": {
+        "BUY": "🟢",
+        "SELL": "🔴",
+        "WATCH": "🟠",
+        "SKIP": "⚪️",
+        "AVOID": "🟣"
+      }
+    },
+    "line_break": "\n",
+    "bullet": "• ",
+    "max_reasons": 3,
+    "max_risks": 3
+  },
+  "templates": {
+    "market_status": {
+      "title": "GiftMarketZone • РЫНОК • {market_regime} • {regime_emoji} • conf {market_conf_pct}%",
+      "sections": [
+        {
+          "id": "trend",
+          "lines": [
+            "📉 Тренд: {trend} | Velocity: {market_velocity_score}/100 | Volatility: {market_volatility_bucket}"
+          ]
+        },
+        {
+          "id": "flow",
+          "lines": [
+            "💸 Поток: VolumeVel {volume_velocity_x}x | Absorption {absorption_rate_30m} | Pressure {listing_pressure}"
+          ]
+        },
+        {
+          "id": "liquidity",
+          "lines": [
+            "💧 Ликвидность: {liquidity_score}/100 | Depth≤5%: {depth_5pct_lots} лотов / {depth_5pct_ton} TON"
+          ]
+        },
+        {
+          "id": "supply",
+          "lines": [
+            "📦 Предложение: {active_lots_market} лотов (Δ1ч {delta_lots_1h_sign}{delta_lots_1h})",
+            "🆕 Новые листинги 10м: {new_listings_10m} (норм {new_listings_10m_norm})",
+            "🐋 Киты: {whale_share_pct}% (impulse {whale_impulse})"
+          ]
+        },
+        {
+          "id": "tactics",
+          "title": "🎯 Тактика сейчас:",
+          "lines": [
+            "{tactic_line1}",
+            "{tactic_line2}",
+            "{tactic_line3}"
+          ]
+        },
+        {
+          "id": "top_signals",
+          "title": "🔥 Top сигналы (1ч):",
+          "lines": [
+            "BUY: {signals_1h_buy} | SELL: {signals_1h_sell} | SKIP/WATCH: {signals_1h_skipwatch}"
+          ]
+        },
+        {
+          "id": "data_health",
+          "lines": [
+            "🧪 Данные: {data_health} {data_health_note} | обновлено {updated_at} | p95 {p95_ms}ms | err {err_pct}%"
+          ]
+        }
+      ]
+    },
+    "gift_signal": {
+      "title": "GiftMarketZone • {action} • Edge {edgeRank100} • score {score100} • conf {conf_pct}% • ⏱ {horizon} • {market_regime}",
+      "sections": [
+        {
+          "id": "variant",
+          "lines": [
+            "🎁 {collection} / {model} / {background} / {pattern}"
+          ]
+        },
+        {
+          "id": "price",
+          "lines": [
+            "💰 Цена: P={price_ton} TON | Floor={floor_ton} TON",
+            "📌 Fair={fair_ton} TON | Δ={delta_fair_pct_sign}{delta_fair_pct}%"
+          ]
+        },
+        {
+          "id": "plan",
+          "title": "🎯 План:",
+          "lines": [
+            "{plan_entry_line}",
+            "{plan_exit_line}"
+          ]
+        },
+        {
+          "id": "liq_exit",
+          "title": "💧 Выход/Ликвидность:",
+          "lines": [
+            "• Liquidity: {liquidity_score}/100 | Absorption30m: {absorption_rate_30m}",
+            "• Depth≤5%: {depth_5pct_lots} лота / {depth_5pct_ton} TON | Pressure: {listing_pressure} | VolumeVel: {volume_velocity_x}x"
+          ]
+        },
+        {
+          "id": "reasons",
+          "title": "🧠 Почему:",
+          "lines": [
+            "{reasons_block}"
+          ]
+        },
+        {
+          "id": "risks",
+          "title": "⚠ Риски:",
+          "lines": [
+            "{risks_block}"
+          ]
+        },
+        {
+          "id": "time",
+          "lines": [
+            "🕒 {ts}"
+          ]
+        }
+      ]
+    }
+  },
+  "decision_engine_render": {
+    "show_regime_thresholds": true,
+    "thresholds_source": "signal_profiles_by_regime.json",
+    "regime_tactics_map": {
+      "RISK_ON": [
+        "• Можно брать больше сетапов: score≥70, conf≥35, EP≥8%",
+        "• Допускаем тоньше ликвидность: L≥0.30 при AR≥0.95",
+        "• Выход: при U≤-3% или LP≥4.5"
+      ],
+      "MEAN_REVERT": [
+        "• Ищем отскоки: U≥8% и возврат к fair",
+        "• Покупаем только при AR≥0.95 и LP≤3.2",
+        "• Быстро фиксируем +4–10%"
+      ],
+      "RISK_OFF": [
+        "• Торгуем только топ BUY: score≥82, conf≥45, EP≥12%",
+        "• Избегаем тонких вариантов: depth≤3 лота (slippage)",
+        "• По SELL: выход при LP≥4 и AR≤0.8"
+      ],
+      "PANIC": [
+        "• BUY только исключения: score≥90, conf≥55, EP≥15%",
+        "• Фокус на сохранении капитала, минимальный риск",
+        "• SELL агрессивно при ухудшении AR/LP"
+      ]
+    }
+  },
+  "reason_risk_dictionary": {
+    "reasons": {
+      "NEAR_ENTRY": "Почти есть вход: score {score100}, но не хватает {missing_metric}",
+      "GOOD_ABSORPTION": "Поглощение близко к норме: AR={absorption_rate_30m}",
+      "STRONG_LIQ": "Ликвидность достаточная: L={liquidity_score}/100",
+      "UNDERVALUED": "Недооценка: U={undervalue_pct}% (fair выше цены)",
+      "OVERVALUED": "Переоценка: Δ={delta_fair_pct}% (цена выше fair)"
+    },
+    "risk_flags": {
+      "LOW_DEPTH_5PCT": "Низкая глубина: {depth_5pct_lots} лота в пределах 5% от floor (slippage)",
+      "HIGH_PRESSURE": "Давление продавцов высокое: LP={listing_pressure}",
+      "LOW_CONF": "Низкая надёжность: conf={conf_pct}%",
+      "DATA_DEGRADED": "Данные деградированы: {data_health_note}"
+    }
+  }
+}

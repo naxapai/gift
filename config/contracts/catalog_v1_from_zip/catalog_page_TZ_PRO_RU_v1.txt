@@ -1,0 +1,224 @@
+# GiftMarketZone — ТЗ PRO: Catalog (/ #catalog)
+Версия: v1.0 (PRO)
+Дата: 2026-03-05
+
+## 0) Цель страницы
+Страница **Catalog** — это PRO “рынок-поиск”: полный каталог вариантов (variant = collection+model+background+pattern) с:
+- быстрым поиском/фильтрами
+- сортировкой по EdgeRank/Profit/Liquidity и др.
+- единым action BUY/SELL/WATCH/SKIP (как на Signals/Screeners)
+- режимом рынка (MarketRegime) и адаптацией логики
+- объяснимостью (reasons/risk_flags/decision_trace) в раскрытии строки
+- realtime обновлениями ключевых полей (floor, new listings, EdgeRank, action)
+
+URL: https://giftmarketzone.com/#catalog
+
+Важно (унификация): **EdgeRank фиксирован** по заданной формуле. “Адаптация под режим рынка” реализуется как и в прошлых PRO-ТЗ:
+1) динамические пороги DecisionEngine,
+2) ranking/boost (режимные приоритеты сортировки/витрин),
+3) reasons/risk_flags (подсветка драйверов/рисков).
+(Это соответствует “динамические веса” в смысле динамики принятия решения и приоритизации без изменения фиксированной формулы.)
+
+---
+## 1) Сущности
+### 1.1 variant
+variant = (collection + model + background + pattern)
+variant_id — стабильный ключ
+variant_label — человекочитаемое имя (например: "snakebox / Bluebell / Cobalt Blue / Hourglass")
+
+### 1.2 CatalogRowPro (строка каталога)
+Минимальный набор полей:
+- variant_id, variant_label, collection, model, background, pattern
+- floor_ton, fair_ton, price_ton (если есть best ask), median_24h_ton (опц.)
+- undervalue_pct, expected_profit_pct
+- active_lots, listed_share (для варианта)
+- liquidity_score(0..100), absorption_30m, listing_pressure, depth_score(0..1)
+- score100, conf_pct
+- edgeRank_raw(0..1), edgeRank100(0..100)
+- market_regime, action
+- reasons[], risk_flags[], decision_trace
+- updated_at, age_sec
+
+Catalog — “широкая” страница: по умолчанию показывает 200–500 строк по фильтрам.
+
+---
+## 2) EdgeRank — ФОРМУЛА (строго)
+Формула не меняется ни при каком режиме:
+
+EdgeRank_raw =
+  0.35*EP
++ 0.25*S
++ 0.15*L
++ 0.10*AR
++ 0.10*D
+- 0.15*LP
+
+EdgeRank = clamp(EdgeRank_raw,0,1) * C
+
+Где:
+- C  = conf_pct/100
+- EP = clamp(expected_profit_pct/0.30,0,1)
+- S  = clamp(score100/100,0,1)
+- L  = clamp(liquidity_score/100,0,1)
+- AR = clamp(absorption_30m/2.0,0,1)
+- D  = clamp(depth_score,0,1)
+- LP = clamp(listing_pressure/8.0,0,1)
+
+EdgeRank100 = round(EdgeRank*100)
+
+---
+## 3) DecisionEngine BUY/SELL/WATCH/SKIP (адаптация по MarketRegime)
+Единая механика как в прошлых PRO-ТЗ (Signals/Screeners/NewListings).
+
+### 3.1 Quality gates
+1) conf_pct < 20 OR sales24h < 2 => SKIP (мало данных)
+2) conf_pct ∈ [20..35) => WATCH
+
+### 3.2 База (MEAN_REVERT)
+BUY если все:
+- EdgeRank100 >= 60
+- conf_pct >= 35
+- expected_profit_pct >= 0.08
+- liquidity_score >= 35
+- absorption_30m >= 0.9
+- listing_pressure <= 3.0
+
+SELL если:
+A) listing_pressure >= 4.0 AND absorption_30m <= 0.8
+ИЛИ
+B) undervalue_pct <= -0.03
+
+WATCH если:
+- EdgeRank100 ∈ [55..60) AND conf_pct >= 35
+и не хватает 1–2 условий BUY
+(в decision_trace обязательно “триггер входа”: что улучшить до BUY)
+
+SKIP иначе.
+
+### 3.3 Режимные пороги (конфиг `catalog_thresholds.json`)
+RISK_ON:
+- edge_buy=58, profit_min=0.07, lp_max=3.5, ar_min=0.85, liq_min=30, conf_min=35
+RISK_OFF:
+- edge_buy=62, profit_min=0.10, lp_max=2.8, ar_min=1.00, liq_min=40, conf_min=40
+PANIC:
+- edge_buy=65, profit_min=0.12, lp_max=2.2, ar_min=1.10, liq_min=45, conf_min=45
+MEAN_REVERT:
+- edge_buy=60, profit_min=0.08, lp_max=3.0, ar_min=0.90, liq_min=35, conf_min=35
+
+SELL override (опционально): PANIC lp_sell=3.5
+
+---
+## 4) Catalog “режимные веса” через ranking/boost (без изменения EdgeRank)
+Каталог — это не только “action”, но и “что показывать сверху”. Реализуем режимный boost:
+
+sort_key = EdgeRank100 + boost(regime) + segment_boost(segment)
+
+Пример boost(regime):
+- RISK_ON: +2 если expected_profit_pct>=0.08 и undervalue_pct>=0.06
+- RISK_OFF: +2 если liquidity_score>=50 и depth_score>=0.5 и absorption_30m>=1.0
+- PANIC: +3 если liquidity_score>=60 и depth_score>=0.6 и listing_pressure<=2.5, иначе -2
+
+segment_boost:
+- “Top BUY”: +3
+- “Watchlist”: +1
+- “Risky”: -2
+
+Каталог отображает “сегменты” как быстрые вкладки/пресеты:
+- TOP BUY (action=BUY, EdgeRank>=60, Conf>=35, Profit>=8)
+- WATCHLIST (action=WATCH, EdgeRank>=55, Conf>=35)
+- RISK OFF SAFE (regime=RISK_OFF|PANIC, liq>=50, depth>=0.5)
+- UNDERVALUED (undervalue>=8%, Profit>=8%)
+- SELL PRESSURE (action=SELL, LP>=4)
+
+---
+## 5) UI/UX (PRO, русская локализация)
+### 5.1 Основной экран
+Bento Grid блоки:
+1) Market regime header (контекст рынка)
+2) Filter bar (включая пресеты)
+3) Catalog table (широкая)
+4) Side panel: “Variant quick view” (по клику) — мини-карточка с метриками
+
+### 5.2 Колонки таблицы (минимум)
+- Вариант (variant_label)
+- Floor (TON)
+- Fair (TON)
+- Недооценка (%)
+- Профит (%)
+- EdgeRank (0–100)
+- Conf (%)
+- Ликвидность (0–100)
+- Поглощение 30м
+- Давление (LP)
+- Глубина (depth)
+- Активные лоты
+- Доля в продаже (listed_share)
+- Режим рынка
+- Действие (BUY/SELL/WATCH/SKIP)
+- Updated/Age
+
+### 5.3 Фильтры (PRO)
+- search (строка) по collection/model/background/pattern
+- action multi-select
+- regime multi-select
+- EdgeRank >= (slider)
+- Conf >= (slider)
+- Profit >= (slider %)
+- Liquidity >= (slider)
+- Depth >= (slider 0..1)
+- LP <= (number)
+- Active lots range
+- Listed share range
+- Screener presets (tabs)
+
+### 5.4 Раскрытие строки (обязательно)
+- reasons (2–3)
+- risk_flags (2–3)
+- decision_trace (thresholds + normalized + missing_for_buy)
+
+---
+## 6) Realtime
+SSE: `/v1/stream/catalog`
+Событие: `catalog.row`
+Ключ upsert: variant_id
+Поведение:
+- обновление строк в таблице (без перезагрузки)
+- подсветка обновлений 2–4 сек
+
+---
+## 7) Backend API
+### 7.1 GET /v1/catalog/feed
+Фильтры:
+- q (search)
+- action, market_regime
+- edgeRank_min, conf_min, profit_min_pct
+- liq_min, depth_min, ar_min, lp_max
+- active_lots_min/max, listed_share_min/max
+- limit, cursor
+
+Сортировка:
+- sort=edgerank|profit|liquidity|undervalue|updated
+- dir=asc|desc
+
+### 7.2 GET /v1/catalog/variant/{variant_id}
+Возвращает CatalogRowPro + расширенные поля (по желанию): floor_history, volume_24h, listings_10m.
+
+### 7.3 SSE /v1/stream/catalog
+event: catalog.row
+payload: CatalogRowPro
+
+---
+## 8) Redis
+- stream:catalog (events catalog.row)
+- cg:catalog_builder (consumer listings+market -> producer catalog)
+- cg:api_sse_catalog (delivery)
+
+Retention: 7d для catalog.
+
+---
+## 9) Acceptance criteria (DoD)
+- API соответствует OpenAPI patch
+- EdgeRank формула строго как указано
+- DecisionEngine адаптируется по regime через пороги (конфиг)
+- Каталог показывает PRO фильтры/сортировки/пресеты и realtime
+- reasons/risk_flags/decision_trace детерминированны

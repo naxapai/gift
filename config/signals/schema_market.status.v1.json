@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://giftmarketz.one/schemas/market.status.v1.json",
+  "title": "market.status",
+  "type": "object",
+  "required": [
+    "type",
+    "ts",
+    "version",
+    "payload"
+  ],
+  "properties": {
+    "type": {
+      "const": "market.status"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "ts",
+        "market_regime",
+        "data_health",
+        "data_conf_pct",
+        "trend",
+        "velocity_score",
+        "vol_level",
+        "flow",
+        "liquidity",
+        "supply",
+        "signals_1h",
+        "provider_health"
+      ],
+      "properties": {
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "market_regime": {
+          "type": "string",
+          "enum": [
+            "RISK_ON",
+            "MEAN_REVERT",
+            "RISK_OFF",
+            "PANIC"
+          ]
+        },
+        "market_regime_badge": {
+          "type": "string",
+          "enum": [
+            "🟢",
+            "🟡",
+            "🔴",
+            "⚠"
+          ]
+        },
+        "data_health": {
+          "type": "string",
+          "enum": [
+            "OK",
+            "DEGRADED"
+          ]
+        },
+        "data_conf_pct": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "trend": {
+          "type": "string",
+          "enum": [
+            "рост",
+            "флет",
+            "падение"
+          ]
+        },
+        "velocity_score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "vol_level": {
+          "type": "string",
+          "enum": [
+            "LOW",
+            "MED",
+            "HIGH"
+          ]
+        },
+        "flow": {
+          "type": "object",
+          "required": [
+            "volume_velocity",
+            "absorption",
+            "listing_pressure"
+          ],
+          "properties": {
+            "volume_velocity": {
+              "type": "number"
+            },
+            "absorption": {
+              "type": "number"
+            },
+            "listing_pressure": {
+              "type": "number"
+            }
+          }
+        },
+        "liquidity": {
+          "type": "object",
+          "required": [
+            "liquidity_score",
+            "depth_5pct"
+          ],
+          "properties": {
+            "liquidity_score": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "depth_5pct": {
+              "type": "object",
+              "required": [
+                "lots",
+                "ton"
+              ],
+              "properties": {
+                "lots": {
+                  "type": "integer"
+                },
+                "ton": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        },
+        "supply": {
+          "type": "object",
+          "required": [
+            "active_lots",
+            "delta_lots_1h",
+            "listing_velocity_10m",
+            "listing_velocity_norm"
+          ],
+          "properties": {
+            "active_lots": {
+              "type": "integer"
+            },
+            "delta_lots_1h": {
+              "type": "integer"
+            },
+            "listing_velocity_10m": {
+              "type": "integer"
+            },
+            "listing_velocity_norm": {
+              "type": "number"
+            }
+          }
+        },
+        "whales": {
+          "type": "object",
+          "properties": {
+            "whale_ratio_pct": {
+              "type": "number"
+            },
+            "whale_impulse": {
+              "type": "number"
+            }
+          }
+        },
+        "signals_1h": {
+          "type": "object",
+          "required": [
+            "buy",
+            "sell",
+            "watch",
+            "skip"
+          ],
+          "properties": {
+            "buy": {
+              "type": "integer"
+            },
+            "sell": {
+              "type": "integer"
+            },
+            "watch": {
+              "type": "integer"
+            },
+            "skip": {
+              "type": "integer"
+            }
+          }
+        },
+        "provider_health": {
+          "type": "object",
+          "required": [
+            "p95_ms",
+            "err_pct"
+          ],
+          "properties": {
+            "p95_ms": {
+              "type": "integer"
+            },
+            "err_pct": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    }
+  }
+}

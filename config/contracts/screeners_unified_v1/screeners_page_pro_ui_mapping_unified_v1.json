@@ -1,0 +1,203 @@
+{
+  "page": "screeners",
+  "route": "/#screeners",
+  "language": "ru",
+  "primary_data_source": "/v1/screeners/feed",
+  "realtime_sse": "/v1/stream/screeners",
+  "realtime_event": "screener.row",
+  "actions": [
+    "BUY",
+    "SELL",
+    "WATCH",
+    "SKIP"
+  ],
+  "edgerank_formula": {
+    "EdgeRank_raw": "0.35*EP + 0.25*S + 0.15*L + 0.10*AR + 0.10*D - 0.15*LP",
+    "EdgeRank": "clamp(EdgeRank_raw,0,1) * C"
+  },
+  "market_regime_adaptation": {
+    "method": "decision_thresholds + ranking_boost + reasons/risk_flags",
+    "note": "EdgeRank фиксирован, режим влияет на пороги и ранжирование/объяснение."
+  },
+  "default_sort": [
+    "edgeRank100 desc",
+    "expected_profit_pct desc",
+    "age asc"
+  ],
+  "columns": [
+    {
+      "id": "age",
+      "label": "Возраст",
+      "type": "age"
+    },
+    {
+      "id": "screener_type",
+      "label": "Скринер",
+      "type": "badge"
+    },
+    {
+      "id": "variant_label",
+      "label": "Вариант",
+      "type": "text"
+    },
+    {
+      "id": "price_ton",
+      "label": "Цена",
+      "type": "ton"
+    },
+    {
+      "id": "floor_ton",
+      "label": "Floor",
+      "type": "ton"
+    },
+    {
+      "id": "fair_ton",
+      "label": "Fair",
+      "type": "ton"
+    },
+    {
+      "id": "undervalue_pct",
+      "label": "Недооценка",
+      "type": "pct",
+      "heat": true
+    },
+    {
+      "id": "expected_profit_pct",
+      "label": "Профит",
+      "type": "pct",
+      "heat": true
+    },
+    {
+      "id": "edgeRank100",
+      "label": "EdgeRank",
+      "type": "score100",
+      "heat": true
+    },
+    {
+      "id": "score100",
+      "label": "Score",
+      "type": "score100"
+    },
+    {
+      "id": "conf_pct",
+      "label": "Conf",
+      "type": "pct"
+    },
+    {
+      "id": "liquidity_score",
+      "label": "Ликвидность",
+      "type": "score100"
+    },
+    {
+      "id": "absorption_30m",
+      "label": "Поглощение 30м",
+      "type": "number"
+    },
+    {
+      "id": "listing_pressure",
+      "label": "Давление",
+      "type": "number",
+      "heat": true
+    },
+    {
+      "id": "depth_score",
+      "label": "Глубина",
+      "type": "number",
+      "heat": true
+    },
+    {
+      "id": "market_regime",
+      "label": "Режим",
+      "type": "badge"
+    },
+    {
+      "id": "action",
+      "label": "Действие",
+      "type": "action_badge"
+    }
+  ],
+  "filters": [
+    {
+      "id": "screener_type",
+      "label": "Скринер",
+      "type": "multi_select",
+      "source": "enum:ScreenerType"
+    },
+    {
+      "id": "action",
+      "label": "Действие",
+      "type": "multi_select",
+      "source": "enum:SignalAction"
+    },
+    {
+      "id": "market_regime",
+      "label": "Режим",
+      "type": "multi_select",
+      "source": "enum:MarketRegime"
+    },
+    {
+      "id": "edgeRank_min",
+      "label": "EdgeRank ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 55
+    },
+    {
+      "id": "conf_min",
+      "label": "Conf ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 35
+    },
+    {
+      "id": "profit_min_pct",
+      "label": "Профит ≥ %",
+      "type": "slider_pct",
+      "min": 0,
+      "max": 30,
+      "step": 1,
+      "default": 8
+    },
+    {
+      "id": "liq_min",
+      "label": "Ликвидность ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 35
+    },
+    {
+      "id": "ar_min",
+      "label": "Поглощение ≥",
+      "type": "number",
+      "default": 0.9
+    },
+    {
+      "id": "lp_max",
+      "label": "Давление ≤",
+      "type": "number",
+      "default": 4.0
+    }
+  ],
+  "row_expand": {
+    "sections": [
+      {
+        "title": "Причины",
+        "field": "reasons"
+      },
+      {
+        "title": "Риски",
+        "field": "risk_flags"
+      },
+      {
+        "title": "Decision Trace",
+        "field": "decision_trace"
+      }
+    ]
+  }
+}

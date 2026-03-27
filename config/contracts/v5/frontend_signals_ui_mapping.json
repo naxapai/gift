@@ -1,0 +1,233 @@
+{
+  "page": "signals",
+  "defaultSort": [
+    {
+      "field": "edgeRank100",
+      "dir": "desc"
+    },
+    {
+      "field": "conf_pct",
+      "dir": "desc"
+    },
+    {
+      "field": "ts",
+      "dir": "desc"
+    }
+  ],
+  "columns": [
+    {
+      "id": "action",
+      "ui": "Действие",
+      "type": "badge",
+      "width": 90
+    },
+    {
+      "id": "market_regime_badge",
+      "ui": "Режим",
+      "type": "icon",
+      "width": 70
+    },
+    {
+      "id": "edgeRank100",
+      "ui": "EdgeRank",
+      "type": "number",
+      "fmt": "0",
+      "width": 90,
+      "heat": true
+    },
+    {
+      "id": "score100",
+      "ui": "Score",
+      "type": "number",
+      "fmt": "0",
+      "width": 80
+    },
+    {
+      "id": "conf_pct",
+      "ui": "Conf%",
+      "type": "number",
+      "fmt": "0",
+      "width": 80
+    },
+    {
+      "id": "expected_profit_pct",
+      "ui": "Profit%",
+      "type": "number",
+      "fmt": "0.0",
+      "width": 90
+    },
+    {
+      "id": "undervalue_pct",
+      "ui": "Δ%",
+      "type": "number",
+      "fmt": "0.0",
+      "width": 70
+    },
+    {
+      "id": "price_ton",
+      "ui": "Цена",
+      "type": "number",
+      "fmt": "0.00",
+      "width": 80
+    },
+    {
+      "id": "fair_ton",
+      "ui": "Fair",
+      "type": "number",
+      "fmt": "0.00",
+      "width": 80
+    },
+    {
+      "id": "liquidity_score",
+      "ui": "Liq",
+      "type": "number",
+      "fmt": "0",
+      "width": 70
+    },
+    {
+      "id": "absorption_30m",
+      "ui": "AR",
+      "type": "number",
+      "fmt": "0.00",
+      "width": 70
+    },
+    {
+      "id": "listing_pressure",
+      "ui": "LP",
+      "type": "number",
+      "fmt": "0.00",
+      "width": 70
+    },
+    {
+      "id": "volume_velocity",
+      "ui": "VV",
+      "type": "number",
+      "fmt": "0.00",
+      "width": 70
+    },
+    {
+      "id": "depth_5pct_count",
+      "ui": "Depth",
+      "type": "number",
+      "fmt": "0",
+      "width": 80
+    },
+    {
+      "id": "variant_label",
+      "ui": "Подарок",
+      "type": "text",
+      "width": 260
+    },
+    {
+      "id": "ts",
+      "ui": "Время",
+      "type": "datetime",
+      "width": 170
+    }
+  ],
+  "filters": [
+    {
+      "id": "action",
+      "ui": "Тип сигнала",
+      "type": "multi",
+      "options": [
+        "BUY",
+        "SELL",
+        "WATCH",
+        "SKIP"
+      ],
+      "default": [
+        "BUY",
+        "SELL",
+        "WATCH"
+      ]
+    },
+    {
+      "id": "market_regime",
+      "ui": "Режим рынка",
+      "type": "multi",
+      "options": [
+        "RISK_ON",
+        "MEAN_REVERT",
+        "RISK_OFF",
+        "PANIC"
+      ],
+      "default": [
+        "RISK_ON",
+        "MEAN_REVERT",
+        "RISK_OFF",
+        "PANIC"
+      ]
+    },
+    {
+      "id": "edgeRank100_min",
+      "ui": "EdgeRank ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 55
+    },
+    {
+      "id": "conf_min",
+      "ui": "Conf ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 35
+    },
+    {
+      "id": "profit_min",
+      "ui": "Profit% ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 50,
+      "step": 0.5,
+      "default": 8
+    },
+    {
+      "id": "liq_min",
+      "ui": "Liquidity ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 35
+    },
+    {
+      "id": "lp_max",
+      "ui": "LP ≤",
+      "type": "slider",
+      "min": 0,
+      "max": 10,
+      "step": 0.1,
+      "default": 4.0
+    },
+    {
+      "id": "ar_min",
+      "ui": "AR ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 3,
+      "step": 0.05,
+      "default": 0.9
+    },
+    {
+      "id": "vv_min",
+      "ui": "VV ≥",
+      "type": "slider",
+      "min": 0,
+      "max": 3,
+      "step": 0.05,
+      "default": 1.0
+    },
+    {
+      "id": "only_pro_alerts",
+      "ui": "Только PRO-алерты",
+      "type": "toggle",
+      "default": true,
+      "expr": "edgeRank100>=55 && conf_pct>=35 && expected_profit_pct>=8"
+    }
+  ]
+}

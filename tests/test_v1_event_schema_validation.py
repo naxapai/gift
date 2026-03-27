@@ -62,10 +62,24 @@ def _validate_schema(schema: dict, value, path: str = "$") -> None:
                 raise AssertionError(f"{path}: additional property {key} not allowed")
 
     if isinstance(value, list):
+        min_items = schema.get("minItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            raise AssertionError(f"{path}: minItems violation")
+        max_items = schema.get("maxItems")
+        if isinstance(max_items, int) and len(value) > max_items:
+            raise AssertionError(f"{path}: maxItems violation")
         item_schema = schema.get("items")
         if item_schema:
             for idx, item in enumerate(value):
                 _validate_schema(item_schema, item, f"{path}[{idx}]")
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        if isinstance(minimum, (int, float)) and float(value) < float(minimum):
+            raise AssertionError(f"{path}: minimum violation")
+        maximum = schema.get("maximum")
+        if isinstance(maximum, (int, float)) and float(value) > float(maximum):
+            raise AssertionError(f"{path}: maximum violation")
 
 
 class TestV1EventSchemaValidation(unittest.TestCase):
@@ -73,6 +87,8 @@ class TestV1EventSchemaValidation(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.signal_schema = json.loads((SCHEMA_DIR / "signal.created.schema.json").read_text(encoding="utf-8"))
         cls.metric_schema = json.loads((SCHEMA_DIR / "metric.updated.schema.json").read_text(encoding="utf-8"))
+        cls.signal_v2_schema = json.loads((SCHEMA_DIR / "signal.created.v2.schema.json").read_text(encoding="utf-8"))
+        cls.market_status_schema = json.loads((SCHEMA_DIR / "market.status.v1.schema.json").read_text(encoding="utf-8"))
 
     def test_signal_created_validates_against_schema(self) -> None:
         svc = GiftAnalyticsService()
@@ -116,7 +132,67 @@ class TestV1EventSchemaValidation(unittest.TestCase):
         )
         _validate_schema(self.metric_schema, event)
 
+    def test_signal_created_v2_validates_against_schema(self) -> None:
+        svc = GiftAnalyticsService()
+        event = svc.build_signal_created_event_v2(
+            {
+                "signal_id": "11111111-1111-1111-1111-111111111111",
+                "ts": "2026-02-26T00:00:00Z",
+                "action": "BUY",
+                "market_regime": "MEAN_REVERT",
+                "edgeRank_profile": "MEAN_REVERT",
+                "edgeRank_raw": 0.64,
+                "edgeRank100": 64.0,
+                "score100": 72.0,
+                "conf_pct": 58.0,
+                "expected_profit_pct": 11.2,
+                "variant_id": "c|m|b|p",
+                "collection_id": "c",
+                "collection": "Collection",
+                "model": "Model",
+                "background": "Background",
+                "pattern": "Pattern",
+                "price_ton": 8.0,
+                "floor_ton": 8.2,
+                "fair_ton": 9.3,
+                "undervalue_pct": 12.5,
+                "target_ton": 9.3,
+                "stop_ton": 7.7,
+                "liquidity_score": 42.0,
+                "absorption_30m": 1.05,
+                "listing_pressure": 2.2,
+                "volume_velocity": 1.3,
+                "depth_5pct_count": 7,
+                "depth_5pct_ton": 62.0,
+                "reasons": ["r1", "r2"],
+                "risk_flags": ["x1"],
+            },
+            trace_id="trace-v2",
+        )
+        _validate_schema(self.signal_v2_schema, event)
+
+    def test_market_status_v1_validates_against_schema(self) -> None:
+        svc = GiftAnalyticsService()
+        status_payload = {
+            "ts": "2026-02-26T00:00:00Z",
+            "window": "30m",
+            "window_sec": 1800,
+            "market_regime": "MEAN_REVERT",
+            "market_regime_badge": "🟡",
+            "data_health": "OK",
+            "data_conf_pct": 88,
+            "trend": "флет",
+            "velocity_score": 45,
+            "vol_level": "MED",
+            "flow": {"volume_velocity": 1.0, "absorption": 1.0, "listing_pressure": 2.0},
+            "liquidity": {"liquidity_score": 40, "depth_5pct": {"lots": 10, "ton": 55.0}},
+            "supply": {"active_lots": 1000, "delta_lots_1h": 50, "listing_velocity_10m": 12, "listing_velocity_norm": 0.4},
+            "signals_1h": {"buy": 1, "sell": 2, "watch": 3, "skip": 4},
+            "provider_health": {"p95_ms": 340, "err_pct": 0.1},
+        }
+        event = svc.build_market_status_event_v1(status=status_payload, trace_id="trace-market")
+        _validate_schema(self.market_status_schema, event)
+
 
 if __name__ == "__main__":
     unittest.main()
-

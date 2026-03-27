@@ -1,0 +1,1005 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-03-03",
+  "ui_language": "ru",
+  "layout_system": {
+    "grid": {
+      "columns": 12,
+      "rowHeight": 88,
+      "gap": 12,
+      "breakpoints": {
+        "xl": {
+          "minWidth": 1280,
+          "columns": 12
+        },
+        "lg": {
+          "minWidth": 1024,
+          "columns": 12
+        },
+        "md": {
+          "minWidth": 768,
+          "columns": 8
+        },
+        "sm": {
+          "minWidth": 480,
+          "columns": 4
+        }
+      }
+    },
+    "card": {
+      "radius": 18,
+      "shadow": "soft",
+      "padding": 16,
+      "headerHeight": 40
+    }
+  },
+  "realtime": {
+    "transport": "SSE",
+    "endpoints": {
+      "signals_stream": "/v1/stream/signals",
+      "metrics_stream": "/v1/stream/metrics",
+      "market_stream": "/v1/stream/market"
+    },
+    "events": {
+      "signal_created": "signal.created",
+      "metrics_updated": "metrics.updated",
+      "market_status": "market.status"
+    },
+    "dedupe": {
+      "signal": {
+        "key": "signal_id",
+        "ttl_seconds": 600
+      }
+    }
+  },
+  "data_sources": {
+    "http": {
+      "market_status": {
+        "method": "GET",
+        "url": "/v1/market/status?window=30m"
+      },
+      "market_overview": {
+        "method": "GET",
+        "url": "/v1/market/overview?window=30m"
+      },
+      "variants_list": {
+        "method": "GET",
+        "url": "/v1/variants?sort=edgeRank&dir=desc&limit=100"
+      },
+      "variant_details": {
+        "method": "GET",
+        "url": "/v1/variants/{variant_id}?window=30m"
+      },
+      "signals_feed": {
+        "method": "GET",
+        "url": "/v1/signals?limit=200&sort=ts&dir=desc"
+      }
+    }
+  },
+  "pages": {
+    "overview": {
+      "route": "/#overview",
+      "title": "Обзор рынка",
+      "description": "Сводка по рынку подарков: режим, поток, ликвидность, предложение и лучшие возможности.",
+      "blocks": [
+        {
+          "id": "ov_market_regime",
+          "type": "KPI_REGIME",
+          "title": "Режим рынка",
+          "subtitle": "Спрос/предложение и тактика",
+          "grid": {
+            "xl": {
+              "x": 0,
+              "y": 0,
+              "w": 6,
+              "h": 2
+            },
+            "lg": {
+              "x": 0,
+              "y": 0,
+              "w": 6,
+              "h": 2
+            },
+            "md": {
+              "x": 0,
+              "y": 0,
+              "w": 8,
+              "h": 2
+            },
+            "sm": {
+              "x": 0,
+              "y": 0,
+              "w": 4,
+              "h": 2
+            }
+          },
+          "metrics": [
+            {
+              "id": "market_regime",
+              "ui": "Режим",
+              "format": "badge"
+            },
+            {
+              "id": "velocity_score",
+              "ui": "Скорость рынка",
+              "format": "0/100"
+            },
+            {
+              "id": "vol_level",
+              "ui": "Волатильность",
+              "format": "label"
+            },
+            {
+              "id": "data_health",
+              "ui": "Качество данных",
+              "format": "badge"
+            },
+            {
+              "id": "data_conf_pct",
+              "ui": "Доверие",
+              "format": "0%"
+            }
+          ],
+          "sources": {
+            "http": [
+              "market_status"
+            ],
+            "realtime": [
+              "market_status"
+            ]
+          },
+          "actions": [
+            {
+              "type": "openDrawer",
+              "target": "market_status_details"
+            }
+          ]
+        },
+        {
+          "id": "ov_flow",
+          "type": "KPI_FLOW",
+          "title": "Поток рынка",
+          "subtitle": "Скорости и давление",
+          "grid": {
+            "xl": {
+              "x": 6,
+              "y": 0,
+              "w": 6,
+              "h": 2
+            },
+            "lg": {
+              "x": 6,
+              "y": 0,
+              "w": 6,
+              "h": 2
+            },
+            "md": {
+              "x": 0,
+              "y": 2,
+              "w": 8,
+              "h": 2
+            },
+            "sm": {
+              "x": 0,
+              "y": 2,
+              "w": 4,
+              "h": 2
+            }
+          },
+          "metrics": [
+            {
+              "id": "volume_velocity",
+              "ui": "VolumeVel",
+              "format": "0.00x"
+            },
+            {
+              "id": "absorption",
+              "ui": "Absorption",
+              "format": "0.00"
+            },
+            {
+              "id": "listing_pressure",
+              "ui": "Pressure",
+              "format": "0.00"
+            }
+          ],
+          "thresholds": {
+            "volume_velocity": {
+              "good": 1.1,
+              "warn": 0.9
+            },
+            "absorption": {
+              "good": 1.1,
+              "warn": 0.8
+            },
+            "listing_pressure": {
+              "good_max": 3.0,
+              "warn_max": 4.0
+            }
+          },
+          "sources": {
+            "http": [
+              "market_status"
+            ],
+            "realtime": [
+              "market_status"
+            ]
+          }
+        },
+        {
+          "id": "ov_liquidity_depth",
+          "type": "KPI_LIQ_DEPTH",
+          "title": "Ликвидность и глубина",
+          "subtitle": "Можно ли быстро выйти",
+          "grid": {
+            "xl": {
+              "x": 0,
+              "y": 2,
+              "w": 6,
+              "h": 2
+            },
+            "lg": {
+              "x": 0,
+              "y": 2,
+              "w": 6,
+              "h": 2
+            },
+            "md": {
+              "x": 0,
+              "y": 4,
+              "w": 8,
+              "h": 2
+            },
+            "sm": {
+              "x": 0,
+              "y": 4,
+              "w": 4,
+              "h": 2
+            }
+          },
+          "metrics": [
+            {
+              "id": "liquidity_score",
+              "ui": "Liquidity",
+              "format": "0/100"
+            },
+            {
+              "id": "depth_5pct.lots",
+              "ui": "Depth≤5% (лоты)",
+              "format": "0"
+            },
+            {
+              "id": "depth_5pct.ton",
+              "ui": "Depth≤5% (TON)",
+              "format": "0.00"
+            }
+          ],
+          "thresholds": {
+            "liquidity_score": {
+              "good": 45,
+              "warn": 35
+            },
+            "depth_5pct.lots": {
+              "good": 10,
+              "warn": 5
+            }
+          },
+          "sources": {
+            "http": [
+              "market_status"
+            ],
+            "realtime": [
+              "market_status"
+            ]
+          }
+        },
+        {
+          "id": "ov_supply",
+          "type": "KPI_SUPPLY",
+          "title": "Предложение",
+          "subtitle": "Лоты и скорость появления",
+          "grid": {
+            "xl": {
+              "x": 6,
+              "y": 2,
+              "w": 6,
+              "h": 2
+            },
+            "lg": {
+              "x": 6,
+              "y": 2,
+              "w": 6,
+              "h": 2
+            },
+            "md": {
+              "x": 0,
+              "y": 6,
+              "w": 8,
+              "h": 2
+            },
+            "sm": {
+              "x": 0,
+              "y": 6,
+              "w": 4,
+              "h": 2
+            }
+          },
+          "metrics": [
+            {
+              "id": "supply.active_lots",
+              "ui": "Всего в продаже",
+              "format": "0"
+            },
+            {
+              "id": "supply.delta_lots_1h",
+              "ui": "Δ лотов 1ч",
+              "format": "+0"
+            },
+            {
+              "id": "supply.listing_velocity_10m",
+              "ui": "Новые листинги 10м",
+              "format": "0"
+            },
+            {
+              "id": "supply.listing_velocity_norm",
+              "ui": "Активность листингов",
+              "format": "0.00"
+            }
+          ],
+          "thresholds": {
+            "supply.listing_velocity_norm": {
+              "good": 0.8,
+              "warn": 0.6
+            }
+          },
+          "sources": {
+            "http": [
+              "market_status"
+            ],
+            "realtime": [
+              "market_status"
+            ]
+          }
+        },
+        {
+          "id": "ov_top_signals",
+          "type": "TABLE_SIGNALS_TOP",
+          "title": "Лучшие возможности (PRO)",
+          "subtitle": "Сортировка по EdgeRank",
+          "grid": {
+            "xl": {
+              "x": 0,
+              "y": 4,
+              "w": 12,
+              "h": 4
+            },
+            "lg": {
+              "x": 0,
+              "y": 4,
+              "w": 12,
+              "h": 4
+            },
+            "md": {
+              "x": 0,
+              "y": 8,
+              "w": 8,
+              "h": 5
+            },
+            "sm": {
+              "x": 0,
+              "y": 8,
+              "w": 4,
+              "h": 6
+            }
+          },
+          "table": {
+            "source": "signals_feed",
+            "defaultSort": [
+              {
+                "field": "edgeRank100",
+                "dir": "desc"
+              },
+              {
+                "field": "conf_pct",
+                "dir": "desc"
+              }
+            ],
+            "columns": [
+              {
+                "id": "action",
+                "ui": "Тип",
+                "type": "badge"
+              },
+              {
+                "id": "market_regime_badge",
+                "ui": "Режим",
+                "type": "icon"
+              },
+              {
+                "id": "edgeRank100",
+                "ui": "EdgeRank",
+                "type": "number",
+                "heat": true
+              },
+              {
+                "id": "score100",
+                "ui": "Score",
+                "type": "number"
+              },
+              {
+                "id": "conf_pct",
+                "ui": "Conf%",
+                "type": "number"
+              },
+              {
+                "id": "expected_profit_pct",
+                "ui": "Profit%",
+                "type": "number"
+              },
+              {
+                "id": "undervalue_pct",
+                "ui": "Δ%",
+                "type": "number"
+              },
+              {
+                "id": "liquidity_score",
+                "ui": "Liq",
+                "type": "number"
+              },
+              {
+                "id": "variant_label",
+                "ui": "Подарок",
+                "type": "text"
+              },
+              {
+                "id": "ts",
+                "ui": "Время",
+                "type": "datetime"
+              }
+            ],
+            "filtersPreset": "pro_alerts"
+          },
+          "filters": {
+            "presets": {
+              "pro_alerts": {
+                "expr": "edgeRank100>=55 && conf_pct>=35 && expected_profit_pct>=8",
+                "ui": "PRO-алерты"
+              }
+            }
+          },
+          "sources": {
+            "http": [
+              "signals_feed"
+            ],
+            "realtime": [
+              "signal_created"
+            ]
+          },
+          "actions": [
+            {
+              "type": "openVariant",
+              "field": "variant_id"
+            }
+          ]
+        },
+        {
+          "id": "ov_market_status_feed",
+          "type": "TEXT_TIMELINE",
+          "title": "Лента статуса рынка",
+          "subtitle": "История режимов и деградаций данных",
+          "grid": {
+            "xl": {
+              "x": 0,
+              "y": 8,
+              "w": 12,
+              "h": 3
+            },
+            "lg": {
+              "x": 0,
+              "y": 8,
+              "w": 12,
+              "h": 3
+            },
+            "md": {
+              "x": 0,
+              "y": 13,
+              "w": 8,
+              "h": 3
+            },
+            "sm": {
+              "x": 0,
+              "y": 14,
+              "w": 4,
+              "h": 4
+            }
+          },
+          "timeline": {
+            "event": "market.status",
+            "maxItems": 50,
+            "render": {
+              "title": "{market_regime_badge} {market_regime} • {trend} • Velocity {velocity_score}/100",
+              "subtitle": "VV {flow.volume_velocity}x • AR {flow.absorption} • LP {flow.listing_pressure} • Liq {liquidity.liquidity_score}/100 • Data {data_health}"
+            }
+          },
+          "sources": {
+            "realtime": [
+              "market_status"
+            ]
+          }
+        }
+      ]
+    },
+    "variant": {
+      "route": "/variant/{variant_id}",
+      "title": "Подарок",
+      "description": "Детальная аналитика по выбранному подарку (variant).",
+      "blocks": [
+        {
+          "id": "v_header",
+          "type": "HEADER_VARIANT",
+          "title": "{collection} • {model}",
+          "subtitle": "{background} • {pattern}",
+          "grid": {
+            "xl": {
+              "x": 0,
+              "y": 0,
+              "w": 12,
+              "h": 1
+            },
+            "lg": {
+              "x": 0,
+              "y": 0,
+              "w": 12,
+              "h": 1
+            },
+            "md": {
+              "x": 0,
+              "y": 0,
+              "w": 8,
+              "h": 1
+            },
+            "sm": {
+              "x": 0,
+              "y": 0,
+              "w": 4,
+              "h": 1
+            }
+          },
+          "sources": {
+            "http": [
+              "variant_details"
+            ]
+          }
+        },
+        {
+          "id": "v_trade_decision",
+          "type": "KPI_TRADE_DECISION",
+          "title": "Решение",
+          "subtitle": "Action + EdgeRank + план",
+          "grid": {
+            "xl": {
+              "x": 0,
+              "y": 1,
+              "w": 6,
+              "h": 2
+            },
+            "lg": {
+              "x": 0,
+              "y": 1,
+              "w": 6,
+              "h": 2
+            },
+            "md": {
+              "x": 0,
+              "y": 1,
+              "w": 8,
+              "h": 2
+            },
+            "sm": {
+              "x": 0,
+              "y": 1,
+              "w": 4,
+              "h": 2
+            }
+          },
+          "metrics": [
+            {
+              "id": "action",
+              "ui": "Сигнал",
+              "format": "badge"
+            },
+            {
+              "id": "edgeRank100",
+              "ui": "EdgeRank",
+              "format": "0/100"
+            },
+            {
+              "id": "score100",
+              "ui": "Score",
+              "format": "0/100"
+            },
+            {
+              "id": "conf_pct",
+              "ui": "Conf",
+              "format": "0%"
+            },
+            {
+              "id": "expected_profit_pct",
+              "ui": "Profit",
+              "format": "0.0%"
+            },
+            {
+              "id": "undervalue_pct",
+              "ui": "Δ",
+              "format": "0.0%"
+            },
+            {
+              "id": "target_ton",
+              "ui": "Target",
+              "format": "0.00 TON"
+            },
+            {
+              "id": "stop_ton",
+              "ui": "Stop",
+              "format": "0.00 TON"
+            }
+          ],
+          "sources": {
+            "http": [
+              "variant_details"
+            ],
+            "realtime": [
+              "signal_created"
+            ]
+          },
+          "actions": [
+            {
+              "type": "openDrawer",
+              "target": "signal_details"
+            }
+          ]
+        },
+        {
+          "id": "v_price_card",
+          "type": "KPI_PRICE",
+          "title": "Цена и справедливая цена",
+          "subtitle": "Floor, Fair и недооценка",
+          "grid": {
+            "xl": {
+              "x": 6,
+              "y": 1,
+              "w": 6,
+              "h": 2
+            },
+            "lg": {
+              "x": 6,
+              "y": 1,
+              "w": 6,
+              "h": 2
+            },
+            "md": {
+              "x": 0,
+              "y": 3,
+              "w": 8,
+              "h": 2
+            },
+            "sm": {
+              "x": 0,
+              "y": 3,
+              "w": 4,
+              "h": 2
+            }
+          },
+          "metrics": [
+            {
+              "id": "price_ton",
+              "ui": "Цена",
+              "format": "0.00 TON"
+            },
+            {
+              "id": "floor_ton",
+              "ui": "Floor",
+              "format": "0.00 TON"
+            },
+            {
+              "id": "fair_ton",
+              "ui": "Fair",
+              "format": "0.00 TON"
+            },
+            {
+              "id": "undervalue_pct",
+              "ui": "Δ",
+              "format": "0.0%"
+            }
+          ],
+          "charts": [
+            {
+              "id": "floor_history",
+              "ui": "История floor",
+              "type": "line",
+              "source": "variant_details",
+              "path": "series.floor_1m"
+            }
+          ],
+          "sources": {
+            "http": [
+              "variant_details"
+            ],
+            "realtime": [
+              "metrics_updated"
+            ]
+          }
+        },
+        {
+          "id": "v_flow_micro",
+          "type": "KPI_FLOW_MICRO",
+          "title": "Поток и микроструктура",
+          "subtitle": "VV, AR, LP, Depth",
+          "grid": {
+            "xl": {
+              "x": 0,
+              "y": 3,
+              "w": 6,
+              "h": 2
+            },
+            "lg": {
+              "x": 0,
+              "y": 3,
+              "w": 6,
+              "h": 2
+            },
+            "md": {
+              "x": 0,
+              "y": 5,
+              "w": 8,
+              "h": 2
+            },
+            "sm": {
+              "x": 0,
+              "y": 5,
+              "w": 4,
+              "h": 2
+            }
+          },
+          "metrics": [
+            {
+              "id": "volume_velocity",
+              "ui": "VV",
+              "format": "0.00x"
+            },
+            {
+              "id": "absorption_30m",
+              "ui": "AR(30м)",
+              "format": "0.00"
+            },
+            {
+              "id": "listing_pressure",
+              "ui": "LP",
+              "format": "0.00"
+            },
+            {
+              "id": "liquidity_score",
+              "ui": "Liquidity",
+              "format": "0/100"
+            },
+            {
+              "id": "depth_5pct_count",
+              "ui": "Depth≤5%",
+              "format": "0"
+            },
+            {
+              "id": "depth_5pct_ton",
+              "ui": "Depth≤5% TON",
+              "format": "0.00"
+            }
+          ],
+          "sources": {
+            "http": [
+              "variant_details"
+            ],
+            "realtime": [
+              "metrics_updated"
+            ]
+          }
+        },
+        {
+          "id": "v_liquidity_heatmap",
+          "type": "HEATMAP_LIQUIDITY",
+          "title": "Тепловая карта ликвидности",
+          "subtitle": "Распределение лотов по цене относительно floor",
+          "grid": {
+            "xl": {
+              "x": 6,
+              "y": 3,
+              "w": 6,
+              "h": 3
+            },
+            "lg": {
+              "x": 6,
+              "y": 3,
+              "w": 6,
+              "h": 3
+            },
+            "md": {
+              "x": 0,
+              "y": 7,
+              "w": 8,
+              "h": 3
+            },
+            "sm": {
+              "x": 0,
+              "y": 7,
+              "w": 4,
+              "h": 3
+            }
+          },
+          "chart": {
+            "type": "heatmap",
+            "source": "variant_details",
+            "path": "heatmap.liquidity_bins"
+          },
+          "sources": {
+            "http": [
+              "variant_details"
+            ],
+            "realtime": [
+              "metrics_updated"
+            ]
+          }
+        },
+        {
+          "id": "v_listings_feed",
+          "type": "TABLE_LISTINGS",
+          "title": "Новые листинги",
+          "subtitle": "Realtime лента",
+          "grid": {
+            "xl": {
+              "x": 0,
+              "y": 5,
+              "w": 12,
+              "h": 4
+            },
+            "lg": {
+              "x": 0,
+              "y": 6,
+              "w": 12,
+              "h": 4
+            },
+            "md": {
+              "x": 0,
+              "y": 10,
+              "w": 8,
+              "h": 5
+            },
+            "sm": {
+              "x": 0,
+              "y": 10,
+              "w": 4,
+              "h": 6
+            }
+          },
+          "table": {
+            "source": "variant_details",
+            "path": "feeds.new_listings",
+            "columns": [
+              {
+                "id": "ts",
+                "ui": "Время",
+                "type": "datetime"
+              },
+              {
+                "id": "price_ton",
+                "ui": "Цена",
+                "type": "number",
+                "fmt": "0.00"
+              },
+              {
+                "id": "seller",
+                "ui": "Продавец",
+                "type": "text"
+              },
+              {
+                "id": "attrs",
+                "ui": "Атрибуты",
+                "type": "text"
+              }
+            ]
+          },
+          "sources": {
+            "http": [
+              "variant_details"
+            ],
+            "realtime": [
+              "metrics_updated"
+            ]
+          }
+        },
+        {
+          "id": "v_signals_history",
+          "type": "TABLE_SIGNALS",
+          "title": "История сигналов",
+          "subtitle": "По этому варианту",
+          "grid": {
+            "xl": {
+              "x": 0,
+              "y": 9,
+              "w": 12,
+              "h": 3
+            },
+            "lg": {
+              "x": 0,
+              "y": 10,
+              "w": 12,
+              "h": 3
+            },
+            "md": {
+              "x": 0,
+              "y": 15,
+              "w": 8,
+              "h": 3
+            },
+            "sm": {
+              "x": 0,
+              "y": 16,
+              "w": 4,
+              "h": 4
+            }
+          },
+          "table": {
+            "source": "signals_feed",
+            "filters": {
+              "variant_id": "{variant_id}"
+            },
+            "defaultSort": [
+              {
+                "field": "ts",
+                "dir": "desc"
+              }
+            ],
+            "columns": [
+              {
+                "id": "action",
+                "ui": "Тип",
+                "type": "badge"
+              },
+              {
+                "id": "edgeRank100",
+                "ui": "EdgeRank",
+                "type": "number",
+                "heat": true
+              },
+              {
+                "id": "score100",
+                "ui": "Score",
+                "type": "number"
+              },
+              {
+                "id": "conf_pct",
+                "ui": "Conf%",
+                "type": "number"
+              },
+              {
+                "id": "expected_profit_pct",
+                "ui": "Profit%",
+                "type": "number"
+              },
+              {
+                "id": "ts",
+                "ui": "Время",
+                "type": "datetime"
+              }
+            ]
+          },
+          "sources": {
+            "http": [
+              "signals_feed"
+            ],
+            "realtime": [
+              "signal_created"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

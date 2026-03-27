@@ -1,7 +1,8 @@
 #!/bin/zsh
 set -u
 
-cd '/Users/nexapai/Downloads/подарки' || exit 1
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT" || exit 1
 
 # Optional local overrides (API keys, feature toggles).
 if [ -f ".env.local" ]; then

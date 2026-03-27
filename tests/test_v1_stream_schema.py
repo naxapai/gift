@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from core import GiftAnalyticsService
 
@@ -134,6 +135,56 @@ class TestV1StreamSchema(unittest.TestCase):
         events = svc.stream_events_v1(types={"metric.updated"})
         self.assertTrue(len(events) > 0)
         self.assertTrue(all(str(e.get("type")) == "metric.updated" for e in events))
+
+    def test_stream_events_rejects_unsupported_type(self) -> None:
+        svc = GiftAnalyticsService()
+        with self.assertRaises(ValueError):
+            svc.stream_events_v1(types={"metric.updated", "nope.event"})
+
+    def test_stream_events_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        overview_calls = 0
+        market_calls = 0
+
+        def _overview(mode=None):
+            nonlocal overview_calls
+            overview_calls += 1
+            return {
+                "market_index": 50.0,
+                "market_state": "флет",
+                "stale": False,
+                "top_signals": [],
+                "provider_health": [{"provider": "telegram_api", "degraded": False, "err_pct": 0.0, "ts": "2026-02-26T00:00:00Z"}],
+                "key_metrics": {"avg_liquidity24h": 0.4},
+            }
+
+        def _market():
+            nonlocal market_calls
+            market_calls += 1
+            return {"floor_ton_median": 10.0, "floor_ton_min": 9.0, "active_listings": 100}
+
+        svc.overview_v1 = _overview  # type: ignore[assignment]
+        svc.market_overview = _market  # type: ignore[assignment]
+        svc.collections_v1 = lambda limit=1: {"items": []}  # type: ignore[assignment]
+        svc.variants_v1 = lambda limit=1, mode=None: {"items": []}  # type: ignore[assignment]
+        svc.listings_events_v1 = lambda limit=1, include_relisted=True: {"items": []}  # type: ignore[assignment]
+        svc.build_market_status_event_v1 = lambda **kwargs: {  # type: ignore[assignment]
+            "type": "market.status",
+            "ts": "2026-02-26T00:00:00Z",
+            "key": "MARKET",
+            "version": 1,
+            "trace_id": "trace-market",
+            "payload": {"window": "30m"},
+        }
+
+        first = svc.stream_events_v1(types={"metric.updated", "market.status", "listing.event"}, mode="tz")
+        first_overview_calls = overview_calls
+        first_market_calls = market_calls
+        second = svc.stream_events_v1(types={"metric.updated", "market.status", "listing.event"}, mode="tz")
+        self.assertGreaterEqual(first_overview_calls, 1)
+        self.assertEqual(overview_calls, first_overview_calls)
+        self.assertEqual(market_calls, first_market_calls)
+        self.assertEqual(first, second)
 
     def test_stream_events_filtering_by_variant_id(self) -> None:
         svc = GiftAnalyticsService()

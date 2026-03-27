@@ -1,16 +1,49 @@
 import unittest
 from datetime import timedelta, timezone, datetime
+from unittest.mock import patch
 
 from core import GiftAnalyticsService, METRIC_ALLOWED_SCOPES
 
 
 class TestV1MetricsContract(unittest.TestCase):
+    def test_market_overview_view_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        svc.variants = {
+            "cache|m|b|p": {
+                "variant_id": "cache|m|b|p",
+                "base_id": "cache",
+                "metrics": {
+                    "floor_ton": 5.0,
+                    "median_ton": 6.0,
+                    "trades_count_24h": 3,
+                    "active_listings": 2,
+                },
+                "traits": {"model": {"id": "m"}},
+            }
+        }
+        with patch.object(svc, "_market_floor_median_by_collection", wraps=svc._market_floor_median_by_collection) as median_fn:
+            first = svc.market_overview()
+            first_call_count = median_fn.call_count
+            second = svc.market_overview()
+        self.assertGreaterEqual(first_call_count, 1)
+        self.assertEqual(median_fn.call_count, first_call_count)
+        self.assertEqual(first, second)
+
     def test_metrics_definitions_contract(self) -> None:
         svc = GiftAnalyticsService()
         defs = svc.metrics_definitions_v1()
         self.assertTrue(isinstance(defs, list))
         self.assertTrue(any(d.get("metric") == "MARKET_INDEX" for d in defs))
         self.assertTrue(any(d.get("metric") == "EDGE_SCORE" for d in defs))
+
+    def test_metrics_definitions_view_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.dict("core.METRIC_ALLOWED_SCOPES", dict(METRIC_ALLOWED_SCOPES), clear=True):
+            first = svc.metrics_definitions_v1()
+            with patch.dict("core.METRIC_ALLOWED_SCOPES", {}, clear=True):
+                second = svc.metrics_definitions_v1()
+        self.assertEqual(first, second)
+        self.assertTrue(any(d.get("metric") == "MARKET_INDEX" for d in second))
 
     def test_metrics_v1_rejects_unknown_metric(self) -> None:
         svc = GiftAnalyticsService()
@@ -82,6 +115,14 @@ class TestV1MetricsContract(unittest.TestCase):
         self.assertEqual(payload["scope"], "VARIANT")
         self.assertEqual(payload["unit"], "TON")
         self.assertTrue(len(payload.get("points", [])) >= 1)
+
+    def test_metrics_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(svc, "overview_v1", wraps=svc.overview_v1) as overview:
+            first = svc.metrics_v1(metric="MARKET_INDEX", scope="MARKET", mode="tz")
+            second = svc.metrics_v1(metric="MARKET_INDEX", scope="MARKET", mode="tz")
+        self.assertEqual(overview.call_count, 1)
+        self.assertEqual(first, second)
 
     def test_metrics_v1_variant_trend_score_is_not_stub_zero(self) -> None:
         svc = GiftAnalyticsService()
@@ -582,12 +623,16 @@ class TestV1MetricsContract(unittest.TestCase):
                 "listing_id": listing_id,
                 "first_seen_at": (now - timedelta(minutes=3)).isoformat().replace("+00:00", "Z"),
                 "last_seen_at": now.isoformat().replace("+00:00", "Z"),
-                "last_relisted_at": "",
-                "relist_count": 0,
+                "last_relisted_at": now.isoformat().replace("+00:00", "Z"),
+                "relist_count": 1,
                 "last_price_ton": 9.2,
             }
         }
         svc.bases = {"colx": type("B", (), {"name": "Col X"})()}
+        svc.listing_primary_source = "fragment"
+        svc.listing_allow_fragment_fallback = True
+        svc.listing_strict_primary = False
+        svc._invalidate_view_cache()  # noqa: SLF001
         feed = svc.metrics_v1(metric="LISTING_FEED", scope="COLLECTION", collection_id="COLX")
         self.assertEqual(feed["scope"], "COLLECTION")
         self.assertEqual(feed["collection_id"], "COLX")

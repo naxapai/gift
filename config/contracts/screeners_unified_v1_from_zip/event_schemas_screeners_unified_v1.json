@@ -1,0 +1,30 @@
+{
+  "version": "1.0",
+  "envelope": {
+    "type": "object",
+    "required": [
+      "event",
+      "ts",
+      "payload"
+    ],
+    "properties": {
+      "event": {
+        "type": "string"
+      },
+      "ts": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "payload": {
+        "type": "object"
+      }
+    },
+    "additionalProperties": false
+  },
+  "events": {
+    "screener.row": {
+      "description": "Новая/обновлённая строка скринера (PRO).",
+      "payload_schema_ref": "#/components/schemas/ScreenerRowPro"
+    }
+  }
+}

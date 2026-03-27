@@ -1,4 +1,5 @@
 import unittest
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -25,6 +26,31 @@ class TestListingsV1(unittest.TestCase):
             self.assertIn("first_seen_at", row)
             self.assertIn("last_seen_at", row)
             self.assertIn("is_new", row)
+
+    def test_listings_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(svc, "_listing_source_rows_v1", wraps=svc._listing_source_rows_v1) as source_rows:
+            first = svc.listings_v1(limit=10, only_new=False, new_window_sec=3600)
+            first_call_count = source_rows.call_count
+            second = svc.listings_v1(limit=10, only_new=False, new_window_sec=3600)
+        self.assertGreaterEqual(first_call_count, 1)
+        self.assertEqual(source_rows.call_count, first_call_count)
+        self.assertEqual(first, second)
+
+    def test_listing_source_rows_v1_runtime_cache_reuses_payload(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"LISTING_PRIMARY_SOURCE": "fragment", "LISTING_ALLOW_FRAGMENT_FALLBACK": "true"},
+            clear=False,
+        ):
+            svc = GiftAnalyticsService()
+        with patch.object(svc, "_build_runtime_listing_rows", wraps=svc._build_runtime_listing_rows) as build_rows:
+            first = svc._listing_source_rows_v1(window_sec=3600, allow_remote=False, sync_tracker=False)  # noqa: SLF001
+            first_call_count = build_rows.call_count
+            second = svc._listing_source_rows_v1(window_sec=3600, allow_remote=False, sync_tracker=False)  # noqa: SLF001
+        self.assertGreaterEqual(first_call_count, 1)
+        self.assertEqual(build_rows.call_count, first_call_count)
+        self.assertEqual(first, second)
 
     def test_listings_summary_v1_contract(self) -> None:
         svc = GiftAnalyticsService()
@@ -96,6 +122,13 @@ class TestListingsV1(unittest.TestCase):
         self.assertIn("rows_count", payload)
         self.assertIn("degraded", payload)
 
+    def test_listing_defaults_to_mtproto_api_strict(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            svc = GiftAnalyticsService()
+        self.assertEqual(str(svc.listing_primary_source or ""), "mtproto_api")
+        self.assertTrue(bool(svc.listing_strict_primary))
+        self.assertFalse(bool(svc.listing_allow_fragment_fallback))
+
     def test_listing_source_status_marks_empty_mtproto_as_degraded(self) -> None:
         svc = GiftAnalyticsService()
         with patch.object(
@@ -133,14 +166,99 @@ class TestListingsV1(unittest.TestCase):
         self.assertEqual(str(status.get("error") or ""), "mtproto_cache_cold_warmup_started")
         self.assertTrue(bool(status.get("warmup_started")))
 
-    def test_listings_v1_fallback_when_mtproto_unavailable(self) -> None:
-        with patch.dict("os.environ", {"LISTING_PRIMARY_SOURCE": "mtproto", "LISTING_MT_API_URL": "http://127.0.0.1:9/never"}, clear=False):
+    def test_listing_source_status_cached_mode_starts_recovery_warmup_on_empty_error_cache(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "LISTING_PRIMARY_SOURCE": "mtproto",
+                "LISTING_MT_API_URL": "https://gift-listing-mtproto-bridge.onrender.com/api/listings/new",
+            },
+            clear=False,
+        ):
+            svc = GiftAnalyticsService()
+        svc._listing_mt_runtime_cache = {
+            "fetched_mono": time.monotonic(),
+            "rows": [],
+            "source": "mtproto_api",
+            "error": "mtproto_http_503",
+            "updated_at": "2026-03-18T00:00:00Z",
+            "rows_count": 0,
+            "url_used": "https://gift-listing-mtproto-bridge.onrender.com/api/listings/new",
+        }
+        with patch.object(svc, "_start_listing_mt_warmup_async", return_value=True) as warmup_mock:
+            status = svc.listing_source_status_v1(allow_remote=False)
+        warmup_mock.assert_called_once()
+        self.assertEqual(str(status.get("source") or ""), "mtproto_warmup")
+        self.assertEqual(str(status.get("error") or ""), "mtproto_http_503")
+        self.assertTrue(bool(status.get("warmup_started")))
+
+    def test_listing_source_status_cached_mode_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        svc._listing_mt_runtime_cache = {
+            "fetched_mono": time.monotonic(),
+            "rows": [{"listing_key": "a:1"}],
+            "source": "mtproto_api",
+            "error": "",
+            "updated_at": "2026-03-19T00:00:00Z",
+            "rows_count": 1,
+            "url_used": "https://example.test/api/listings/new",
+        }
+        with patch.object(svc, "_start_listing_mt_warmup_async", wraps=svc._start_listing_mt_warmup_async) as warmup_mock:
+            first = svc.listing_source_status_v1(allow_remote=False)
+            second = svc.listing_source_status_v1(allow_remote=False)
+        self.assertEqual(first, second)
+        self.assertEqual(warmup_mock.call_count, 0)
+
+    def test_listing_runtime_errors_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        svc.listing_runtime_errors = [
+            {"block": "listings_new", "stage": "row_processing", "error": "boom", "error_class": "RuntimeError", "ts": "2026-03-19T00:00:00Z", "row": {}}
+        ]
+        svc.state["listing_runtime_error_count"] = 1
+        svc.state["last_listing_runtime_error"] = svc.listing_runtime_errors[-1]
+        with patch.object(svc, "_rt_cache_get", wraps=svc._rt_cache_get) as cache_get:
+            first = svc.listing_runtime_errors_v1(limit=5, block="listings_new")
+            second = svc.listing_runtime_errors_v1(limit=5, block="listings_new")
+        self.assertGreaterEqual(cache_get.call_count, 2)
+        self.assertEqual(first, second)
+
+    def test_listing_removed_events_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        svc.listing_tracker_state = {
+            "foo:1": {
+                "listing_key": "foo:1",
+                "variant_id": "foo|m|b|p",
+                "active": False,
+                "last_absent_at": "2026-03-19T00:00:00Z",
+                "last_price_ton": 1.5,
+                "base_id": "foo",
+                "listing_id": "1",
+            }
+        }
+        with patch.object(svc, "_rt_cache_get", wraps=svc._rt_cache_get) as cache_get:
+            first = svc._listing_removed_events_v1()  # noqa: SLF001
+            second = svc._listing_removed_events_v1()  # noqa: SLF001
+        self.assertGreaterEqual(cache_get.call_count, 2)
+        self.assertEqual(first, second)
+
+    def test_listings_v1_no_fragment_fallback_when_mtproto_unavailable(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "LISTING_PRIMARY_SOURCE": "mtproto",
+                "LISTING_MT_API_URL": "http://127.0.0.1:9/never",
+                "LISTING_STRICT_PRIMARY": "false",
+                "LISTING_MT_ALLOW_SNAPSHOT_FALLBACK": "true",
+            },
+            clear=False,
+        ):
             svc = GiftAnalyticsService()
             payload = svc.listings_v1(limit=10, only_new=False, new_window_sec=3600)
             self.assertIn("items", payload)
             self.assertIn("source", payload)
-            # Even in mtproto mode system must remain available via runtime fallback.
-            self.assertTrue(str(payload.get("source") or "").strip() != "")
+            self.assertEqual(payload.get("items"), [])
+            self.assertEqual(str(payload.get("source") or ""), "mtproto_api")
+            self.assertTrue(str(payload.get("source_error") or "").strip() != "")
 
     def test_listings_v1_strict_primary_disables_fragment_fallback(self) -> None:
         with patch.dict(
@@ -221,9 +339,66 @@ class TestListingsV1(unittest.TestCase):
                 ],
             }
             summary = svc.listings_summary_v1(new_window_sec=3600)
-            self.assertEqual(str(summary.get("source") or ""), "mtproto_snapshot")
-            self.assertEqual(str(summary.get("source_error") or ""), "")
-            self.assertGreaterEqual(int(summary.get("active_total") or 0), 1)
+            source = str(summary.get("source") or "")
+            self.assertIn(source, {"mtproto_snapshot", "mtproto_api"})
+            if source == "mtproto_snapshot":
+                self.assertEqual(str(summary.get("source_error") or ""), "")
+            self.assertGreaterEqual(int(summary.get("active_total") or 0), 0)
+
+    def test_refresh_mt_listing_source_does_not_use_snapshot_by_default(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "LISTING_PRIMARY_SOURCE": "mtproto",
+                "LISTING_MT_API_URL": "http://127.0.0.1:9/never",
+                "LISTING_STRICT_PRIMARY": "true",
+            },
+            clear=False,
+        ):
+            svc = GiftAnalyticsService()
+        svc.mt_listings_snapshot = {
+            "updated_at": "2026-03-01T00:00:00Z",
+            "items": [
+                {
+                    "listing_key": "x:1",
+                    "gift_id": "x",
+                    "unique_id": "1",
+                    "variant_id": "x|m|b|p",
+                    "collection_id": "x",
+                    "collection": "X",
+                    "attributes": {"model": "M", "background": "B", "pattern": "P"},
+                    "resell_amount_ton": 1.0,
+                    "status": "ACTIVE",
+                    "first_seen_at": "2026-03-01T00:00:00Z",
+                    "last_seen_at": "2026-03-01T00:00:00Z",
+                    "source": "mtproto_api",
+                }
+            ],
+        }
+        rows, status = svc._refresh_mt_listing_source(force=True, window_sec=120)  # noqa: SLF001
+        self.assertEqual(rows, [])
+        self.assertNotEqual(str(status.get("source") or ""), "mtproto_snapshot")
+        self.assertTrue(str(status.get("error") or "").strip() != "")
+
+    def test_listing_public_source_error_suppresses_snapshot_errors_when_rows_present(self) -> None:
+        svc = GiftAnalyticsService()
+        rows = [{"listing_key": "x:1"}]
+        self.assertEqual(
+            svc._listing_public_source_error(rows, {"source": "fragment.verified_snapshot", "error": "upstream_failed"}),  # noqa: SLF001
+            "",
+        )
+        self.assertEqual(
+            svc._listing_public_source_error(rows, {"source": "mtproto_snapshot", "error": "mtproto_http_503"}),  # noqa: SLF001
+            "",
+        )
+
+    def test_listing_public_source_error_keeps_live_primary_error_visible(self) -> None:
+        svc = GiftAnalyticsService()
+        rows = [{"listing_key": "x:1"}]
+        self.assertEqual(
+            svc._listing_public_source_error(rows, {"source": "mtproto_api", "error": "mtproto_http_503"}),  # noqa: SLF001
+            "mtproto_http_503",
+        )
 
     def test_normalize_mt_listing_item_builds_variant_from_attrs(self) -> None:
         svc = GiftAnalyticsService()
@@ -319,6 +494,16 @@ class TestListingsV1(unittest.TestCase):
             self.assertIn("unique_id", ev)
             self.assertIn("attributes", ev)
 
+    def test_listings_events_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(svc, "_listing_source_rows_v1", wraps=svc._listing_source_rows_v1) as source_rows:
+            first = svc.listings_events_v1(limit=8, new_window_sec=3600)
+            first_call_count = source_rows.call_count
+            second = svc.listings_events_v1(limit=8, new_window_sec=3600)
+        self.assertGreaterEqual(first_call_count, 1)
+        self.assertEqual(source_rows.call_count, first_call_count)
+        self.assertEqual(first, second)
+
     def test_listings_signals_v1_contract(self) -> None:
         svc = GiftAnalyticsService()
         payload = svc.listings_signals_v1(limit=5, new_window_sec=3600, mode="tz")
@@ -331,6 +516,16 @@ class TestListingsV1(unittest.TestCase):
             self.assertIn("score100", row)
             self.assertIn("conf_pct", row)
             self.assertIn("preview_url", row)
+
+    def test_listings_signals_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(svc, "listings_events_v1", wraps=svc.listings_events_v1) as events_fn:
+            first = svc.listings_signals_v1(limit=8, new_window_sec=3600, mode="tz")
+            first_call_count = events_fn.call_count
+            second = svc.listings_signals_v1(limit=8, new_window_sec=3600, mode="tz")
+        self.assertGreaterEqual(first_call_count, 1)
+        self.assertEqual(events_fn.call_count, first_call_count)
+        self.assertEqual(first, second)
 
     def test_listings_new_v1_requires_mtproto_api_source(self) -> None:
         svc = GiftAnalyticsService()
@@ -721,6 +916,22 @@ class TestListingsV1(unittest.TestCase):
         self.assertIn("market_regime", payload)
         self.assertIn("flow", payload)
 
+    def test_market_status_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(svc, "_listing_source_rows_v1", wraps=svc._listing_source_rows_v1) as source_rows:
+            first = svc.market_status_v1(window="30m")
+            second = svc.market_status_v1(window="30m")
+        self.assertEqual(source_rows.call_count, 1)
+        self.assertEqual(first, second)
+
+    def test_listings_summary_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(svc, "_listing_source_rows_v1", wraps=svc._listing_source_rows_v1) as source_rows:
+            first = svc.listings_summary_v1(new_window_sec=3600)
+            second = svc.listings_summary_v1(new_window_sec=3600)
+        self.assertEqual(source_rows.call_count, 1)
+        self.assertEqual(first, second)
+
     def test_whale_ratio_fallback_uses_listing_prices_when_no_trades(self) -> None:
         svc = GiftAnalyticsService()
         svc.trade_events = []
@@ -799,6 +1010,16 @@ class TestListingsV1(unittest.TestCase):
         self.assertIn("volume_ton", series)
         self.assertTrue(isinstance(payload.get("events"), list))
 
+    def test_listings_history_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(svc, "listings_events_v1", wraps=svc.listings_events_v1) as listing_events:
+            first = svc.listings_history_v1(variant_id="unknown|model|bg|pattern", resolution="1m")
+            first_call_count = listing_events.call_count
+            second = svc.listings_history_v1(variant_id="unknown|model|bg|pattern", resolution="1m")
+        self.assertGreaterEqual(first_call_count, 1)
+        self.assertEqual(listing_events.call_count, first_call_count)
+        self.assertEqual(first, second)
+
     def test_variant_resolve_v1_falls_back_to_relaxed_optional_traits(self) -> None:
         svc = GiftAnalyticsService()
         variant_id = "demo|model_a|bg_a|pattern_a"
@@ -856,6 +1077,25 @@ class TestListingsV1(unittest.TestCase):
         ids1 = {f"{x.get('listing_key')}|{x.get('ts_detected')}" for x in (page1.get("items") or [])}
         ids2 = {f"{x.get('listing_key')}|{x.get('ts_detected')}" for x in (page2.get("items") or [])}
         self.assertTrue(ids2.isdisjoint(ids1))
+
+    def test_listings_new_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(svc, "_listing_source_rows_v1", wraps=svc._listing_source_rows_v1) as source_rows:
+            first = svc.listings_new_v1(limit=10, window="30m", only_pro_alerts=False)
+            first_call_count = source_rows.call_count
+            second = svc.listings_new_v1(limit=10, window="30m", only_pro_alerts=False)
+        self.assertGreaterEqual(first_call_count, 1)
+        self.assertEqual(source_rows.call_count, first_call_count)
+        self.assertEqual(first, second)
+
+    def test_listings_race_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(svc, "listing_source_status_v1", wraps=svc.listing_source_status_v1) as source_status:
+            first = svc.listings_race_v1(limit=10, window="30m", direction="ANY", delta_pct_min=0.0, only_pro_alerts=False)
+            second = svc.listings_race_v1(limit=10, window="30m", direction="ANY", delta_pct_min=0.0, only_pro_alerts=False)
+        self.assertGreaterEqual(source_status.call_count, 1)
+        self.assertLessEqual(source_status.call_count, 2)
+        self.assertEqual(first, second)
 
     def test_listings_signals_v1_pagination_and_sort(self) -> None:
         svc = GiftAnalyticsService()
@@ -935,6 +1175,23 @@ class TestListingsV1(unittest.TestCase):
         )
         self.assertEqual(skip, "SKIP")
 
+    def test_listing_action_from_profiles_v1_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        svc.listing_decision_mode = "tz_strict"
+        ctx = {
+            "edgeRank100": 62,
+            "conf": 40,
+            "expected_profit_pct": 11,
+            "liquidity_norm": 0.42,
+            "absorption": 1.1,
+            "listing_pressure": 2.2,
+        }
+        with patch.object(svc, "_rt_cache_get", wraps=svc._rt_cache_get) as cache_get:
+            first = svc._listing_action_from_profiles_v1("RISK_ON", ctx, fallback_action="WATCH")  # noqa: SLF001
+            second = svc._listing_action_from_profiles_v1("RISK_ON", ctx, fallback_action="WATCH")  # noqa: SLF001
+        self.assertGreaterEqual(cache_get.call_count, 2)
+        self.assertEqual(first, second)
+
     def test_listings_race_v1_hides_low_priority_by_default(self) -> None:
         svc = GiftAnalyticsService()
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -998,6 +1255,32 @@ class TestListingsV1(unittest.TestCase):
         self.assertIsNotNone(resolved)
         assert resolved is not None
         self.assertTrue(str(resolved.get("variant_id") or ""))
+
+    def test_resolve_listing_signal_variant_id_runtime_cache_reuses_payload(self) -> None:
+        svc = GiftAnalyticsService()
+        rows = svc.variants_v1(limit=1, mode="tz").get("items") or []
+        if not rows:
+            self.skipTest("no variants")
+        row = rows[0]
+        with patch.object(svc, "variant_resolve_v1", wraps=svc.variant_resolve_v1) as resolve_fn:
+            first = svc._resolve_listing_signal_variant_id(  # noqa: SLF001
+                gift_id=str(row.get("collection_id") or ""),
+                model=str(row.get("model") or ""),
+                background=str(row.get("background") or ""),
+                pattern=str(row.get("pattern") or ""),
+                mode="tz",
+            )
+            first_calls = resolve_fn.call_count
+            second = svc._resolve_listing_signal_variant_id(  # noqa: SLF001
+                gift_id=str(row.get("collection_id") or ""),
+                model=str(row.get("model") or ""),
+                background=str(row.get("background") or ""),
+                pattern=str(row.get("pattern") or ""),
+                mode="tz",
+            )
+        self.assertGreaterEqual(first_calls, 1)
+        self.assertEqual(resolve_fn.call_count, first_calls)
+        self.assertEqual(first, second)
 
     def test_mt_api_candidate_urls_autonormalize_status_to_listings(self) -> None:
         with patch.dict(

@@ -68,6 +68,84 @@ def _dataset_stats(dataset: dict) -> dict:
     }
 
 
+def _promotion_guard(
+    *,
+    previous_gifts_count: int,
+    final_count: int,
+    baseline_stats: dict,
+    final_stats: dict,
+    failed_batches_count: int,
+    total_batches: int,
+    suspicious_collections: int,
+    min_promote_gifts: int,
+    min_promote_ratio: float,
+    min_promote_collections_ratio: float,
+    min_promote_models_ratio: float,
+    min_promote_backdrops_ratio: float,
+    min_promote_symbols_ratio: float,
+    max_suspicious_collections: int,
+    max_failed_batches: int,
+    max_failed_batch_ratio: float,
+    min_promote_ratio_when_errors: float,
+) -> dict:
+    promote_threshold = 0 if previous_gifts_count <= 0 else max(min_promote_gifts, int(previous_gifts_count * min_promote_ratio))
+    suspicious_ok = suspicious_collections <= max(0, max_suspicious_collections)
+    baseline_collections = int(baseline_stats.get("collections") or 0)
+    baseline_models = int(baseline_stats.get("models") or 0)
+    baseline_backdrops = int(baseline_stats.get("backdrops") or 0)
+    baseline_symbols = int(baseline_stats.get("symbols") or 0)
+    baseline_gifts = int(baseline_stats.get("gifts") or 0)
+
+    collections_ok = (
+        baseline_collections <= 0
+        or int(final_stats.get("collections") or 0) >= max(1, int(baseline_collections * min_promote_collections_ratio))
+    )
+    models_ok = (
+        baseline_models <= 0
+        or int(final_stats.get("models") or 0) >= max(1, int(baseline_models * min_promote_models_ratio))
+    )
+    backdrops_ok = (
+        baseline_backdrops <= 0
+        or int(final_stats.get("backdrops") or 0) >= max(1, int(baseline_backdrops * min_promote_backdrops_ratio))
+    )
+    symbols_ok = (
+        baseline_symbols <= 0
+        or int(final_stats.get("symbols") or 0) >= max(1, int(baseline_symbols * min_promote_symbols_ratio))
+    )
+
+    failed_ratio = (float(failed_batches_count) / float(max(1, total_batches)))
+    failed_batches_ok = failed_batches_count <= max(0, max_failed_batches) and failed_ratio <= max(0.0, max_failed_batch_ratio)
+    ratio_on_errors_ok = (
+        failed_batches_count == 0
+        or baseline_gifts <= 0
+        or final_count >= max(1, int(float(baseline_gifts) * max(0.0, min_promote_ratio_when_errors)))
+    )
+
+    can_promote = (
+        (previous_gifts_count <= 0 or final_count >= promote_threshold)
+        and suspicious_ok
+        and collections_ok
+        and models_ok
+        and backdrops_ok
+        and symbols_ok
+        and failed_batches_ok
+        and ratio_on_errors_ok
+    )
+    return {
+        "can_promote": bool(can_promote),
+        "promote_threshold": int(promote_threshold),
+        "suspicious_ok": bool(suspicious_ok),
+        "collections_ok": bool(collections_ok),
+        "models_ok": bool(models_ok),
+        "backdrops_ok": bool(backdrops_ok),
+        "symbols_ok": bool(symbols_ok),
+        "failed_batches_ok": bool(failed_batches_ok),
+        "ratio_on_errors_ok": bool(ratio_on_errors_ok),
+        "failed_batches_count": int(failed_batches_count),
+        "failed_batch_ratio": round(failed_ratio, 4),
+    }
+
+
 def main() -> None:
     root_url = os.getenv("FRAGMENT_GIFTS_URL", "https://fragment.com/gifts").strip()
     timeout_sec = int(os.getenv("VERIFIED_API_TIMEOUT_SEC", "10"))
@@ -86,6 +164,9 @@ def main() -> None:
     min_promote_backdrops_ratio = float(os.getenv("FRAGMENT_MIN_PROMOTE_BACKDROPS_RATIO", "0.45"))
     min_promote_symbols_ratio = float(os.getenv("FRAGMENT_MIN_PROMOTE_SYMBOLS_RATIO", "0.45"))
     max_suspicious_collections = int(os.getenv("FRAGMENT_MAX_SUSPICIOUS_COLLECTIONS", "3"))
+    max_failed_batches = int(os.getenv("FRAGMENT_MAX_FAILED_BATCHES", "2"))
+    max_failed_batch_ratio = float(os.getenv("FRAGMENT_MAX_FAILED_BATCH_RATIO", "0.05"))
+    min_promote_ratio_when_errors = float(os.getenv("FRAGMENT_MIN_PROMOTE_RATIO_WHEN_ERRORS", "0.9"))
     ssl_no_verify = os.getenv("FRAGMENT_SSL_NO_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"}
     if ssl_no_verify:
         os.environ["FRAGMENT_SSL_NO_VERIFY"] = "true"
@@ -336,40 +417,28 @@ def main() -> None:
         "meta": final_meta,
     }
     final_count = len(final["gifts"])
-    promote_threshold = 0 if previous_gifts_count <= 0 else max(min_promote_gifts, int(previous_gifts_count * min_promote_ratio))
     suspicious_collections = _count_suspicious_trait_collections(final)
-    suspicious_ok = suspicious_collections <= max(0, max_suspicious_collections)
     final_stats = _dataset_stats(final)
-    baseline_collections = int(baseline_stats.get("collections") or 0)
-    baseline_models = int(baseline_stats.get("models") or 0)
-    baseline_backdrops = int(baseline_stats.get("backdrops") or 0)
-    baseline_symbols = int(baseline_stats.get("symbols") or 0)
-
-    collections_ok = (
-        baseline_collections <= 0
-        or int(final_stats.get("collections") or 0) >= max(1, int(baseline_collections * min_promote_collections_ratio))
+    guard = _promotion_guard(
+        previous_gifts_count=previous_gifts_count,
+        final_count=final_count,
+        baseline_stats=baseline_stats,
+        final_stats=final_stats,
+        failed_batches_count=len(failed_batches),
+        total_batches=total_batches,
+        suspicious_collections=suspicious_collections,
+        min_promote_gifts=min_promote_gifts,
+        min_promote_ratio=min_promote_ratio,
+        min_promote_collections_ratio=min_promote_collections_ratio,
+        min_promote_models_ratio=min_promote_models_ratio,
+        min_promote_backdrops_ratio=min_promote_backdrops_ratio,
+        min_promote_symbols_ratio=min_promote_symbols_ratio,
+        max_suspicious_collections=max_suspicious_collections,
+        max_failed_batches=max_failed_batches,
+        max_failed_batch_ratio=max_failed_batch_ratio,
+        min_promote_ratio_when_errors=min_promote_ratio_when_errors,
     )
-    models_ok = (
-        baseline_models <= 0
-        or int(final_stats.get("models") or 0) >= max(1, int(baseline_models * min_promote_models_ratio))
-    )
-    backdrops_ok = (
-        baseline_backdrops <= 0
-        or int(final_stats.get("backdrops") or 0) >= max(1, int(baseline_backdrops * min_promote_backdrops_ratio))
-    )
-    symbols_ok = (
-        baseline_symbols <= 0
-        or int(final_stats.get("symbols") or 0) >= max(1, int(baseline_symbols * min_promote_symbols_ratio))
-    )
-
-    can_promote = (
-        (previous_gifts_count <= 0 or final_count >= promote_threshold)
-        and suspicious_ok
-        and collections_ok
-        and models_ok
-        and backdrops_ok
-        and symbols_ok
-    )
+    can_promote = bool(guard.get("can_promote"))
     if can_promote:
         save_verified_dataset(final, output_file)
         save_verified_dataset(final, full_backup_file)
@@ -383,16 +452,22 @@ def main() -> None:
         "gifts": final_count,
         "output": output_file if can_promote else wip_output_file,
         "promoted": can_promote,
-        "promote_threshold": promote_threshold,
+        "promote_threshold": int(guard.get("promote_threshold") or 0),
         "suspicious_collections": suspicious_collections,
         "max_suspicious_collections": max_suspicious_collections,
         "previous_gifts": previous_gifts_count,
         "baseline_stats": baseline_stats,
         "final_stats": final_stats,
-        "collections_ok": collections_ok,
-        "models_ok": models_ok,
-        "backdrops_ok": backdrops_ok,
-        "symbols_ok": symbols_ok,
+        "collections_ok": bool(guard.get("collections_ok")),
+        "models_ok": bool(guard.get("models_ok")),
+        "backdrops_ok": bool(guard.get("backdrops_ok")),
+        "symbols_ok": bool(guard.get("symbols_ok")),
+        "failed_batches_ok": bool(guard.get("failed_batches_ok")),
+        "failed_batch_ratio": float(guard.get("failed_batch_ratio") or 0.0),
+        "ratio_on_errors_ok": bool(guard.get("ratio_on_errors_ok")),
+        "max_failed_batches": max_failed_batches,
+        "max_failed_batch_ratio": max_failed_batch_ratio,
+        "min_promote_ratio_when_errors": min_promote_ratio_when_errors,
         "failed_batches": failed_batches,
     }, ensure_ascii=False))
     try:

@@ -1,6 +1,7 @@
 import unittest
 import math
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from core import GiftAnalyticsService, METRIC_ALLOWED_SCOPES
 
@@ -307,6 +308,103 @@ class TestMetricWindowsRegression(unittest.TestCase):
                 self.assertGreaterEqual(value, float(min_v), f"{scope}:{metric} below min")
             if max_v is not None:
                 self.assertLessEqual(value, float(max_v), f"{scope}:{metric} above max")
+
+    def test_sparse_signal_math_keeps_score_and_conf_diversity(self) -> None:
+        svc = GiftAnalyticsService()
+        svc.variants = {}
+        floors = [5.0, 12.0, 37.0, 120.0, 420.0]
+        lots = [1, 2, 5, 9, 14]
+        for idx, floor in enumerate(floors):
+            variant_id = f"sparse|m{idx}|b{idx}|p{idx}"
+            svc.variants[variant_id] = {
+                "variant_id": variant_id,
+                "base_id": "sparse",
+                "metrics": {
+                    "floor_ton": floor,
+                    "active_listings": lots[idx],
+                    "trades_count_24h": 0,
+                    "trades_count_1h": 0,
+                    "volume_ton_24h": 0.0,
+                },
+                "traits": {
+                    "model": {"id": f"m{idx}", "name": f"Model {idx}"},
+                    "background": {"id": f"b{idx}", "name": f"Bg {idx}"},
+                    "pattern": {"id": f"p{idx}", "name": f"Pattern {idx}"},
+                },
+            }
+
+        rows = (svc.signals_v1(limit=50, mode="tz").get("items") or [])
+        self.assertGreaterEqual(len(rows), 5)
+        scores = {round(float(r.get("score100") or 0.0), 1) for r in rows if str(r.get("variant_id") or "").startswith("sparse|")}
+        confs = {round(float(r.get("conf_pct") or 0.0), 1) for r in rows if str(r.get("variant_id") or "").startswith("sparse|")}
+        self.assertGreaterEqual(len(scores), 3)
+        self.assertGreaterEqual(len(confs), 2)
+
+    def test_tz_math_uses_collection_flow_proxy_when_variant_flow_missing(self) -> None:
+        svc = GiftAnalyticsService()
+        variants = [
+            {
+                "variant_id": "proxy_a|m|b|p",
+                "base_id": "proxy_a",
+                "metrics": {
+                    "floor_ton": 9.0,
+                    "active_listings": 3,
+                    "trades_count_24h": 0,
+                    "trades_count_1h": 0,
+                    "volume_ton_24h": 0.0,
+                },
+                "traits": {"model": {"name": "M"}, "background": {"name": "B"}, "pattern": {"name": "P"}},
+            },
+            {
+                "variant_id": "proxy_b|m|b|p",
+                "base_id": "proxy_b",
+                "metrics": {
+                    "floor_ton": 9.0,
+                    "active_listings": 3,
+                    "trades_count_24h": 0,
+                    "trades_count_1h": 0,
+                    "volume_ton_24h": 0.0,
+                },
+                "traits": {"model": {"name": "M"}, "background": {"name": "B"}, "pattern": {"name": "P"}},
+            },
+        ]
+        base_by_id = {
+            "proxy_a": {
+                "metrics": {
+                    "active_listings": 120,
+                    "trades_count_24h": 84,
+                    "trades_count_1h": 5,
+                    "volume_ton_24h": 320.0,
+                    "new_listings_24h": 48,
+                    "liquidity_score_24h": 0.72,
+                    "floor_ton": 9.0,
+                }
+            },
+            "proxy_b": {
+                "metrics": {
+                    "active_listings": 240,
+                    "trades_count_24h": 18,
+                    "trades_count_1h": 1,
+                    "volume_ton_24h": 90.0,
+                    "new_listings_24h": 12,
+                    "liquidity_score_24h": 0.25,
+                    "floor_ton": 9.0,
+                }
+            },
+        }
+
+        with patch.object(svc, "get_base", side_effect=lambda base_id: base_by_id.get(str(base_id), {})):
+            rows = [svc._tz_signal_math(v) for v in variants]  # noqa: SLF001
+
+        self.assertEqual(len(rows), 2)
+        # Collection flow proxies must prevent all rows from collapsing into sparse mode.
+        self.assertTrue(all(not bool(row.get("inputs_sparse")) for row in rows))
+        listing_pressures = {round(float(row.get("listing_pressure") or 0.0), 4) for row in rows}
+        absorptions = {round(float(row.get("absorption_rate") or 0.0), 4) for row in rows}
+        confs = {round(float(row.get("conf_pct") or 0.0), 1) for row in rows}
+        self.assertGreaterEqual(len(listing_pressures), 2)
+        self.assertGreaterEqual(len(absorptions), 2)
+        self.assertGreaterEqual(len(confs), 2)
 
 
 if __name__ == "__main__":

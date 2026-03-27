@@ -1,0 +1,117 @@
+======================================================================
+GiftMarketZone — Decision Engine v2 (Site + Telegram)
+Production Spec (RU)
+======================================================================
+
+Цель
+- Единый механизм присвоения action (BUY/SELL/WATCH/SKIP) на сайте.
+- Адаптация порогов под режим рынка (RISK_ON / MEAN_REVERT / RISK_OFF / PANIC).
+- Динамический EdgeRank (веса меняются по режиму рынка) для сортировки и Telegram-гейта.
+
+Входы
+1) MarketSnapshot:
+   - market_regime (рассчитан или вычисляется из агрегатов)
+   - data_health: OK | DEGRADED
+2) VariantAgg (по каждому variant):
+   - score100, conf_pct, expected_profit_pct, undervalue (0..1), fair_ton, price_ton, floor_ton
+   - liquidity_score (0..100) или liquidity_norm (0..1)
+   - absorption_30m, listing_pressure, volume_velocity
+   - depth_score (0..1), depth_5pct_count, depth_5pct_ton
+   - sales24h, active_lots (если есть)
+
+Выходы
+- action: BUY/SELL/WATCH/SKIP
+- strength_tag: STRONG_BUY | STRONG_SELL | NONE (опционально)
+- edgeRank100, edgeRank_raw, edgeRank_profile
+- reasons[] (<=3), risk_flags[] (<=3)
+- watch_trigger (string|null)
+
+------------------------------------------------------------------
+A) Расчёт market_regime (если не хранится)
+------------------------------------------------------------------
+Использовать market-агрегаты: AR_m, LP_m, VV_m, LIQ_m.
+- RISK_ON: AR_m>=1.10 AND VV_m>=1.10 AND LP_m<=3.0 AND LIQ_m>=45
+- MEAN_REVERT: AR_m in [0.90..1.10] AND VV_m in [0.90..1.10]
+- RISK_OFF: AR_m<=0.80 AND LP_m>=4.0
+- PANIC: AR_m<=0.60 AND LP_m>=6.0 AND (VV_m>=1.20 OR vol_level=HIGH)
+Else -> MEAN_REVERT
+
+------------------------------------------------------------------
+B) Динамический EdgeRank (по режиму рынка)
+------------------------------------------------------------------
+Нормализации (0..1):
+S  = score100/100
+C  = conf_pct/100
+EP = clamp(expected_profit_pct/30, 0,1)
+L  = liquidity_score/100 (или liquidity_norm)
+AR = clamp(absorption_30m/2.0, 0,1)
+D  = clamp(depth_score, 0,1)
+LP = clamp(listing_pressure/6.0, 0,1)
+
+VV_norm (только для PANIC-бонуса):
+VV_norm = clamp((volume_velocity - 0.8)/1.0, 0,1)
+
+Веса по режимам (см. edgerank_weights_by_regime.json):
+- MEAN_REVERT: EP .35, S .25, L .15, AR .10, D .10, LP -.15
+- RISK_ON:     EP .30, S .20, L .20, AR .15, D .10, LP -.10
+- RISK_OFF:    EP .30, S .25, L .20, AR .10, D .10, LP -.20
+- PANIC:       EP .35, S .20, L .15, AR .10, D .10, LP -.15 + VV_bonus .10*VV_norm
+
+Формула:
+EdgeRank_raw = Σ(w_i * x_i) (+ wVV*VV_norm в PANIC)
+EdgeRank = clamp(EdgeRank_raw,0,1) * C
+EdgeRank100 = round(EdgeRank*100)
+
+------------------------------------------------------------------
+C) Присвоение action на сайте (единый движок)
+------------------------------------------------------------------
+1) Quality gates:
+   - если conf_pct < 20 OR sales24h < 2 -> action=SKIP
+   - если conf_pct in [20..30) -> action=WATCH
+
+2) Берём профиль порогов по market_regime (signal_profiles_by_regime.json).
+
+3) BUY: если выполняются ВСЕ buy_all условия профиля -> BUY
+
+4) SELL: если выполнено ЛЮБОЕ sell_any правило профиля -> SELL
+
+5) WATCH: если score100 попадает в watch_band -> WATCH + watch_trigger
+   watch_trigger строим по «чему не хватает» до BUY (в приоритете: undervalue, absorption, liquidity, vv в PANIC)
+
+6) SKIP: иначе SKIP.
+   Доп-правило SKIP: expected_profit_pct < 5 или (liquidity_norm<0.25 and depth_score<0.20)
+
+7) Data health safeguard:
+   - если data_health=DEGRADED: понизить conf_pct = min(conf_pct,25)
+     и ограничить BUY/SELL: публиковать/выделять только edgeRank100>=75 и conf>=45 (для Telegram), на сайте пометить "Данные деградированы".
+
+------------------------------------------------------------------
+D) UI/UX логика на сайте
+------------------------------------------------------------------
+1) Лента сигналов:
+- Бейдж режима рынка (🟢🟡🔴⚠) + текст режима.
+- Колонки: Action, EdgeRank, Score, Conf, EP%, U%, Liquidity, AR, LP, VV, Depth, Time.
+- Сортировка по умолчанию: EdgeRank desc, затем Conf desc.
+
+2) Фильтры:
+- action in [BUY,SELL,WATCH,SKIP]
+- EdgeRank >= slider (default 55)
+- Conf >= slider (default 35)
+- ExpectedProfit >= slider (default 8%)
+- Regime select (all/RISK_ON/MEAN_REVERT/RISK_OFF/PANIC)
+- Liquidity >= slider, LP <= slider, AR >= slider, VV >= slider
+- "Только PRO-алерты" toggle = (EdgeRank>=55 & Conf>=35 & EP>=8)
+
+3) Карточка сигнала (drawer):
+- Показывать причины (<=3) и риски (<=3)
+- Для WATCH показывать trigger
+
+------------------------------------------------------------------
+E) Telegram publish gate
+------------------------------------------------------------------
+Публиковать сигнал в Telegram-канал, если:
+EdgeRank100 >= 55 AND conf_pct >= 35 AND expected_profit_pct >= 8
+
+======================================================================
+END
+======================================================================

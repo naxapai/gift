@@ -1,0 +1,318 @@
+{
+  "version": "1.0",
+  "pages": {
+    "overview": {
+      "title_ru": "Обзор рынка",
+      "scope": "MARKET",
+      "layout": {
+        "grid": "bento",
+        "rows": [
+          {
+            "row": 1,
+            "blocks": [
+              {
+                "id": "market_index",
+                "component": "MarketIndexCard",
+                "size": "XL",
+                "metrics": [
+                  "MARKET_INDEX",
+                  "VELOCITY_SCORE",
+                  "VOLATILITY",
+                  "FLOOR_REALTIME"
+                ]
+              },
+              {
+                "id": "market_flow",
+                "component": "MarketFlowCard",
+                "size": "L",
+                "metrics": [
+                  "LISTING_VELOCITY",
+                  "VOLUME_VELOCITY",
+                  "ABSORPTION_RATE",
+                  "LISTING_PRESSURE"
+                ]
+              },
+              {
+                "id": "whales",
+                "component": "WhalesCard",
+                "size": "M",
+                "metrics": [
+                  "WHALE_RATIO",
+                  "WHALE_IMPULSE"
+                ]
+              }
+            ]
+          },
+          {
+            "row": 2,
+            "blocks": [
+              {
+                "id": "volume_chart",
+                "component": "VolumeChartCard",
+                "size": "XL",
+                "metrics": [
+                  "VOLUME_CHART",
+                  "VOLUME_VELOCITY"
+                ],
+                "controls": {
+                  "timeframe": [
+                    "1h",
+                    "6h",
+                    "24h"
+                  ]
+                }
+              },
+              {
+                "id": "liquidity_chart",
+                "component": "LiquidityChartCard",
+                "size": "XL",
+                "metrics": [
+                  "LIQUIDITY_CHART",
+                  "LIQUIDITY_SCORE"
+                ],
+                "controls": {
+                  "timeframe": [
+                    "1h",
+                    "6h",
+                    "24h"
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "row": 3,
+            "blocks": [
+              {
+                "id": "liquidity_heatmap",
+                "component": "LiquidityHeatmapCard",
+                "size": "XL",
+                "metrics": [
+                  "LIQUIDITY_HEATMAP"
+                ],
+                "controls": {
+                  "timeframe": [
+                    "6h",
+                    "24h"
+                  ]
+                }
+              },
+              {
+                "id": "supply",
+                "component": "SupplyCard",
+                "size": "M",
+                "metrics": [
+                  "SUPPLY_CHART"
+                ]
+              },
+              {
+                "id": "depth",
+                "component": "MarketDepthCard",
+                "size": "M",
+                "metrics": [
+                  "MARKET_DEPTH"
+                ]
+              }
+            ]
+          },
+          {
+            "row": 4,
+            "blocks": [
+              {
+                "id": "top_buy",
+                "component": "SignalsTableCard",
+                "size": "XL",
+                "source": "/v1/signals?type=BUY",
+                "controls": {
+                  "min_score": true,
+                  "limit": 10
+                }
+              },
+              {
+                "id": "top_sell",
+                "component": "SignalsTableCard",
+                "size": "XL",
+                "source": "/v1/signals?type=SELL",
+                "controls": {
+                  "min_score": true,
+                  "limit": 10
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "variant": {
+      "title_ru": "Подарок",
+      "scope": "VARIANT",
+      "layout": {
+        "grid": "bento",
+        "rows": [
+          {
+            "row": 1,
+            "blocks": [
+              {
+                "id": "trade",
+                "component": "VariantTradeCard",
+                "size": "XL",
+                "metrics": [
+                  "BUY_SCORE",
+                  "SELL_SCORE",
+                  "EDGE_SCORE",
+                  "EXPECTED_PROFIT",
+                  "FAIR_PRICE",
+                  "UNDERVALUE",
+                  "FLOOR_REALTIME"
+                ]
+              },
+              {
+                "id": "pricing",
+                "component": "PricingCard",
+                "size": "L",
+                "metrics": [
+                  "FLOOR_REALTIME",
+                  "FAIR_PRICE",
+                  "UNDERVALUE",
+                  "EXPECTED_PROFIT"
+                ]
+              },
+              {
+                "id": "risk",
+                "component": "RiskCard",
+                "size": "M",
+                "metrics": [
+                  "LISTING_PRESSURE",
+                  "ABSORPTION_RATE",
+                  "LIQUIDITY_SCORE",
+                  "MARKET_DEPTH"
+                ]
+              }
+            ]
+          },
+          {
+            "row": 2,
+            "blocks": [
+              {
+                "id": "floor_history",
+                "component": "FloorHistoryCard",
+                "size": "XL",
+                "metrics": [
+                  "FLOOR_HISTORY",
+                  "VOLATILITY"
+                ],
+                "controls": {
+                  "timeframe": [
+                    "1h",
+                    "6h",
+                    "24h",
+                    "7d"
+                  ]
+                }
+              },
+              {
+                "id": "volume_variant",
+                "component": "VolumeChartCard",
+                "size": "XL",
+                "metrics": [
+                  "VOLUME_CHART",
+                  "VOLUME_VELOCITY"
+                ],
+                "controls": {
+                  "timeframe": [
+                    "1h",
+                    "6h",
+                    "24h"
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "row": 3,
+            "blocks": [
+              {
+                "id": "new_listings",
+                "component": "NewListingsFeedCard",
+                "size": "L",
+                "metrics": [
+                  "NEW_LISTINGS_REALTIME",
+                  "LISTING_VELOCITY"
+                ],
+                "realtime": true
+              },
+              {
+                "id": "listing_feed",
+                "component": "ListingFeedCard",
+                "size": "L",
+                "metrics": [
+                  "LISTING_FEED"
+                ],
+                "realtime": true
+              },
+              {
+                "id": "depth_wall",
+                "component": "DepthAndWallCard",
+                "size": "L",
+                "metrics": [
+                  "MARKET_DEPTH",
+                  "BUY_WALL_SCORE"
+                ]
+              }
+            ]
+          },
+          {
+            "row": 4,
+            "blocks": [
+              {
+                "id": "whales_variant",
+                "component": "WhalesCard",
+                "size": "M",
+                "metrics": [
+                  "WHALE_RATIO",
+                  "WHALE_IMPULSE"
+                ]
+              },
+              {
+                "id": "rarity",
+                "component": "RarityCard",
+                "size": "M",
+                "metrics": [
+                  "RARITY_SCORE"
+                ]
+              }
+            ]
+          },
+          {
+            "row": 5,
+            "blocks": [
+              {
+                "id": "heatmap_variant",
+                "component": "LiquidityHeatmapCard",
+                "size": "XL",
+                "metrics": [
+                  "LIQUIDITY_HEATMAP"
+                ],
+                "controls": {
+                  "timeframe": [
+                    "6h",
+                    "24h"
+                  ]
+                }
+              },
+              {
+                "id": "liquidity_variant",
+                "component": "LiquidityChartCard",
+                "size": "L",
+                "metrics": [
+                  "LIQUIDITY_CHART",
+                  "LIQUIDITY_SCORE"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

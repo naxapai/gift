@@ -1617,7 +1617,7 @@ def load_verified_dataset_source() -> Dict:
             parsed_api = urlparse(api_url)
             host = (parsed_api.hostname or "").strip().lower()
             path = (parsed_api.path or "").strip().lower()
-            local_hosts = {"127.0.0.1", "localhost", "telegram-gifts-market.onrender.com"}
+            local_hosts = {"127.0.0.1", "localhost", "telegram-gifts-market.onrender.com", "giftmarketzone.com"}
             if (not allow_local_bridge) and path.endswith("/bridge/gifts/verified") and host in local_hosts:
                 raise ValueError("local/self bridge endpoint is disabled for telegram_api source")
             fallback = _load_verified_fallback_snapshot(file_path)

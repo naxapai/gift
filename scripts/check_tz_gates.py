@@ -84,7 +84,7 @@ def _send_tg_alert_if_needed(payload: dict) -> None:
 def main() -> int:
     horizon_hours = _as_int("TZ_GATES_HORIZON_HOURS", 24)
     limit = _as_int("TZ_GATES_LIMIT", 1000)
-    signals_url = os.getenv("TZ_GATES_SIGNALS_URL", "https://telegram-gifts-market.onrender.com/v1/signals").strip()
+    signals_url = os.getenv("TZ_GATES_SIGNALS_URL", "https://giftmarketzone.com/v1/signals").strip()
     out_file = Path(os.getenv("TZ_GATES_STATUS_FILE", str(ROOT / "data" / "tz_gates_status.json")))
 
     report = backtest_run(horizon_hours=horizon_hours, mode="tz", limit=limit, signals_url=(signals_url or None))

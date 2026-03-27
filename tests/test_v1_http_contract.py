@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
+from urllib import request as urllib_request
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -87,6 +88,7 @@ class TestV1HttpContract(unittest.TestCase):
         self._seed_variant()
         FAVORITES_FILE.write_text("{}", encoding="utf-8")
         ALERTS_FILE.write_text("[]", encoding="utf-8")
+        server._ADMIN_RT_CACHE.clear()
         svc = server._STATE
         if isinstance(svc, GiftAnalyticsService):
             svc.alert_rules = []
@@ -108,6 +110,17 @@ class TestV1HttpContract(unittest.TestCase):
             body = resp.read().decode("utf-8")
             return resp.status, json.loads(body)
 
+    def _put_json(self, path: str, payload: dict, timeout: float = 20.0):
+        req = Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            return resp.status, json.loads(body)
+
     def _get_json_with_headers(self, path: str, timeout: float = 20.0):
         with urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
@@ -118,6 +131,27 @@ class TestV1HttpContract(unittest.TestCase):
         with urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
             return resp.status, json.loads(body)
+
+    def _read_sse_message(self, path: str, timeout: float = 12.0):
+        with urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=timeout) as resp:
+            lines: list[str] = []
+            for _ in range(32):
+                raw = resp.readline().decode("utf-8")
+                if not raw:
+                    break
+                line = raw.rstrip("\r\n")
+                if not line:
+                    if lines:
+                        break
+                    continue
+                if line.startswith(":") and not lines:
+                    continue
+                lines.append(line)
+            return resp.status, str(resp.headers.get("Content-Type") or ""), lines
+
+    def _cookie_opener(self):
+        jar = urllib_request.HTTPCookieProcessor()
+        return urllib_request.build_opener(jar)
 
     def test_metrics_endpoint_success(self) -> None:
         status, payload = self._get_json("/v1/metrics?metric=MARKET_INDEX&scope=MARKET")
@@ -161,6 +195,134 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertTrue(payload_reset.get("ok"))
         self.assertEqual(int(payload_reset.get("total_requests") or 0), 0)
 
+    def test_signal_engine_preview_runtime_cache_reuses_payload(self) -> None:
+        cfg = {"fair_price": {"alpha": 0.7}}
+        calls = {"n": 0}
+        original = server.GiftAnalyticsService.list_variants
+
+        def wrapped(svc, *args, **kwargs):
+            calls["n"] += 1
+            return original(svc, *args, **kwargs)
+
+        with patch.object(server.GiftAnalyticsService, "list_variants", new=wrapped):
+            first = server._signal_engine_signal_preview(limit=5, cfg=cfg)
+            second = server._signal_engine_signal_preview(limit=5, cfg=cfg)
+        self.assertTrue(first.get("ok"))
+        self.assertEqual(first, second)
+        self.assertEqual(calls["n"], 1)
+
+    def test_admin_telegram_delivery_config_roundtrip(self) -> None:
+        with patch("server._is_admin_user", return_value=True):
+            status_get, payload_get = self._get_json("/api/admin/telegram-delivery/config")
+            self.assertEqual(status_get, 200)
+            self.assertTrue(payload_get.get("ok"))
+            self.assertIn("defaults", payload_get)
+            self.assertIn("effective", payload_get)
+
+            status_put, payload_put = self._put_json(
+                "/api/admin/telegram-delivery/config",
+                {
+                    "enabled": True,
+                    "market_status": {"enabled": True, "min_interval_sec": 600},
+                    "gift_signal": {"enabled": True, "include_image": True},
+                    "publish_gates": {"gift_signal_channel": {"edgeRank100_gte": 61, "conf_pct_gte": 42, "expected_profit_pct_gte": 11}},
+                    "transport": {"rate_limit_per_minute": 13, "max_retries": 4, "retry_backoff_sec": 2.2},
+                },
+            )
+            self.assertEqual(status_put, 200)
+            effective = payload_put.get("effective") or {}
+            signal_gate = ((effective.get("publish_gates") or {}).get("gift_signal_channel") or {}) if isinstance(effective, dict) else {}
+            self.assertEqual(int(signal_gate.get("edgeRank100_gte") or 0), 61)
+            self.assertEqual(int(signal_gate.get("conf_pct_gte") or 0), 42)
+            self.assertEqual(int(signal_gate.get("expected_profit_pct_gte") or 0), 11)
+
+            status_reset, payload_reset = self._post_json("/api/admin/telegram-delivery/config/reset", {})
+            self.assertEqual(status_reset, 200)
+            self.assertTrue(payload_reset.get("ok"))
+
+    def test_admin_telegram_delivery_status_and_test_preview(self) -> None:
+        with patch("server._is_admin_user", return_value=True), patch.object(server._STATE.telegram_notifier, "send_test", return_value={"ok": True, "kind": "gift_signal", "preview": "GiftMarketZone • BUY", "sent": True}):
+            status_s, payload_s = self._get_json("/api/admin/telegram-delivery/status")
+            self.assertEqual(status_s, 200)
+            self.assertTrue(payload_s.get("ok"))
+            self.assertIn("configured", payload_s)
+            self.assertIn("stats", payload_s)
+
+            status_j, payload_j = self._get_json("/api/admin/telegram-delivery/journal?limit=5")
+            self.assertEqual(status_j, 200)
+            self.assertTrue(payload_j.get("ok"))
+            self.assertIn("sent", payload_j)
+            self.assertIn("failed", payload_j)
+
+            status_t, payload_t = self._post_json("/api/admin/telegram-delivery/test", {"kind": "gift_signal"})
+            self.assertEqual(status_t, 200)
+            self.assertTrue(payload_t.get("ok"))
+            self.assertEqual(str(payload_t.get("kind") or ""), "gift_signal")
+            self.assertIn("GiftMarketZone", str(payload_t.get("preview") or ""))
+
+    def test_telegram_auth_session_is_non_blocking_and_owned_gifts_endpoint_uses_session(self) -> None:
+        opener = self._cookie_opener()
+        with patch.object(server.AUTH, "verify_telegram_payload", return_value=(True, "ok", {"id": 42, "username": "alice", "first_name": "Alice", "last_name": "Doe", "photo_url": "https://example.com/a.png", "auth_date": 1700000000})):
+            req = Request(
+                f"http://127.0.0.1:{self.port}/api/auth/telegram/verify",
+                data=json.dumps({"id": 42, "hash": "x"}).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with opener.open(req, timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            self.assertTrue(payload.get("ok"))
+            self.assertTrue(payload.get("authenticated"))
+
+            with opener.open(f"http://127.0.0.1:{self.port}/api/auth/me", timeout=10) as resp_me:
+                payload_me = json.loads(resp_me.read().decode("utf-8"))
+            self.assertTrue(payload_me.get("authenticated"))
+            self.assertEqual(int((payload_me.get("user") or {}).get("id") or 0), 42)
+
+            with patch.object(server._STATE, "telegram_owned_gifts_v1", return_value={"ok": True, "authenticated": True, "source": "remote", "items": [{"gift_id": "g1", "collection": "snakebox"}]}):
+                with opener.open(f"http://127.0.0.1:{self.port}/api/auth/telegram/owned-gifts", timeout=10) as resp_owned:
+                    payload_owned = json.loads(resp_owned.read().decode("utf-8"))
+            self.assertTrue(payload_owned.get("ok"))
+            self.assertTrue(payload_owned.get("authenticated"))
+            self.assertEqual(str((payload_owned.get("items") or [])[0].get("gift_id") or ""), "g1")
+
+    def test_telegram_owned_gifts_endpoint_is_safe_for_anonymous_users(self) -> None:
+        status, payload = self._get_json("/api/auth/telegram/owned-gifts")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertFalse(payload.get("authenticated"))
+        self.assertEqual(payload.get("items"), [])
+
+    def test_bridge_owned_gifts_endpoint_returns_user_inventory_payload(self) -> None:
+        old_token = server.BRIDGE_API_TOKEN
+        try:
+            server.BRIDGE_API_TOKEN = "bridge-token"
+            with patch.object(server._STATE, "owned_gifts_bridge_v1", return_value={"ok": True, "items": [{"gift_id": "g42", "variant_id": "x|m|b|p"}], "source": "local_file"}):
+                status, payload = self._get_json("/bridge/gifts/owned?telegram_user_id=42&username=alice&token=bridge-token")
+        finally:
+            server.BRIDGE_API_TOKEN = old_token
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(str((payload.get("items") or [])[0].get("gift_id") or ""), "g42")
+
+    def test_tz_gates_runtime_cache_reuses_payload(self) -> None:
+        calls = {"n": 0}
+
+        def fake_run(*args, **kwargs):
+            calls["n"] += 1
+            return {
+                "source": "local",
+                "gates_passed": True,
+                "distribution": {"BUY": 1, "WATCH": 10, "SKIP": 90, "SELL": 0},
+            }
+
+        with patch("scripts.backtest_tz_signals.run", new=fake_run):
+            first = server._build_tz_gates_payload_runtime()
+            second = server._build_tz_gates_payload_runtime()
+        self.assertTrue(first.get("ok"))
+        self.assertEqual(first, second)
+        self.assertEqual(calls["n"], 1)
+
     def test_metrics_endpoint_listing_pressure_market_success(self) -> None:
         status, payload = self._get_json("/v1/metrics?metric=LISTING_PRESSURE&scope=MARKET")
         self.assertEqual(status, 200)
@@ -168,6 +330,106 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertEqual(payload.get("scope"), "MARKET")
         self.assertIn("points", payload)
         self.assertTrue(isinstance(payload.get("points"), list))
+
+    def test_screeners_feed_filters_and_cursor(self) -> None:
+        status1, payload1 = self._get_json("/v1/screeners/feed?limit=2")
+        self.assertEqual(status1, 200)
+        self.assertIn("items", payload1)
+        self.assertTrue(isinstance(payload1.get("items"), list))
+        self.assertLessEqual(len(payload1.get("items") or []), 2)
+        next_cursor = payload1.get("next_cursor")
+        if next_cursor:
+            status2, payload2 = self._get_json(f"/v1/screeners/feed?limit=2&cursor={quote(str(next_cursor))}")
+            self.assertEqual(status2, 200)
+            self.assertIn("items", payload2)
+            self.assertTrue(isinstance(payload2.get("items"), list))
+
+        status_buy, payload_buy = self._get_json("/v1/screeners/feed?limit=20&action=BUY")
+        self.assertEqual(status_buy, 200)
+        self.assertIn("items", payload_buy)
+        self.assertTrue(isinstance(payload_buy.get("items"), list))
+        for row in payload_buy.get("items") or []:
+            self.assertEqual(str((row or {}).get("action") or "").upper(), "BUY")
+
+    def test_catalog_feed_and_variant_endpoint_success(self) -> None:
+        status, payload = self._get_json("/v1/catalog/feed?limit=5")
+        self.assertEqual(status, 200)
+        self.assertIn("items", payload)
+        self.assertTrue(isinstance(payload.get("items"), list))
+        self.assertLessEqual(len(payload.get("items") or []), 5)
+        rows = payload.get("items") or []
+        if rows:
+            vid = str((rows[0] or {}).get("variant_id") or "")
+            if vid:
+                status_v, payload_v = self._get_json(f"/v1/catalog/variant/{quote(vid)}")
+                self.assertEqual(status_v, 200)
+                self.assertEqual(str(payload_v.get("variant_id") or ""), vid)
+                self.assertIn("listings_10m", payload_v)
+                self.assertIn("volume_24h_ton", payload_v)
+                self.assertIn("floor_history", payload_v)
+
+        status_f, payload_f = self._get_json("/v1/catalog/feed?limit=20&preset=TOP_BUY")
+        self.assertEqual(status_f, 200)
+        self.assertIn("items", payload_f)
+
+    def test_catalog_feed_sort_dir_and_filters(self) -> None:
+        status, payload = self._get_json("/v1/catalog/feed?limit=10&sort=updated&dir=desc&action=WATCH")
+        self.assertEqual(status, 200)
+        self.assertIn("items", payload)
+        rows = payload.get("items") or []
+        self.assertTrue(isinstance(rows, list))
+        for row in rows:
+            self.assertEqual(str((row or {}).get("action") or "").upper(), "WATCH")
+
+        with self.assertRaises(HTTPError) as cm_bad_sort:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/catalog/feed?sort=unknown", timeout=10)
+        self.assertEqual(cm_bad_sort.exception.code, 400)
+
+    def test_catalog_stream_endpoint_success(self) -> None:
+        with urlopen(
+            f"http://127.0.0.1:{self.port}/v1/stream/catalog?heartbeat=5000&limit=5",
+            timeout=12,
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+            content_type = str(resp.headers.get("Content-Type") or "")
+            self.assertIn("text/event-stream", content_type)
+
+    def test_catalog_stream_endpoint_emits_contract_event(self) -> None:
+        svc = server._STATE
+        assert isinstance(svc, GiftAnalyticsService)
+        row = {
+            "variant_id": "stream|catalog|variant",
+            "variant_label": "Stream Catalog Variant",
+            "floor_ton": 5.0,
+            "fair_ton": 7.0,
+            "score100": 72.0,
+            "conf_pct": 44.0,
+            "edgeRank100": 63.0,
+            "market_regime": "MEAN_REVERT",
+            "action": "BUY",
+            "updated_at": "2026-03-05T12:00:00Z",
+        }
+        item = {"event_id": "cat:test:1:stream|catalog|variant", "ts": "2026-03-05T12:00:01Z", "payload": row}
+        with patch.object(svc, "catalog_stream_events_v1", return_value={"items": [item]}):
+            status, content_type, lines = self._read_sse_message("/v1/stream/catalog?heartbeat=5000&limit=5")
+
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", content_type)
+        self.assertGreaterEqual(len(lines), 3)
+        self.assertEqual(lines[0], "event: catalog.row")
+        self.assertEqual(lines[1], "id: cat:test:1:stream|catalog|variant")
+        self.assertTrue(lines[2].startswith("data: "))
+
+        payload = json.loads(lines[2][6:])
+        self.assertEqual(payload.get("event"), "catalog.row")
+        self.assertEqual(payload.get("ts"), "2026-03-05T12:00:01Z")
+        self.assertTrue(isinstance(payload.get("payload"), dict))
+        event_payload = payload.get("payload") or {}
+        self.assertEqual(event_payload.get("variant_id"), "stream|catalog|variant")
+        self.assertEqual(event_payload.get("action"), "BUY")
+        self.assertEqual(event_payload.get("market_regime"), "MEAN_REVERT")
+        self.assertNotIn("_stream_event_id", event_payload)
+        self.assertNotIn("_stream_emitted_at", event_payload)
 
     def test_collections_variants_signals_endpoints_success_and_404(self) -> None:
         status_col, payload_col = self._get_json("/v1/collections?limit=1")
@@ -183,6 +445,7 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertEqual(status_col_d, 200)
         self.assertIn("collection", payload_col_d)
         self.assertIn("top_variants", payload_col_d)
+
         self.assertIn("floor_series", payload_col_d)
 
         status_var, payload_var = self._get_json("/v1/variants?limit=1")
@@ -241,6 +504,16 @@ class TestV1HttpContract(unittest.TestCase):
         with self.assertRaises(HTTPError) as cm_var_404:
             urlopen(f"http://127.0.0.1:{self.port}/v1/variants/does-not-exist", timeout=10)
         self.assertEqual(cm_var_404.exception.code, 404)
+
+    def test_screeners_feed_endpoint_success(self) -> None:
+        status, payload = self._get_json("/v1/screeners/feed?limit=10")
+        self.assertEqual(status, 200)
+        self.assertIn("items", payload)
+        self.assertTrue(isinstance(payload.get("items"), list))
+        if payload["items"]:
+            row = payload["items"][0]
+            for key in ("ts", "screener_type", "variant_id", "variant_label", "edgeRank100", "score100", "conf_pct", "market_regime", "action"):
+                self.assertIn(key, row)
 
     def test_signals_calibration_report_endpoint(self) -> None:
         status, payload = self._get_json("/v1/signals/calibration/report?mode=tz&horizon_hours=24&limit=200")
@@ -631,6 +904,71 @@ class TestV1HttpContract(unittest.TestCase):
         payload_range = json.loads(cm_range.exception.read().decode("utf-8"))
         self.assertEqual(payload_range.get("error"), "invalid_heartbeat_range")
 
+    def test_listings_stream_rejects_invalid_interval_sec(self) -> None:
+        with self.assertRaises(HTTPError) as cm_nonint:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/stream?interval_sec=abc", timeout=10)
+        self.assertEqual(cm_nonint.exception.code, 400)
+        payload_nonint = json.loads(cm_nonint.exception.read().decode("utf-8"))
+        self.assertEqual(payload_nonint.get("error"), "invalid_interval_sec")
+
+        with self.assertRaises(HTTPError) as cm_range:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/stream?interval_sec=0.1", timeout=10)
+        self.assertEqual(cm_range.exception.code, 400)
+        payload_range = json.loads(cm_range.exception.read().decode("utf-8"))
+        self.assertEqual(payload_range.get("error"), "invalid_interval_sec_range")
+
+    def test_listings_stream_rejects_invalid_limit_and_window(self) -> None:
+        with self.assertRaises(HTTPError) as cm_limit:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/stream?limit=0", timeout=10)
+        self.assertEqual(cm_limit.exception.code, 400)
+        payload_limit = json.loads(cm_limit.exception.read().decode("utf-8"))
+        self.assertEqual(payload_limit.get("error"), "invalid_limit_range")
+
+        with self.assertRaises(HTTPError) as cm_window_nonint:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/stream?new_window_sec=bad", timeout=10)
+        self.assertEqual(cm_window_nonint.exception.code, 400)
+        payload_window_nonint = json.loads(cm_window_nonint.exception.read().decode("utf-8"))
+        self.assertEqual(payload_window_nonint.get("error"), "invalid_new_window_sec")
+
+        with self.assertRaises(HTTPError) as cm_window_range:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/stream?new_window_sec=1", timeout=10)
+        self.assertEqual(cm_window_range.exception.code, 400)
+        payload_window_range = json.loads(cm_window_range.exception.read().decode("utf-8"))
+        self.assertEqual(payload_window_range.get("error"), "invalid_new_window_sec_range")
+
+    def test_stream_listings_rejects_invalid_params(self) -> None:
+        with self.assertRaises(HTTPError) as cm_limit:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/stream/listings?limit=abc", timeout=10)
+        self.assertEqual(cm_limit.exception.code, 400)
+        payload_limit = json.loads(cm_limit.exception.read().decode("utf-8"))
+        self.assertEqual(payload_limit.get("error"), "invalid_limit")
+
+        with self.assertRaises(HTTPError) as cm_interval:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/stream/listings?interval_sec=0.1", timeout=10)
+        self.assertEqual(cm_interval.exception.code, 400)
+        payload_interval = json.loads(cm_interval.exception.read().decode("utf-8"))
+        self.assertEqual(payload_interval.get("error"), "invalid_interval_sec_range")
+
+        with self.assertRaises(HTTPError) as cm_window:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/stream/listings?window=bad", timeout=10)
+        self.assertEqual(cm_window.exception.code, 400)
+        payload_window = json.loads(cm_window.exception.read().decode("utf-8"))
+        self.assertIn("unsupported_window", str(payload_window.get("error") or ""))
+
+    def test_stream_listings_rejects_invalid_include_low_priority(self) -> None:
+        with self.assertRaises(HTTPError) as cm:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/stream/listings?include_low_priority=maybe", timeout=10)
+        self.assertEqual(cm.exception.code, 400)
+        payload = json.loads(cm.exception.read().decode("utf-8"))
+        self.assertEqual(payload.get("error"), "invalid_include_low_priority")
+
+    def test_listings_stream_rejects_invalid_include_relisted(self) -> None:
+        with self.assertRaises(HTTPError) as cm:
+            urlopen(f"http://127.0.0.1:{self.port}/v1/listings/stream?include_relisted=maybe", timeout=10)
+        self.assertEqual(cm.exception.code, 400)
+        payload = json.loads(cm.exception.read().decode("utf-8"))
+        self.assertEqual(payload.get("error"), "invalid_include_relisted")
+
     def test_stream_endpoint_metric_updated_envelope(self) -> None:
         with urlopen(
             f"http://127.0.0.1:{self.port}/v1/stream?types=metric.updated&heartbeat=5000",
@@ -639,6 +977,90 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             content_type = str(resp.headers.get("Content-Type") or "")
             self.assertIn("text/event-stream", content_type)
+
+    def test_stream_endpoint_market_status_envelope(self) -> None:
+        with urlopen(
+            f"http://127.0.0.1:{self.port}/v1/stream?types=market.status&heartbeat=5000",
+            timeout=12,
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+            content_type = str(resp.headers.get("Content-Type") or "")
+            self.assertIn("text/event-stream", content_type)
+
+    def test_v1_stream_snapshot_token_changes_with_listing_status(self) -> None:
+        svc = server._STATE
+        assert svc is not None
+        original_data_version = int(getattr(svc, "_data_version", 0))
+        try:
+            svc._data_version = 123  # noqa: SLF001
+            with patch.object(
+                svc,
+                "listing_source_status_v1",
+                return_value={"source": "mtproto_api", "updated_at": "2026-02-26T00:00:00Z", "rows_count": 10, "degraded": False, "error": ""},
+            ):
+                first = server._v1_stream_snapshot_token(svc)
+            with patch.object(
+                svc,
+                "listing_source_status_v1",
+                return_value={"source": "mtproto_api", "updated_at": "2026-02-26T00:01:00Z", "rows_count": 11, "degraded": False, "error": ""},
+            ):
+                second = server._v1_stream_snapshot_token(svc)
+        finally:
+            svc._data_version = original_data_version  # noqa: SLF001
+        self.assertNotEqual(first, second)
+
+    def test_v1_signals_stream_snapshot_token_changes_with_state(self) -> None:
+        svc = server._STATE
+        assert svc is not None
+        original_data_version = int(getattr(svc, "_data_version", 0))
+        original_updated_at = str((svc.state or {}).get("updated_at") or "")
+        try:
+            svc._data_version = 321  # noqa: SLF001
+            if not isinstance(svc.state, dict):
+                svc.state = {}
+            svc.state["updated_at"] = "2026-02-26T00:00:00Z"
+            first = server._v1_signals_stream_snapshot_token(svc, mode="tz")
+            svc.state["updated_at"] = "2026-02-26T00:01:00Z"
+            second = server._v1_signals_stream_snapshot_token(svc, mode="tz")
+        finally:
+            svc._data_version = original_data_version  # noqa: SLF001
+            if isinstance(svc.state, dict):
+                svc.state["updated_at"] = original_updated_at
+        self.assertNotEqual(first, second)
+
+    def test_v1_listings_stream_snapshot_token_changes_with_listing_status(self) -> None:
+        svc = server._STATE
+        assert svc is not None
+        with patch.object(
+            svc,
+            "listing_source_status_v1",
+            return_value={"source": "mtproto_api", "updated_at": "2026-02-26T00:00:00Z", "rows_count": 10, "degraded": False, "error": ""},
+        ):
+            first = server._v1_listings_stream_snapshot_token(svc, window="30m", include_low_priority=False)
+        with patch.object(
+            svc,
+            "listing_source_status_v1",
+            return_value={"source": "mtproto_api", "updated_at": "2026-02-26T00:01:00Z", "rows_count": 11, "degraded": False, "error": ""},
+        ):
+            second = server._v1_listings_stream_snapshot_token(svc, window="30m", include_low_priority=False)
+        self.assertNotEqual(first, second)
+
+    def test_v1_listings_events_stream_snapshot_token_changes_with_listing_status(self) -> None:
+        svc = server._STATE
+        assert svc is not None
+        with patch.object(
+            svc,
+            "listing_source_status_v1",
+            return_value={"source": "mtproto_api", "updated_at": "2026-02-26T00:00:00Z", "rows_count": 10, "degraded": False, "error": ""},
+        ):
+            first = server._v1_listings_events_stream_snapshot_token(svc, new_window_sec=120, include_relisted=True)
+        with patch.object(
+            svc,
+            "listing_source_status_v1",
+            return_value={"source": "mtproto_api", "updated_at": "2026-02-26T00:01:00Z", "rows_count": 11, "degraded": False, "error": ""},
+        ):
+            second = server._v1_listings_events_stream_snapshot_token(svc, new_window_sec=120, include_relisted=True)
+        self.assertNotEqual(first, second)
 
     def test_listings_endpoints_success_contract(self) -> None:
         status_listings, payload_listings = self._get_json("/v1/listings?limit=5")
@@ -770,29 +1192,33 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertIsInstance(svc, GiftAnalyticsService)
         assert isinstance(svc, GiftAnalyticsService)
         svc.listing_tracker_state = {}
-        svc.stars.set_derived_rate(1000.0)  # 1000 stars = 1 TON
-        rows_first = [
-            {
-                "listing_key": "x:def",
-                "collection_id": "x",
-                "unique_id": "def",
-                "variant_id": "x|m|b|p",
-                "resell_amount_stars_est": 2000,
-                "last_seen_at": "2026-02-26T00:01:00Z",
-            }
-        ]
-        server._warmup_race_tracker_from_rows(svc, rows_first, "2026-02-26T00:01:00Z")
-        rows_second = [
-            {
-                "listing_key": "x:def",
-                "collection_id": "x",
-                "unique_id": "def",
-                "variant_id": "x|m|b|p",
-                "resell_amount_stars_est": 3000,
-                "last_seen_at": "2026-02-26T00:01:30Z",
-            }
-        ]
-        server._warmup_race_tracker_from_rows(svc, rows_second, "2026-02-26T00:01:30Z")
+        with patch.object(
+            svc,
+            "stars_rate",
+            return_value={"stars_per_ton": 1000.0, "ton_per_star": 0.001, "source": "test"},
+        ):
+            rows_first = [
+                {
+                    "listing_key": "x:def",
+                    "collection_id": "x",
+                    "unique_id": "def",
+                    "variant_id": "x|m|b|p",
+                    "resell_amount_stars_est": 2000,
+                    "last_seen_at": "2026-02-26T00:01:00Z",
+                }
+            ]
+            server._warmup_race_tracker_from_rows(svc, rows_first, "2026-02-26T00:01:00Z")
+            rows_second = [
+                {
+                    "listing_key": "x:def",
+                    "collection_id": "x",
+                    "unique_id": "def",
+                    "variant_id": "x|m|b|p",
+                    "resell_amount_stars_est": 3000,
+                    "last_seen_at": "2026-02-26T00:01:30Z",
+                }
+            ]
+            server._warmup_race_tracker_from_rows(svc, rows_second, "2026-02-26T00:01:30Z")
         entry = svc.listing_tracker_state.get("x:def") if isinstance(svc.listing_tracker_state, dict) else None
         self.assertIsInstance(entry, dict)
         assert isinstance(entry, dict)
@@ -883,6 +1309,70 @@ class TestV1HttpContract(unittest.TestCase):
         with self.assertRaises(HTTPError) as cm_history_missing:
             urlopen(f"http://127.0.0.1:{self.port}/v1/listings/history", timeout=10)
         self.assertEqual(cm_history_missing.exception.code, 400)
+
+    def test_listings_new_survives_row_signal_exceptions(self) -> None:
+        svc = server._STATE
+        self.assertIsInstance(svc, GiftAnalyticsService)
+        assert isinstance(svc, GiftAnalyticsService)
+        svc.variants["broken|model|bg|pat"] = {
+            "variant_id": "broken|model|bg|pat",
+            "base_id": "broken",
+            "traits": {"model": {"name": "Model"}, "background": {"name": "BG"}, "pattern": {"name": "Pat"}},
+            "metrics": {},
+        }
+        with patch.object(
+            svc,
+            "listings_v1",
+            return_value={
+                "items": [
+                    {
+                        "listing_key": "broken:1",
+                        "variant_id": "broken|model|bg|pat",
+                        "collection_id": "broken",
+                        "collection": "Broken",
+                        "attributes": {"model": "Model", "background": "BG", "pattern": "Pat"},
+                        "preview_url": "",
+                        "first_seen_at": "2026-03-01T00:00:00Z",
+                        "last_seen_at": "2026-03-01T00:00:00Z",
+                        "resell_amount_ton": 1.0,
+                    }
+                ],
+                "source": "mtproto_api",
+                "source_error": "",
+            },
+        ), patch.object(svc, "_v1_signal", side_effect=RuntimeError("simulated_signal_error")):
+            status, payload = self._get_json("/v1/listings/new?limit=20&window=30m&only_pro_alerts=false")
+        self.assertEqual(status, 200)
+        self.assertIn("row_processing_errors", payload)
+        self.assertGreaterEqual(int(payload.get("row_processing_errors") or 0), 0)
+        self.assertIn("row_processing_error_samples", payload)
+
+    def test_listings_race_survives_row_signal_exceptions(self) -> None:
+        svc = server._STATE
+        self.assertIsInstance(svc, GiftAnalyticsService)
+        assert isinstance(svc, GiftAnalyticsService)
+        svc.variants["race|model|bg|pat"] = {
+            "variant_id": "race|model|bg|pat",
+            "base_id": "race",
+            "traits": {"model": {"name": "Model"}, "background": {"name": "BG"}, "pattern": {"name": "Pat"}},
+            "metrics": {},
+        }
+        svc.listing_tracker_state["race:1"] = {
+            "listing_key": "race:1",
+            "variant_id": "race|model|bg|pat",
+            "base_id": "race",
+            "prev_price_ton": 5.0,
+            "last_price_ton": 6.0,
+            "last_price_changed_at": "2026-03-01T00:00:00Z",
+            "last_seen_at": "2026-03-01T00:00:00Z",
+            "preview_url": "",
+        }
+        with patch.object(svc, "_v1_signal", side_effect=RuntimeError("simulated_signal_error")):
+            status, payload = self._get_json("/v1/listings/race?limit=20&window=30m&include_low_priority=true")
+        self.assertEqual(status, 200)
+        self.assertIn("row_processing_errors", payload)
+        self.assertGreaterEqual(int(payload.get("row_processing_errors") or 0), 0)
+        self.assertIn("row_processing_error_samples", payload)
 
 
 if __name__ == "__main__":

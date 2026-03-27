@@ -1,0 +1,27 @@
+# GiftMarketZone — Redis Topics / Keys (v1.3)
+# Добавлены события режима рынка и signal v2
+
+## Realtime Streams (pub/sub или Redis Streams)
+- stream:metrics.updated
+  key pattern: metrics:{scope}:{metric}:{id}
+  payload: schema_metric.updated.json
+
+- stream:signal.created
+  key pattern: signal:{variant_id}
+  payload: schema_signal.created.v2.json
+
+- stream:market.status
+  key pattern: market:status
+  payload: schema_market.status.v1.json
+
+## Dedup Keys (Telegram notifier)
+- dedupe:tg:{sha1(action|variant_id|edgeRank100|price_ton|fair_ton)}
+  TTL: 600s
+
+## Rate limit bucket
+- ratelimit:tg:{channel_id}
+  (token bucket implementation)
+
+## Latest snapshots (optional cache)
+- cache:market:status -> MarketStatusResponse JSON, TTL 15s
+- cache:variant:{variant_id}:latest -> last computed VariantAgg, TTL 30s

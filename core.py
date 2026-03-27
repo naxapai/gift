@@ -17,10 +17,12 @@ from statistics import mean, median, pstdev
 from typing import Dict, Iterable, List, Tuple
 import urllib.request
 import urllib.error
+import urllib.parse
 import re
 from urllib.parse import urlsplit, urlunsplit
 
 from fragment import FragmentClient, ListingEvent, VariantTraits, BaseInfo
+from telegram_delivery import TelegramNotifier
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +39,9 @@ AI_RECO_CACHE_FILE = DATA_DIR / "ai_reco_cache.json"
 STARS_RATE_CACHE_FILE = DATA_DIR / "stars_rate_cache.json"
 LISTING_TRACKER_STATE_FILE = DATA_DIR / "listing_tracker_state.json"
 MT_LISTINGS_SNAPSHOT_FILE = DATA_DIR / "mt_listings_snapshot.json"
+TELEGRAM_DELIVERY_SETTINGS_FILE = DATA_DIR / "telegram_delivery_settings.json"
+TELEGRAM_DELIVERY_JOURNAL_FILE = DATA_DIR / "telegram_delivery_journal.json"
+OWNED_GIFTS_FILE = DATA_DIR / "owned_gifts_by_user.json"
 
 WINDOWS = {
     "10m": 10 * 60,
@@ -158,6 +163,88 @@ DEFAULT_SIGNAL_PROFILE_CONFIG: dict = {
     "telegram_publish_gate": {"edgeRank100_gte": 55, "conf_pct_gte": 35, "expected_profit_pct_gte": 8},
     "profiles": {},
     "post_rules": {"skip_if": []},
+}
+
+DEFAULT_SCREENERS_THRESHOLDS_CONFIG: dict = {
+    "profiles": {
+        "RISK_ON": {
+            "edge_buy": 58.0,
+            "profit_min": 0.07,
+            "lp_max": 3.5,
+            "ar_min": 0.85,
+            "liq_min": 30.0,
+            "conf_min": 35.0,
+            "lp_sell": 4.0,
+        },
+        "MEAN_REVERT": {
+            "edge_buy": 60.0,
+            "profit_min": 0.08,
+            "lp_max": 3.0,
+            "ar_min": 0.90,
+            "liq_min": 35.0,
+            "conf_min": 35.0,
+            "lp_sell": 4.0,
+        },
+        "RISK_OFF": {
+            "edge_buy": 62.0,
+            "profit_min": 0.10,
+            "lp_max": 2.8,
+            "ar_min": 1.0,
+            "liq_min": 40.0,
+            "conf_min": 40.0,
+            "lp_sell": 3.8,
+        },
+        "PANIC": {
+            "edge_buy": 65.0,
+            "profit_min": 0.12,
+            "lp_max": 2.2,
+            "ar_min": 1.10,
+            "liq_min": 45.0,
+            "conf_min": 45.0,
+            "lp_sell": 3.5,
+        },
+    }
+}
+
+DEFAULT_CATALOG_THRESHOLDS_CONFIG: dict = {
+    "profiles": {
+        "RISK_ON": {
+            "edge_buy": 58.0,
+            "profit_min": 0.07,
+            "lp_max": 3.5,
+            "ar_min": 0.85,
+            "liq_min": 30.0,
+            "conf_min": 35.0,
+            "lp_sell": 4.0,
+        },
+        "MEAN_REVERT": {
+            "edge_buy": 60.0,
+            "profit_min": 0.08,
+            "lp_max": 3.0,
+            "ar_min": 0.90,
+            "liq_min": 35.0,
+            "conf_min": 35.0,
+            "lp_sell": 4.0,
+        },
+        "RISK_OFF": {
+            "edge_buy": 62.0,
+            "profit_min": 0.10,
+            "lp_max": 2.8,
+            "ar_min": 1.0,
+            "liq_min": 40.0,
+            "conf_min": 40.0,
+            "lp_sell": 3.8,
+        },
+        "PANIC": {
+            "edge_buy": 65.0,
+            "profit_min": 0.12,
+            "lp_max": 2.2,
+            "ar_min": 1.10,
+            "liq_min": 45.0,
+            "conf_min": 45.0,
+            "lp_sell": 3.5,
+        },
+    }
 }
 
 
@@ -538,7 +625,7 @@ class RealtimeStore:
         r = self._redis()
         if r is None:
             return True
-        key = f"dedupe:signals:{variant_id}:{signal_type}"
+        key = f"dedupe:tg:{signature}"
         try:
             prev = r.get(key)
             if prev == signature:
@@ -648,13 +735,23 @@ class GiftAnalyticsService:
         self.v1_signal_engine_mode = os.getenv("V1_SIGNAL_ENGINE_MODE", "tz").strip().lower()
         self.listing_new_window_sec = max(30, int(os.getenv("LISTING_NEW_WINDOW_SEC", "120")))
         self.listing_tracker_retention_sec = max(3600, int(os.getenv("LISTING_TRACKER_RETENTION_SEC", "1209600")))
-        self.listing_primary_source = str(os.getenv("LISTING_PRIMARY_SOURCE", "auto") or "auto").strip().lower()
-        self.listing_strict_primary = str(os.getenv("LISTING_STRICT_PRIMARY", "false") or "").strip().lower() in {"1", "true", "yes", "on"}
+        self.listing_primary_source = str(os.getenv("LISTING_PRIMARY_SOURCE", "mtproto_api") or "mtproto_api").strip().lower()
+        strict_raw = os.getenv("LISTING_STRICT_PRIMARY")
+        if strict_raw is None:
+            self.listing_strict_primary = self.listing_primary_source in {"mtproto", "mtproto_api"}
+        else:
+            self.listing_strict_primary = str(strict_raw or "").strip().lower() in {"1", "true", "yes", "on"}
+        self.listing_allow_fragment_fallback = (
+            str(os.getenv("LISTING_ALLOW_FRAGMENT_FALLBACK", "false") or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
         self.listing_mt_api_url = str(os.getenv("LISTING_MT_API_URL", "") or "").strip()
         self.listing_mt_api_token = str(os.getenv("LISTING_MT_API_TOKEN", "") or "").strip()
         self.listing_mt_api_token_header = str(os.getenv("LISTING_MT_API_TOKEN_HEADER", "Authorization") or "Authorization").strip()
         self.listing_mt_api_token_prefix = str(os.getenv("LISTING_MT_API_TOKEN_PREFIX", "Bearer ") or "")
         self.listing_mt_api_timeout_sec = max(3.0, float(os.getenv("LISTING_MT_API_TIMEOUT_SEC", "4")))
+        self.listing_mt_allow_snapshot_fallback = (
+            str(os.getenv("LISTING_MT_ALLOW_SNAPSHOT_FALLBACK", "false") or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
         # Keep MTProto fetch cadence moderate by default to avoid 429 bursts on provider side.
         self.listing_mt_cache_ttl_sec = max(3.0, float(os.getenv("LISTING_MT_CACHE_TTL_SEC", "15")))
         self.listing_mt_error_cache_ttl_sec = max(
@@ -694,6 +791,38 @@ class GiftAnalyticsService:
             default=DEFAULT_SIGNAL_PROFILE_CONFIG,
         )
         self._configure_listing_profiles_from_config()
+        self.screeners_config_dir = Path(
+            os.getenv("SCREENERS_CONFIG_DIR", str((Path(__file__).parent / "config" / "screeners").resolve()))
+        )
+        self.screeners_thresholds_config = self._load_screeners_config_json(
+            "screeners_thresholds.json",
+            default=DEFAULT_SCREENERS_THRESHOLDS_CONFIG,
+        )
+        self.catalog_config_dir = Path(
+            os.getenv("CATALOG_CONFIG_DIR", str((Path(__file__).parent / "config" / "catalog").resolve()))
+        )
+        self.catalog_thresholds_config = self._load_catalog_config_json(
+            "catalog_thresholds.json",
+            default=DEFAULT_CATALOG_THRESHOLDS_CONFIG,
+        )
+        self.telegram_config_dir = Path(
+            os.getenv("TELEGRAM_CONFIG_DIR", str((Path(__file__).parent / "config" / "telegram").resolve()))
+        )
+        self.telegram_notifier = TelegramNotifier(
+            profile_path=self.telegram_config_dir / "telegram_message_profile_PRO_v1.json",
+            rules_path=self.telegram_config_dir / "telegram_message_templater_rules_PRO_v1.txt",
+            signal_profiles_path=self.listing_config_dir / "signal_profiles_by_regime.json",
+            settings_path=TELEGRAM_DELIVERY_SETTINGS_FILE,
+            journal_path=TELEGRAM_DELIVERY_JOURNAL_FILE,
+            bot_token=(os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or os.getenv("TG_BOT_TOKEN", "").strip()),
+            default_chat_id=(os.getenv("TG_CHAT_ID", "").strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip()),
+        )
+        self.telegram_owned_gifts_api_url = str(os.getenv("TELEGRAM_OWNED_GIFTS_API_URL", "") or "").strip()
+        self.telegram_owned_gifts_api_token = str(os.getenv("TELEGRAM_OWNED_GIFTS_API_TOKEN", "") or "").strip()
+        self.telegram_owned_gifts_timeout_sec = max(2.0, float(os.getenv("TELEGRAM_OWNED_GIFTS_TIMEOUT_SEC", "8")))
+        self.telegram_owned_gifts_cache_ttl_sec = max(5.0, float(os.getenv("TELEGRAM_OWNED_GIFTS_CACHE_TTL_SEC", "60")))
+        self._telegram_owned_gifts_cache: dict[str, tuple[float, dict]] = {}
+        self.owned_gifts_file = Path(os.getenv("OWNED_GIFTS_FILE", str(OWNED_GIFTS_FILE.resolve())))
         self.metrics_strict_exact_max_variants = max(50, int(os.getenv("METRICS_STRICT_EXACT_MAX_VARIANTS", "500")))
         self.redis_collections_publish_limit = max(1, min(int(os.getenv("REDIS_COLLECTIONS_PUBLISH_LIMIT", "24")), 200))
         self.redis_collection_floor_series_limit = max(1, min(int(os.getenv("REDIS_COLLECTION_FLOOR_SERIES_LIMIT", "200")), 1000))
@@ -709,6 +838,20 @@ class GiftAnalyticsService:
             "error": "",
             "error_ttl_sec": self.listing_mt_error_cache_ttl_sec,
             "updated_at": None,
+        }
+        self._screeners_stream_runtime: dict = {
+            "data_version": -1,
+            "rows_by_key": {},
+            "events": [],
+            "seq": 0,
+            "max_events": 4000,
+        }
+        self._catalog_stream_runtime: dict = {
+            "data_version": -1,
+            "rows_by_key": {},
+            "events": [],
+            "seq": 0,
+            "max_events": 4000,
         }
         self._listing_mt_warmup_lock = threading.Lock()
         self._listing_mt_warmup_running = False
@@ -801,11 +944,21 @@ class GiftAnalyticsService:
     def listing_runtime_errors_v1(self, limit: int = 50, block: str | None = None) -> dict:
         lim = max(1, min(int(limit or 50), 500))
         block_filter = str(block or "").strip().lower()
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "listing_runtime_errors_v1",
+            lim,
+            block_filter,
+            int(self.state.get("listing_runtime_error_count") or 0),
+        )
+        cached = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached is not None:
+            return cached
         rows = self.listing_runtime_errors
         if block_filter:
             rows = [r for r in rows if str((r or {}).get("block") or "").strip().lower() == block_filter]
         items = list(reversed(rows[-lim:]))
-        return {
+        payload = {
             "items": items,
             "total": len(rows),
             "limit": lim,
@@ -813,12 +966,46 @@ class GiftAnalyticsService:
             "error_count_total": int(self.state.get("listing_runtime_error_count") or 0),
             "last_error": self.state.get("last_listing_runtime_error"),
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def _load_listing_config_json(self, filename: str, default: dict) -> dict:
         candidates = [
             self.listing_config_dir / filename,
             Path(__file__).parent / "config" / "signals" / filename,
             Path(__file__).parent / "config" / "listing" / filename,
+            Path(__file__).parent / "config" / filename,
+        ]
+        for path in candidates:
+            try:
+                if path.exists():
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict):
+                        return _deep_merge_dict(default, payload)
+            except Exception:
+                continue
+        return dict(default or {})
+
+    def _load_screeners_config_json(self, filename: str, default: dict) -> dict:
+        candidates = [
+            self.screeners_config_dir / filename,
+            Path(__file__).parent / "config" / "screeners" / filename,
+            Path(__file__).parent / "config" / filename,
+        ]
+        for path in candidates:
+            try:
+                if path.exists():
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict):
+                        return _deep_merge_dict(default, payload)
+            except Exception:
+                continue
+        return dict(default or {})
+
+    def _load_catalog_config_json(self, filename: str, default: dict) -> dict:
+        candidates = [
+            self.catalog_config_dir / filename,
+            Path(__file__).parent / "config" / "catalog" / filename,
             Path(__file__).parent / "config" / filename,
         ]
         for path in candidates:
@@ -2191,8 +2378,12 @@ class GiftAnalyticsService:
             source_sold = int(self.source_totals.get("sold", 0) or 0)
             trades_total = len(self.trade_events)
 
-            floors = [v["metrics"]["floor_ton"] for v in variants]
-            active = [v["metrics"]["active_listings"] for v in variants]
+            floors = [
+                float(((v.get("metrics") or {}).get("floor_ton") or 0.0))
+                for v in variants
+                if float(((v.get("metrics") or {}).get("floor_ton") or 0.0)) > 0
+            ]
+            active = [int(((v.get("metrics") or {}).get("active_listings") or 0)) for v in variants]
             models = {v.get("traits", {}).get("model", {}).get("id") for v in variants if v.get("traits", {}).get("model", {}).get("id")}
             avg_1h = _safe_mean([v["metrics"].get("floor_change_pct_1h", 0) for v in variants])
             avg_12h = _safe_mean([v["metrics"].get("floor_change_pct_12h", 0) for v in variants])
@@ -2232,6 +2423,19 @@ class GiftAnalyticsService:
             buy_signals = 0
             sell_signals = 0
 
+        provider_name = str(os.getenv("VERIFIED_SOURCE", "telegram_api") or "telegram_api")
+        provider_error = str(state_last_error or "")
+        provider_ts = state_updated_at
+        provider_degraded = bool(provider_error)
+        if self.listing_primary_source in {"mtproto", "mtproto_api"}:
+            listing_status = self.listing_source_status_v1(allow_remote=False)
+            provider_name = str(listing_status.get("source") or provider_name or "mtproto_api")
+            listing_error = str(listing_status.get("error") or "").strip()
+            if listing_error:
+                provider_error = listing_error
+            provider_ts = listing_status.get("updated_at") or provider_ts
+            provider_degraded = bool(listing_status.get("degraded")) or bool(provider_error)
+
         payload = {
             "updated_at": state_updated_at,
             "variant_count": variants_count,
@@ -2261,7 +2465,7 @@ class GiftAnalyticsService:
             "ingest_in_progress": state_ingest_in_progress,
             "last_ingest_started_at": state_last_ingest_started_at,
             # Runtime diagnostics for Render env drift / stale deploy checks.
-            "runtime_source": os.getenv("VERIFIED_SOURCE", "telegram_api"),
+            "runtime_source": provider_name,
             "runtime_gift_mode": os.getenv("FRAGMENT_GIFT_MODE", "lot"),
             "runtime_max_collections": int(os.getenv("FRAGMENT_MAX_COLLECTIONS", "0")),
             "runtime_max_pages_per_collection": int(os.getenv("FRAGMENT_MAX_PAGES_PER_COLLECTION", "500")),
@@ -2279,11 +2483,11 @@ class GiftAnalyticsService:
             },
             "provider_health": [
                 {
-                    "provider": os.getenv("VERIFIED_SOURCE", "telegram_api"),
+                    "provider": provider_name,
                     "p95_ms": 0,
-                    "err_pct": 0.0 if not state_last_error else 100.0,
-                    "degraded": bool(state_last_error),
-                    "ts": state_updated_at,
+                    "err_pct": 0.0 if not provider_error else 100.0,
+                    "degraded": bool(provider_degraded),
+                    "ts": provider_ts,
                 }
             ],
         }
@@ -2305,7 +2509,11 @@ class GiftAnalyticsService:
         out = []
         for base_id, payload in bases.items():
             variants = payload["variants"]
-            floors = [x["metrics"]["floor_ton"] for x in variants]
+            floors = [
+                float(((x.get("metrics") or {}).get("floor_ton") or 0.0))
+                for x in variants
+                if float(((x.get("metrics") or {}).get("floor_ton") or 0.0)) > 0
+            ]
             preview_url = next((x.get("preview_url") for x in variants if x.get("preview_url")), "")
             out.append(
                 {
@@ -2317,7 +2525,7 @@ class GiftAnalyticsService:
                     "metrics": {
                         "floor_ton": min(floors) if floors else None,
                         "floor_stars_est": self._stars_est(min(floors) if floors else None),
-                        "active_listings": sum(x["metrics"]["active_listings"] for x in variants),
+                        "active_listings": sum(int(((x.get("metrics") or {}).get("active_listings") or 0)) for x in variants),
                         "floor_change_pct_1h": round(_safe_mean([x["metrics"].get("floor_change_pct_1h", 0) for x in variants]), 3),
                         "floor_change_pct_12h": round(_safe_mean([x["metrics"].get("floor_change_pct_12h", 0) for x in variants]), 3),
                         "price_change_pct_1h": round(_safe_mean([x["metrics"].get("price_change_pct_1h", 0) for x in variants]), 3),
@@ -2358,7 +2566,11 @@ class GiftAnalyticsService:
             by_dim.setdefault(key, []).append(v)
         out = []
         for dim_id, variants in by_dim.items():
-            floors = [x["metrics"]["floor_ton"] for x in variants]
+            floors = [
+                float(((x.get("metrics") or {}).get("floor_ton") or 0.0))
+                for x in variants
+                if float(((x.get("metrics") or {}).get("floor_ton") or 0.0)) > 0
+            ]
             metrics = {
                 "floor_ton": min(floors) if floors else None,
                 "floor_stars_est": self._stars_est(min(floors) if floors else None),
@@ -2368,7 +2580,7 @@ class GiftAnalyticsService:
                 "price_change_pct_12h": round(_safe_mean([x["metrics"].get("price_change_pct_12h", 0) for x in variants]), 3),
                 "floor_change_pct_24h": round(_safe_mean([x["metrics"].get("floor_change_pct_24h", 0) for x in variants]), 3),
                 "price_change_pct_24h": round(_safe_mean([x["metrics"].get("price_change_pct_24h", 0) for x in variants]), 3),
-                "active_listings": sum(x["metrics"]["active_listings"] for x in variants),
+                "active_listings": sum(int(((x.get("metrics") or {}).get("active_listings") or 0)) for x in variants),
                 "trades_count_24h": sum(x["metrics"].get("trades_count_24h", 0) for x in variants),
                 "volume_ton_24h": round(sum(x["metrics"].get("volume_ton_24h", 0) for x in variants), 6),
                 "liquidity_score_24h": round(_safe_mean([x["metrics"].get("liquidity_score_24h", 0) for x in variants]), 4),
@@ -3245,6 +3457,176 @@ class GiftAnalyticsService:
         self._save_alerts()
         return len(self.alert_rules) < before
 
+    def telegram_delivery_config_v1(self) -> dict:
+        effective = self.telegram_notifier.effective_settings()
+        overrides = _load_json(TELEGRAM_DELIVERY_SETTINGS_FILE, {})
+        return {
+            "ok": True,
+            "defaults": self.telegram_notifier.defaults(),
+            "overrides": overrides if isinstance(overrides, dict) else {},
+            "effective": effective,
+        }
+
+    def telegram_delivery_update_config_v1(self, patch: dict) -> dict:
+        effective = self.telegram_notifier.update_settings(patch if isinstance(patch, dict) else {})
+        overrides = _load_json(TELEGRAM_DELIVERY_SETTINGS_FILE, {})
+        return {
+            "ok": True,
+            "defaults": self.telegram_notifier.defaults(),
+            "overrides": overrides if isinstance(overrides, dict) else {},
+            "effective": effective,
+        }
+
+    def telegram_delivery_reset_config_v1(self) -> dict:
+        effective = self.telegram_notifier.reset_settings()
+        return {
+            "ok": True,
+            "defaults": self.telegram_notifier.defaults(),
+            "overrides": {},
+            "effective": effective,
+        }
+
+    def telegram_delivery_status_v1(self) -> dict:
+        return self.telegram_notifier.status()
+
+    def telegram_delivery_journal_v1(self, limit: int = 50) -> dict:
+        return self.telegram_notifier.journal_snapshot(limit=limit)
+
+    def telegram_delivery_test_v1(self, kind: str = "gift_signal") -> dict:
+        target = str(kind or "gift_signal").strip().lower()
+        if target == "market_status":
+            return self.telegram_notifier.send_test("market_status", self.market_status_v1(window="30m"))
+        signals = self.signals_v1(limit=1, mode="tz")
+        items = signals.get("items") if isinstance(signals, dict) else []
+        sample = items[0] if isinstance(items, list) and items else None
+        if not isinstance(sample, dict):
+            return {"ok": False, "error": "signal_not_available", "sent": False, "preview": ""}
+        return self.telegram_notifier.send_test("gift_signal", sample)
+
+    def telegram_owned_gifts_v1(self, user: dict | None) -> dict:
+        person = user if isinstance(user, dict) else {}
+        user_id = str(person.get("id") or "").strip()
+        username = str(person.get("username") or "").strip().lstrip("@")
+        if not user_id and not username:
+            return {"ok": True, "authenticated": False, "items": [], "source": "anonymous"}
+        cache_key = f"{user_id}|{username.lower()}"
+        now_ts = time.time()
+        cached = self._telegram_owned_gifts_cache.get(cache_key)
+        if cached and (now_ts - float(cached[0])) <= self.telegram_owned_gifts_cache_ttl_sec:
+            return json.loads(json.dumps(cached[1], ensure_ascii=False))
+        payload = self._telegram_owned_gifts_fetch_remote(user_id=user_id, username=username)
+        self._telegram_owned_gifts_cache[cache_key] = (now_ts, payload)
+        return json.loads(json.dumps(payload, ensure_ascii=False))
+
+    def owned_gifts_bridge_v1(self, telegram_user_id: str = "", username: str = "") -> dict:
+        user_id = str(telegram_user_id or "").strip()
+        uname = str(username or "").strip().lstrip("@").lower()
+        payload = self._owned_gifts_local_lookup(user_id=user_id, username=uname)
+        payload["query"] = {"telegram_user_id": user_id or None, "username": uname or None}
+        return payload
+
+    def _telegram_owned_gifts_fetch_remote(self, *, user_id: str, username: str) -> dict:
+        if not self.telegram_owned_gifts_api_url:
+            payload = self._owned_gifts_local_lookup(user_id=user_id, username=username)
+            if payload.get("source") == "local_file":
+                payload["authenticated"] = True
+                return payload
+            return {
+                "ok": True,
+                "authenticated": True,
+                "items": [],
+                "source": "unconfigured",
+                "message": "Источник подарков пользователя пока не подключен",
+            }
+        req_url = self.telegram_owned_gifts_api_url
+        sep = "&" if "?" in req_url else "?"
+        query = []
+        if user_id:
+            query.append(f"telegram_user_id={urllib.parse.quote(str(user_id))}")
+        if username:
+            query.append(f"username={urllib.parse.quote(str(username))}")
+        if query:
+            req_url = f"{req_url}{sep}{'&'.join(query)}"
+        req = urllib.request.Request(req_url, headers={"Accept": "application/json"})
+        if self.telegram_owned_gifts_api_token:
+            req.add_header("Authorization", f"Bearer {self.telegram_owned_gifts_api_token}")
+        try:
+            with urllib.request.urlopen(req, timeout=self.telegram_owned_gifts_timeout_sec) as resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            return {
+                "ok": False,
+                "authenticated": True,
+                "items": [],
+                "source": "remote_error",
+                "message": f"owned_gifts_fetch_failed:{exc.__class__.__name__}",
+            }
+        items_raw = []
+        source = "remote"
+        if isinstance(raw, dict):
+            if isinstance(raw.get("items"), list):
+                items_raw = raw.get("items") or []
+            elif isinstance(raw.get("gifts"), list):
+                items_raw = raw.get("gifts") or []
+            source = str(raw.get("source") or source)
+        elif isinstance(raw, list):
+            items_raw = raw
+        items = [self._normalize_owned_gift_row(x) for x in items_raw if isinstance(x, dict)]
+        items = [x for x in items if str(x.get("gift_id") or x.get("variant_id") or x.get("collection") or "").strip()]
+        return {"ok": True, "authenticated": True, "items": items, "source": source}
+
+    def _owned_gifts_local_lookup(self, *, user_id: str, username: str) -> dict:
+        raw = _load_json(self.owned_gifts_file, {})
+        if not isinstance(raw, dict):
+            raw = {}
+        users = raw.get("users") if isinstance(raw.get("users"), dict) else raw
+        rows: list[dict] = []
+        candidates = []
+        if user_id:
+            candidates.extend([user_id, f"id:{user_id}", f"telegram:{user_id}"])
+        if username:
+            candidates.extend([username, f"@{username}", f"username:{username}"])
+        for key in candidates:
+            value = users.get(key)
+            if isinstance(value, list):
+                rows = [x for x in value if isinstance(x, dict)]
+                if rows:
+                    break
+        items = [self._normalize_owned_gift_row(x) for x in rows]
+        return {
+            "ok": True,
+            "authenticated": True,
+            "items": items,
+            "source": "local_file" if self.owned_gifts_file.exists() else "local_file_missing",
+            "message": "" if items else ("Подарки пользователя не найдены" if self.owned_gifts_file.exists() else "Файл подарков пользователя пока не заполнен"),
+        }
+
+    def _normalize_owned_gift_row(self, row: dict) -> dict:
+        profile = row.get("profile") if isinstance(row.get("profile"), dict) else {}
+        collection = str(row.get("collection") or row.get("name") or row.get("collection_slug") or row.get("collection_name") or "")
+        model = str(row.get("model") or profile.get("model") or "")
+        background = str(row.get("background") or profile.get("background") or "")
+        pattern = str(row.get("pattern") or profile.get("pattern") or "")
+        variant_id = str(row.get("variant_id") or "")
+        if not variant_id and any([collection, model, background, pattern]):
+            variant_id = "|".join([collection, model, background, pattern]).lower().replace(" ", "_")
+        return {
+            "gift_id": str(row.get("gift_id") or row.get("id") or variant_id or ""),
+            "variant_id": variant_id or None,
+            "collection": collection or None,
+            "model": model or None,
+            "background": background or None,
+            "pattern": pattern or None,
+            "variant_label": str(row.get("variant_label") or " / ".join([x for x in [collection, model, background, pattern] if x]) or collection),
+            "preview_url": str(row.get("preview_url") or row.get("preview_image_url") or row.get("image_url") or ""),
+            "fragment_url": str(row.get("fragment_market_url") or row.get("fragment_url") or ""),
+            "status": str(row.get("status") or row.get("latest_status") or "OWNED"),
+            "floor_ton": float(row.get("floor_ton") or 0.0) if row.get("floor_ton") is not None else None,
+            "fair_ton": float(row.get("fair_ton") or profile.get("value_ton_estimate") or 0.0) if (row.get("fair_ton") is not None or profile.get("value_ton_estimate") is not None) else None,
+            "acquired_at": str(row.get("acquired_at") or row.get("updated_at") or row.get("ts") or ""),
+            "meta": row,
+        }
+
     def favorites_list(self, user_key: str = "default") -> List[dict]:
         data = _load_json(FAVORITES_FILE, {})
         rows = data.get(user_key) or []
@@ -4060,6 +4442,19 @@ class GiftAnalyticsService:
     def _v1_variant_summary(self, v: dict, mode: str | None = None) -> dict:
         traits = v.get("traits") or {}
         eff_mode = self._effective_v1_mode(mode)
+        variant_sig_hash = hashlib.sha1(
+            json.dumps(v or {}, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "_v1_variant_summary",
+            variant_sig_hash,
+            eff_mode,
+            int(getattr(self, "_data_version", 0)),
+        )
+        cached = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached is not None:
+            return cached
         mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
         reco = v.get("reco") or {}
         base_id = str(v.get("base_id") or "")
@@ -4086,7 +4481,7 @@ class GiftAnalyticsService:
                 risk_flags = risks_legacy
         score = _clamp(float(score100) / 100.0, 0.0, 1.0)
         confidence = _clamp(float(conf_pct) / 100.0, 0.0, 1.0)
-        return {
+        payload = {
             "variant_id": str(v.get("variant_id") or ""),
             "collection_id": base_id,
             "collection_name": base_name,
@@ -4115,6 +4510,8 @@ class GiftAnalyticsService:
             "stale": self.is_stale(),
             "updated_at": v.get("updated_at") or self.state.get("updated_at") or "1970-01-01T00:00:00Z",
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def _v1_signal(
         self,
@@ -4124,6 +4521,22 @@ class GiftAnalyticsService:
         depth_cache: dict[str, tuple[int, float]] | None = None,
     ) -> dict:
         eff_mode = self._effective_v1_mode(mode)
+        variant_sig_hash = hashlib.sha1(
+            json.dumps(v or {}, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        regime_cache = regime_snapshot if isinstance(regime_snapshot, dict) else self._market_regime_snapshot_v1()
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "_v1_signal",
+            variant_sig_hash,
+            eff_mode,
+            str(regime_cache.get("market_regime") or ""),
+            str(regime_cache.get("market_regime_badge") or ""),
+            int(getattr(self, "_data_version", 0)),
+        )
+        cached = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached is not None:
+            return cached
         variant = self._v1_variant_summary(v, mode=eff_mode)
         mm = self._tz_signal_math_strict(v) if eff_mode == "tz_strict" else self._tz_signal_math(v)
         reco = v.get("reco") or {}
@@ -4137,7 +4550,7 @@ class GiftAnalyticsService:
             or self.state.get("updated_at")
             or "1970-01-01T00:00:00Z"
         )
-        regime = regime_snapshot if isinstance(regime_snapshot, dict) else self._market_regime_snapshot_v1()
+        regime = regime_cache
         market_regime = str(regime.get("market_regime") or "MEAN_REVERT")
         market_regime_badge = str(regime.get("market_regime_badge") or "🟡")
         signal_type = str(variant.get("action_hint") or "WATCH").upper()
@@ -4364,7 +4777,7 @@ class GiftAnalyticsService:
         background = str(variant.get("background") or "")
         pattern = str(variant.get("pattern") or "")
         variant_label = " • ".join([collection_name or "Unknown", model or "Unknown", background or "Unknown", pattern or "Unknown"])
-        return {
+        payload = {
             "signal_id": signal_id,
             "ts": signal_ts,
             "type": signal_type,
@@ -4416,6 +4829,8 @@ class GiftAnalyticsService:
             "engine_mode": eff_mode,
             "data_quality": data_quality,
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def _cursor_offset(self, cursor: str | None) -> int:
         if not cursor:
@@ -4623,6 +5038,18 @@ class GiftAnalyticsService:
         if not top_signals:
             top_signals = self._fallback_v1_signals_from_listings(mode=eff_mode)[:8]
             recommendation = top_signals[0] if top_signals else None
+        provider_name = str(os.getenv("VERIFIED_SOURCE", "telegram_api") or "telegram_api")
+        provider_error = str(self.state.get("last_error") or "")
+        provider_ts = self.state.get("updated_at") or _iso(_now())
+        provider_degraded = bool(provider_error)
+        if self.listing_primary_source in {"mtproto", "mtproto_api"}:
+            listing_status = self.listing_source_status_v1(allow_remote=False)
+            provider_name = str(listing_status.get("source") or provider_name or "mtproto_api")
+            listing_error = str(listing_status.get("error") or "").strip()
+            if listing_error:
+                provider_error = listing_error
+            provider_ts = listing_status.get("updated_at") or provider_ts
+            provider_degraded = bool(listing_status.get("degraded")) or bool(provider_error)
         payload = {
             "market_index": market_index,
             "market_state": market_state,
@@ -4636,11 +5063,11 @@ class GiftAnalyticsService:
             },
             "provider_health": [
                 {
-                    "provider": os.getenv("VERIFIED_SOURCE", "telegram_api"),
+                    "provider": provider_name,
                     "p95_ms": 0,
-                    "err_pct": 0.0 if not self.state.get("last_error") else 100.0,
-                    "degraded": bool(self.state.get("last_error")),
-                    "ts": self.state.get("updated_at") or _iso(_now()),
+                    "err_pct": 0.0 if not provider_error else 100.0,
+                    "degraded": bool(provider_degraded),
+                    "ts": provider_ts,
                 }
             ],
             "stale": self.is_stale(),
@@ -4651,6 +5078,10 @@ class GiftAnalyticsService:
 
     def collections_v1(self, q: str = "", limit: int = 50, cursor: str | None = None) -> dict:
         query = str(q or "").strip().lower()
+        cache_key = ("collections_v1", query, int(limit or 50), str(cursor or ""))
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
         rows = []
         for base in self.list_bases():
             base_id = str(base.get("base_id") or "")
@@ -4680,9 +5111,15 @@ class GiftAnalyticsService:
         lim = max(1, min(int(limit or 50), 200))
         chunk = rows[off : off + lim]
         next_cursor = str(off + lim) if (off + lim) < len(rows) else None
-        return {"items": chunk, "next_cursor": next_cursor}
+        payload = {"items": chunk, "next_cursor": next_cursor}
+        self._cache_set(cache_key, payload)
+        return payload
 
     def collection_details_v1(self, collection_id: str) -> dict | None:
+        cache_key = ("collection_details_v1", str(collection_id or ""))
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
         col = None
         for item in self.collections_v1(limit=5000).get("items") or []:
             if str(item.get("collection_id") or "") == collection_id:
@@ -4703,7 +5140,9 @@ class GiftAnalyticsService:
         floor_series = sorted(floor_series, key=lambda x: str(x.get("ts")))[:200]
         if not floor_series:
             floor_series = [{"ts": self.state.get("updated_at") or _iso(_now()), "floor_ton": float(col.get("floor_ton") or 0.0)}]
-        return {"collection": col, "top_variants": top, "floor_series": floor_series}
+        payload = {"collection": col, "top_variants": top, "floor_series": floor_series}
+        self._cache_set(cache_key, payload)
+        return payload
 
     def variants_v1(
         self,
@@ -4732,6 +5171,22 @@ class GiftAnalyticsService:
         if min_score is not None and not (0.0 <= float(min_score) <= 1.0):
             raise ValueError("invalid_min_score_range")
         eff_mode = self._effective_v1_mode(mode)
+        cache_key = (
+            "variants_v1",
+            str(collection_id or ""),
+            str(model or ""),
+            str(background or ""),
+            str(pattern or ""),
+            None if min_score is None else float(min_score),
+            str(action or ""),
+            sort,
+            int(limit or 50),
+            str(cursor or ""),
+            eff_mode,
+        )
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
         rows = []
         for v in self.variants.values():
             summary = self._v1_variant_summary(v, mode=eff_mode)
@@ -4772,10 +5227,16 @@ class GiftAnalyticsService:
         lim = max(1, min(int(limit or 50), 200))
         chunk = rows[off : off + lim]
         next_cursor = str(off + lim) if (off + lim) < len(rows) else None
-        return {"items": chunk, "next_cursor": next_cursor}
+        payload = {"items": chunk, "next_cursor": next_cursor}
+        self._cache_set(cache_key, payload)
+        return payload
 
     def variant_details_v1(self, variant_id: str, mode: str | None = None) -> dict | None:
         eff_mode = self._effective_v1_mode(mode)
+        cache_key = ("variant_details_v1", str(variant_id or ""), eff_mode)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
         v = self.variants.get(variant_id)
         if not v:
             mapped = self._listing_to_variant(variant_id)
@@ -4810,7 +5271,9 @@ class GiftAnalyticsService:
             breakdown = {"engine_mode": "legacy"}
         if canonical_action in {"BUY", "SELL", "WATCH", "SKIP"}:
             breakdown["action_hint"] = canonical_action
-        return {"variant": summary, "listings": listings, "breakdown": breakdown}
+        payload = {"variant": summary, "listings": listings, "breakdown": breakdown}
+        self._cache_set(cache_key, payload)
+        return payload
 
     def variant_resolve_v1(
         self,
@@ -4829,6 +5292,19 @@ class GiftAnalyticsService:
         model_key = _trait_key(model)
         background_key = _trait_key(background)
         pattern_key = _trait_key(pattern)
+        cache_key = (
+            "variant_resolve_v1",
+            cid_key,
+            collection_key,
+            model_key,
+            background_key,
+            pattern_key,
+            bool(active_only),
+            eff_mode,
+        )
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
         # For stable resolver results, require at least collection + model.
         if not ((cid_key or collection_key) and model_key):
             return None
@@ -4896,7 +5372,7 @@ class GiftAnalyticsService:
 
         if not isinstance(best_summary, dict):
             return None
-        return {
+        payload = {
             "variant_id": str(best_summary.get("variant_id") or ""),
             "collection_id": str(best_summary.get("collection_id") or ""),
             "collection": str(best_summary.get("collection_name") or best_summary.get("collection_id") or ""),
@@ -4909,6 +5385,8 @@ class GiftAnalyticsService:
             "matched_by": matched_by,
             "active_only": bool(active_only),
         }
+        self._cache_set(cache_key, payload)
+        return payload
 
     def _listing_collection_key_candidates(self, *values: str) -> list[str]:
         keys: list[str] = []
@@ -4954,11 +5432,27 @@ class GiftAnalyticsService:
         mode: str | None = None,
     ) -> str | None:
         eff_mode = self._effective_v1_mode(mode)
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "_resolve_listing_signal_variant_id",
+            str(raw_variant_id or ""),
+            str(gift_id or ""),
+            str(title or ""),
+            str(model or ""),
+            str(background or ""),
+            str(pattern or ""),
+            eff_mode,
+            int(getattr(self, "_data_version", 0)),
+        )
+        cached = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached is not None:
+            return cached
         raw_vid = str(raw_variant_id or "").strip()
         if raw_vid:
             for candidate in [raw_vid, self._listing_to_variant(raw_vid)]:
                 cand = str(candidate or "").strip()
                 if cand and cand in self.variants:
+                    self._rt_cache_set(rt_cache_key, cand)
                     return cand
             if "|" in raw_vid:
                 parts = [str(x or "").strip() for x in raw_vid.split("|")]
@@ -4970,6 +5464,7 @@ class GiftAnalyticsService:
                             f"{_trait_key(parts[2]) or 'unknown'}|{_trait_key(parts[3]) or 'unknown'}"
                         )
                         if normalized in self.variants:
+                            self._rt_cache_set(rt_cache_key, normalized)
                             return normalized
 
         model_raw = str(model or "").strip()
@@ -4987,6 +5482,7 @@ class GiftAnalyticsService:
 
         model_key = _trait_key(model_raw)
         if not model_key:
+            self._rt_cache_set(rt_cache_key, None)
             return None
         background_key = _trait_key(background_raw)
         pattern_key = _trait_key(pattern_raw)
@@ -5004,6 +5500,7 @@ class GiftAnalyticsService:
             if isinstance(resolved, dict):
                 rid = str(resolved.get("variant_id") or "").strip()
                 if rid:
+                    self._rt_cache_set(rt_cache_key, rid)
                     return rid
 
         title_text = str(title or "").strip()
@@ -5019,6 +5516,7 @@ class GiftAnalyticsService:
             if isinstance(resolved, dict):
                 rid = str(resolved.get("variant_id") or "").strip()
                 if rid:
+                    self._rt_cache_set(rt_cache_key, rid)
                     return rid
 
         best_variant_id: str | None = None
@@ -5052,6 +5550,7 @@ class GiftAnalyticsService:
             if best_rank is None or rank > best_rank:
                 best_rank = rank
                 best_variant_id = str(variant_id)
+        self._rt_cache_set(rt_cache_key, best_variant_id)
         return best_variant_id
 
     def signals_v1(
@@ -5221,18 +5720,6 @@ class GiftAnalyticsService:
                 if q_norm not in hay:
                     continue
             items.append(sig)
-        if not items:
-            items = self._fallback_v1_signals_from_listings(
-                signal_type=signal_type,
-                min_score=min_score,
-                since_dt=since_dt,
-                mode=eff_mode,
-            )
-            if action_filter:
-                items = [x for x in items if str((x or {}).get("type") or "").upper() in action_filter]
-            if regime_filter or edgeRank_min is not None or conf_min is not None or profit_min is not None or liq_min is not None or lp_max is not None or ar_min is not None or vv_min is not None or min_undervalue_pct is not None or max_risk is not None or only_new_1h or only_pro_alerts or q_norm:
-                items = []
-
         sort_field = str(sort_by or "").strip()
         sort_direction = str(sort_dir or "").strip().lower()
         reverse = sort_direction != "asc"
@@ -5301,11 +5788,852 @@ class GiftAnalyticsService:
         self._cache_set(cache_key, payload)
         return payload
 
+    def _screeners_thresholds_for_regime(self, regime: str) -> dict[str, float]:
+        regime_key = str(regime or "MEAN_REVERT").strip().upper()
+        if regime_key not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}:
+            regime_key = "MEAN_REVERT"
+        cfg = self.screeners_thresholds_config if isinstance(getattr(self, "screeners_thresholds_config", None), dict) else {}
+        profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), dict) else {}
+        row = profiles.get(regime_key) if isinstance(profiles.get(regime_key), dict) else {}
+        fallback = (DEFAULT_SCREENERS_THRESHOLDS_CONFIG.get("profiles") or {}).get(regime_key) or {}
+        return {
+            "edge_buy": self._cfg_float(row.get("edge_buy"), float(fallback.get("edge_buy") or 60.0)),
+            "profit_min": self._cfg_float(row.get("profit_min"), float(fallback.get("profit_min") or 0.08)),
+            "lp_max": max(0.0, self._cfg_float(row.get("lp_max"), float(fallback.get("lp_max") or 3.0))),
+            "ar_min": max(0.0, self._cfg_float(row.get("ar_min"), float(fallback.get("ar_min") or 0.9))),
+            "liq_min": _clamp(self._cfg_float(row.get("liq_min"), float(fallback.get("liq_min") or 35.0)), 0.0, 100.0),
+            "conf_min": _clamp(self._cfg_float(row.get("conf_min"), float(fallback.get("conf_min") or 35.0)), 0.0, 100.0),
+            "lp_sell": max(0.0, self._cfg_float(row.get("lp_sell"), float(fallback.get("lp_sell") or 4.0))),
+        }
+
+    def _screeners_fixed_edge(self, signal: dict) -> tuple[float, float, dict[str, float]]:
+        score100 = float(signal.get("score100") or 0.0)
+        conf_pct = float(signal.get("conf_pct") or 0.0)
+        expected_profit_pct = float(signal.get("expected_profit_pct") or 0.0)
+        liquidity_score = float(signal.get("liquidity_score") or 0.0)
+        absorption_30m = float(signal.get("absorption_30m") or 0.0)
+        listing_pressure = float(signal.get("listing_pressure") or 0.0)
+        depth_score = _clamp(float(signal.get("depth_score") or 0.0), 0.0, 1.0)
+
+        c_norm = _clamp(conf_pct / 100.0, 0.0, 1.0)
+        ep_norm = _clamp((expected_profit_pct / 100.0) / 0.30, 0.0, 1.0)
+        s_norm = _clamp(score100 / 100.0, 0.0, 1.0)
+        l_norm = _clamp(liquidity_score / 100.0, 0.0, 1.0)
+        ar_norm = _clamp(absorption_30m / 2.0, 0.0, 1.0)
+        lp_norm = _clamp(listing_pressure / 8.0, 0.0, 1.0)
+        d_norm = _clamp(depth_score, 0.0, 1.0)
+
+        edge_raw = (0.35 * ep_norm) + (0.25 * s_norm) + (0.15 * l_norm) + (0.10 * ar_norm) + (0.10 * d_norm) - (0.15 * lp_norm)
+        edge = _clamp(edge_raw, 0.0, 1.0) * c_norm
+        edge100 = round(edge * 100.0, 1)
+        return (
+            round(edge_raw, 6),
+            edge100,
+            {
+                "C": round(c_norm, 6),
+                "EP": round(ep_norm, 6),
+                "S": round(s_norm, 6),
+                "L": round(l_norm, 6),
+                "AR": round(ar_norm, 6),
+                "LP": round(lp_norm, 6),
+                "D": round(d_norm, 6),
+            },
+        )
+
+    def _screeners_classify_type(self, signal: dict, action: str) -> str:
+        expected_profit_pct = float(signal.get("expected_profit_pct") or 0.0)
+        undervalue_pct = float(signal.get("undervalue_pct") or 0.0)
+        liquidity_score = float(signal.get("liquidity_score") or 0.0)
+        absorption_30m = float(signal.get("absorption_30m") or 0.0)
+        listing_pressure = float(signal.get("listing_pressure") or 0.0)
+        volume_velocity = float(signal.get("volume_velocity") or 0.0)
+        forecast_min = float(signal.get("forecast24h_pct_min") or 0.0)
+        forecast_max = float(signal.get("forecast24h_pct_max") or 0.0)
+        active_lots = int(signal.get("active_lots") or 0)
+        ts_dt = _parse_ts(str(signal.get("ts") or ""))
+        age_sec = max(0.0, (_now() - ts_dt).total_seconds())
+
+        if age_sec <= 3600 or active_lots <= 2:
+            return "NEW_LISTINGS"
+        if action == "SELL" and (listing_pressure >= 4.0 or undervalue_pct <= -3.0):
+            return "BREAKDOWN_SELL"
+        if action == "BUY" and volume_velocity >= 1.2 and absorption_30m >= 0.9:
+            return "MOMENTUM_BUY"
+        if undervalue_pct >= 8.0 and expected_profit_pct >= 8.0:
+            return "UNDERVALUED"
+        if liquidity_score >= 70.0 and absorption_30m >= 1.1:
+            return "LIQUIDITY_SPIKE"
+        if volume_velocity >= 1.25 and listing_pressure <= 3.5:
+            return "RACE_MODE"
+        if max(abs(forecast_min), abs(forecast_max)) >= 20.0:
+            return "VOLATILITY_SURGE"
+        if float(signal.get("depth_score") or 0.0) >= 0.75:
+            return "WHALE_ACTIVITY"
+        return "UNDERVALUED" if action == "BUY" else ("BREAKDOWN_SELL" if action == "SELL" else "RACE_MODE")
+
+    def _screeners_boost(self, regime: str, screener_type: str) -> float:
+        regime_key = str(regime or "MEAN_REVERT").strip().upper()
+        st = str(screener_type or "").strip().upper()
+        if regime_key == "RISK_ON":
+            if st in {"UNDERVALUED", "MOMENTUM_BUY", "NEW_LISTINGS"}:
+                return 4.0
+            if st in {"BREAKDOWN_SELL"}:
+                return -2.0
+        if regime_key == "RISK_OFF":
+            if st in {"LIQUIDITY_SPIKE", "WHALE_ACTIVITY"}:
+                return 4.0
+            if st in {"NEW_LISTINGS"}:
+                return -2.0
+        if regime_key == "PANIC":
+            if st in {"BREAKDOWN_SELL"}:
+                return 5.0
+            if st in {"NEW_LISTINGS", "MOMENTUM_BUY"}:
+                return -4.0
+        return 0.0
+
+    def _screeners_action_v1(self, signal: dict, edge100: float, thresholds: dict[str, float]) -> tuple[str, dict]:
+        conf_pct = float(signal.get("conf_pct") or 0.0)
+        expected_profit_pct = float(signal.get("expected_profit_pct") or 0.0)
+        liquidity_score = float(signal.get("liquidity_score") or 0.0)
+        absorption_30m = float(signal.get("absorption_30m") or 0.0)
+        listing_pressure = float(signal.get("listing_pressure") or 0.0)
+        undervalue_pct = float(signal.get("undervalue_pct") or 0.0)
+        variant_id = str(signal.get("variant_id") or "")
+        variant = self.variants.get(variant_id) if variant_id else None
+        sales24h = float(((variant or {}).get("metrics") or {}).get("trades_count_24h") or 0.0) if isinstance(variant, dict) else 0.0
+
+        gates: list[dict] = []
+
+        if conf_pct < 20.0 or sales24h < 2.0:
+            gates.append({"name": "quality.skip", "ok": False, "reason": "conf<20_or_sales24h<2"})
+            return "SKIP", {"gates": gates, "missing_for_buy": []}
+        gates.append({"name": "quality.skip", "ok": True})
+        if 20.0 <= conf_pct < 35.0:
+            gates.append({"name": "quality.watch", "ok": True})
+            return "WATCH", {"gates": gates, "missing_for_buy": ["conf_pct>=35"]}
+        gates.append({"name": "quality.watch", "ok": False})
+
+        buy_checks = {
+            "edgeRank100>=": edge100 >= float(thresholds.get("edge_buy") or 60.0),
+            "conf_pct>=": conf_pct >= float(thresholds.get("conf_min") or 35.0),
+            "expected_profit_pct>=": (expected_profit_pct / 100.0) >= float(thresholds.get("profit_min") or 0.08),
+            "liquidity_score>=": liquidity_score >= float(thresholds.get("liq_min") or 35.0),
+            "absorption_30m>=": absorption_30m >= float(thresholds.get("ar_min") or 0.9),
+            "listing_pressure<=": listing_pressure <= float(thresholds.get("lp_max") or 3.0),
+        }
+        missing = [k for k, ok in buy_checks.items() if not ok]
+        gates.append({"name": "buy", "ok": len(missing) == 0, "missing": missing})
+        if not missing:
+            return "BUY", {"gates": gates, "missing_for_buy": []}
+
+        sell_lp = listing_pressure >= float(thresholds.get("lp_sell") or 4.0) and absorption_30m <= 0.8
+        sell_overvalued = undervalue_pct <= -3.0
+        gates.append({"name": "sell_pressure", "ok": sell_lp})
+        gates.append({"name": "sell_overvalued", "ok": sell_overvalued})
+        if sell_lp or sell_overvalued:
+            return "SELL", {"gates": gates, "missing_for_buy": missing}
+
+        watch_band_low = max(0.0, float(thresholds.get("edge_buy") or 60.0) - 5.0)
+        if edge100 >= watch_band_low and conf_pct >= float(thresholds.get("conf_min") or 35.0) and len(missing) <= 2:
+            gates.append({"name": "watch_band", "ok": True})
+            return "WATCH", {"gates": gates, "missing_for_buy": missing}
+
+        gates.append({"name": "watch_band", "ok": False})
+        return "SKIP", {"gates": gates, "missing_for_buy": missing}
+
+    def screeners_feed_v1(
+        self,
+        screener_type: list[str] | None = None,
+        market_regime: list[str] | None = None,
+        action: list[str] | None = None,
+        edgeRank_min: float | None = None,
+        conf_min: float | None = None,
+        profit_min_pct: float | None = None,
+        liq_min: float | None = None,
+        ar_min: float | None = None,
+        lp_max: float | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> dict:
+        regime_filter = {str(x or "").strip().upper() for x in (market_regime or []) if str(x or "").strip()}
+        action_filter = {str(x or "").strip().upper() for x in (action or []) if str(x or "").strip()}
+        type_filter = {str(x or "").strip().upper() for x in (screener_type or []) if str(x or "").strip()}
+        allowed_regimes = {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}
+        allowed_actions = {"BUY", "SELL", "WATCH", "SKIP"}
+        allowed_types = {
+            "NEW_LISTINGS", "RACE_MODE", "UNDERVALUED", "MOMENTUM_BUY",
+            "BREAKDOWN_SELL", "WHALE_ACTIVITY", "LIQUIDITY_SPIKE", "VOLATILITY_SURGE",
+        }
+        if any(x not in allowed_regimes for x in regime_filter):
+            bad = sorted([x for x in regime_filter if x not in allowed_regimes])
+            raise ValueError(f"unsupported_market_regime:{','.join(bad)}")
+        if any(x not in allowed_actions for x in action_filter):
+            bad = sorted([x for x in action_filter if x not in allowed_actions])
+            raise ValueError(f"unsupported_action:{','.join(bad)}")
+        if any(x not in allowed_types for x in type_filter):
+            bad = sorted([x for x in type_filter if x not in allowed_types])
+            raise ValueError(f"unsupported_screener_type:{','.join(bad)}")
+
+        lim = max(1, min(int(limit or 100), 500))
+        cache_key = (
+            "screeners_feed_v1",
+            tuple(sorted(type_filter)),
+            tuple(sorted(regime_filter)),
+            tuple(sorted(action_filter)),
+            None if edgeRank_min is None else float(edgeRank_min),
+            None if conf_min is None else float(conf_min),
+            None if profit_min_pct is None else float(profit_min_pct),
+            None if liq_min is None else float(liq_min),
+            None if ar_min is None else float(ar_min),
+            None if lp_max is None else float(lp_max),
+            lim,
+            str(cursor or ""),
+            int(getattr(self, "_data_version", 0)),
+        )
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        now = _now()
+        regime_snapshot = self._market_regime_snapshot_v1()
+        depth_cache: dict[str, tuple[int, float]] = {}
+        signals = [self._v1_signal(v, mode="tz", regime_snapshot=regime_snapshot, depth_cache=depth_cache) for v in self.variants.values()]
+        rows: list[dict] = []
+        for sig in signals:
+            if not isinstance(sig, dict):
+                continue
+            regime = str(sig.get("market_regime") or "MEAN_REVERT").upper()
+            thresholds = self._screeners_thresholds_for_regime(regime)
+            edge_raw, edge100, norms = self._screeners_fixed_edge(sig)
+            resolved_action, action_trace = self._screeners_action_v1(sig, edge100, thresholds)
+            stype = self._screeners_classify_type(sig, resolved_action)
+            boost = self._screeners_boost(regime, stype)
+            sort_key = edge100 + boost
+            ts = str(sig.get("ts") or _iso(now))
+            ts_dt = _parse_ts(ts)
+            age_sec = max(0, int((now - ts_dt).total_seconds()))
+
+            if type_filter and stype not in type_filter:
+                continue
+            if regime_filter and regime not in regime_filter:
+                continue
+            if action_filter and resolved_action not in action_filter:
+                continue
+
+            expected_profit_pct = float(sig.get("expected_profit_pct") or 0.0)
+            liquidity_score = float(sig.get("liquidity_score") or 0.0)
+            absorption_30m = float(sig.get("absorption_30m") or 0.0)
+            listing_pressure = float(sig.get("listing_pressure") or 0.0)
+            conf_pct = float(sig.get("conf_pct") or 0.0)
+            if edgeRank_min is not None and edge100 < float(edgeRank_min):
+                continue
+            if conf_min is not None and conf_pct < float(conf_min):
+                continue
+            if profit_min_pct is not None and expected_profit_pct < float(profit_min_pct):
+                continue
+            if liq_min is not None and liquidity_score < float(liq_min):
+                continue
+            if ar_min is not None and absorption_30m < float(ar_min):
+                continue
+            if lp_max is not None and listing_pressure > float(lp_max):
+                continue
+
+            reasons = [
+                f"EdgeRank={edge100:.1f} (порог BUY={float(thresholds.get('edge_buy') or 60.0):.0f})",
+                f"Профит после fees: {expected_profit_pct:.1f}%",
+                f"Недооценка: {float(sig.get('undervalue_pct') or 0.0):.1f}%",
+            ]
+            risk_flags = []
+            if listing_pressure > float(thresholds.get("lp_max") or 3.0):
+                risk_flags.append(f"Давление продавцов: LP={listing_pressure:.2f}")
+            if float(sig.get("depth_score") or 0.0) < 0.25:
+                risk_flags.append(f"Глубина слабая: depth={float(sig.get('depth_score') or 0.0):.2f}")
+            if conf_pct < float(thresholds.get("conf_min") or 35.0):
+                risk_flags.append(f"Низкая уверенность: Conf={conf_pct:.0f}%")
+            risk_flags = risk_flags[:3]
+
+            rows.append(
+                {
+                    "ts": ts,
+                    "age": age_sec,
+                    "screener_type": stype,
+                    "variant_id": str(sig.get("variant_id") or ""),
+                    "variant_label": str(sig.get("variant_label") or ""),
+                    "collection": str(sig.get("collection") or ""),
+                    "model": str(sig.get("model") or ""),
+                    "background": str(sig.get("background") or ""),
+                    "pattern": str(sig.get("pattern") or ""),
+                    "price_ton": sig.get("price_ton"),
+                    "floor_ton": sig.get("floor_ton"),
+                    "fair_ton": sig.get("fair_ton"),
+                    "undervalue_pct": float(sig.get("undervalue_pct") or 0.0),
+                    "expected_profit_pct": expected_profit_pct,
+                    "liquidity_score": liquidity_score,
+                    "absorption_30m": absorption_30m,
+                    "listing_pressure": listing_pressure,
+                    "depth_score": float(sig.get("depth_score") or 0.0),
+                    "score100": float(sig.get("score100") or 0.0),
+                    "conf_pct": conf_pct,
+                    "edgeRank_raw": edge_raw,
+                    "edgeRank100": edge100,
+                    "market_regime": regime,
+                    "action": resolved_action,
+                    "reasons": reasons,
+                    "risk_flags": risk_flags,
+                    "decision_trace": {
+                        "regime": regime,
+                        "thresholds": thresholds,
+                        "normalized": norms,
+                        "gates": action_trace.get("gates") if isinstance(action_trace, dict) else [],
+                        "missing_for_buy": action_trace.get("missing_for_buy") if isinstance(action_trace, dict) else [],
+                        "boost": round(boost, 3),
+                        "sort_key": round(sort_key, 3),
+                    },
+                    "_sort_key": sort_key,
+                }
+            )
+        rows.sort(
+            key=lambda x: (
+                float(x.get("_sort_key") or 0.0),
+                float(x.get("expected_profit_pct") or 0.0),
+                -int(x.get("age") or 0),
+            ),
+            reverse=True,
+        )
+        off = self._cursor_offset(cursor)
+        chunk = rows[off : off + lim]
+        for row in chunk:
+            row.pop("_sort_key", None)
+        next_cursor = str(off + lim) if (off + lim) < len(rows) else None
+        payload = {"items": chunk, "next_cursor": next_cursor}
+        self._cache_set(cache_key, payload)
+        return payload
+
+    def build_screener_row_event_v1(self, row: dict, ts: str | None = None) -> dict:
+        return {
+            "event": "screener.row",
+            "ts": str(ts or _iso(_now())),
+            "payload": row if isinstance(row, dict) else {},
+        }
+
+    def _catalog_thresholds_for_regime(self, regime: str) -> dict[str, float]:
+        regime_key = str(regime or "MEAN_REVERT").strip().upper()
+        if regime_key not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}:
+            regime_key = "MEAN_REVERT"
+        cfg = self.catalog_thresholds_config if isinstance(getattr(self, "catalog_thresholds_config", None), dict) else {}
+        profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), dict) else {}
+        fallback = (DEFAULT_CATALOG_THRESHOLDS_CONFIG.get("profiles") or {}).get(regime_key) or {}
+        src = profiles.get(regime_key) if isinstance(profiles.get(regime_key), dict) else {}
+        merged = dict(fallback)
+        merged.update(src)
+        return {
+            "edge_buy": float(merged.get("edge_buy", 60.0)),
+            "profit_min": float(merged.get("profit_min", 0.08)),
+            "lp_max": float(merged.get("lp_max", 3.0)),
+            "ar_min": float(merged.get("ar_min", 0.9)),
+            "liq_min": float(merged.get("liq_min", 35.0)),
+            "conf_min": float(merged.get("conf_min", 35.0)),
+            "lp_sell": float(merged.get("lp_sell", 4.0)),
+        }
+
+    def _catalog_boost(self, signal: dict, regime: str) -> float:
+        regime_key = str(regime or "").upper()
+        expected_profit_pct = float(signal.get("expected_profit_pct") or 0.0)
+        undervalue_pct = float(signal.get("undervalue_pct") or 0.0)
+        liquidity_score = float(signal.get("liquidity_score") or 0.0)
+        depth_score = float(signal.get("depth_score") or 0.0)
+        absorption_30m = float(signal.get("absorption_30m") or 0.0)
+        listing_pressure = float(signal.get("listing_pressure") or 0.0)
+
+        boost = 0.0
+        if regime_key == "RISK_ON":
+            if expected_profit_pct >= 8.0 and undervalue_pct >= 6.0:
+                boost += 2.0
+        elif regime_key == "RISK_OFF":
+            if liquidity_score >= 50.0 and depth_score >= 0.5 and absorption_30m >= 1.0:
+                boost += 2.0
+        elif regime_key == "PANIC":
+            if liquidity_score >= 60.0 and depth_score >= 0.6 and listing_pressure <= 2.5:
+                boost += 3.0
+            else:
+                boost -= 2.0
+
+        action = str(signal.get("action") or "").upper()
+        edge = float(signal.get("edgeRank100") or 0.0)
+        conf = float(signal.get("conf_pct") or 0.0)
+        if action == "BUY" and edge >= 60.0 and conf >= 35.0 and expected_profit_pct >= 8.0:
+            boost += 3.0
+        elif action == "WATCH" and edge >= 55.0 and conf >= 35.0:
+            boost += 1.0
+        elif action == "SELL" or listing_pressure >= 4.0 or depth_score < 0.25:
+            boost -= 2.0
+        return boost
+
+    def _catalog_matches_preset(self, row: dict, preset: str | None) -> bool:
+        p = str(preset or "").strip().upper()
+        if not p:
+            return True
+        action = str((row or {}).get("action") or "").upper()
+        edge = float((row or {}).get("edgeRank100") or 0.0)
+        conf = float((row or {}).get("conf_pct") or 0.0)
+        profit = float((row or {}).get("expected_profit_pct") or 0.0)
+        liq = float((row or {}).get("liquidity_score") or 0.0)
+        depth = float((row or {}).get("depth_score") or 0.0)
+        lp = float((row or {}).get("listing_pressure") or 0.0)
+        regime = str((row or {}).get("market_regime") or "").upper()
+        undervalue = float((row or {}).get("undervalue_pct") or 0.0)
+        if p == "TOP_BUY":
+            return action == "BUY" and edge >= 60.0 and conf >= 35.0 and profit >= 8.0
+        if p == "WATCHLIST":
+            return action == "WATCH" and edge >= 55.0 and conf >= 35.0
+        if p == "RISK_OFF_SAFE":
+            return regime in {"RISK_OFF", "PANIC"} and liq >= 50.0 and depth >= 0.5
+        if p == "UNDERVALUED":
+            return undervalue >= 8.0 and profit >= 8.0
+        if p == "SELL_PRESSURE":
+            return action == "SELL" and lp >= 4.0
+        return True
+
+    def _catalog_row_v1(self, sig: dict, active_total: float, now_dt: datetime) -> dict:
+        regime = str(sig.get("market_regime") or "MEAN_REVERT").upper()
+        thresholds = self._catalog_thresholds_for_regime(regime)
+        edge_raw, edge100, norms = self._screeners_fixed_edge(sig)
+        resolved_action, action_trace = self._screeners_action_v1(sig, edge100, thresholds)
+        boost = self._catalog_boost(
+            {
+                **sig,
+                "action": resolved_action,
+                "edgeRank100": edge100,
+            },
+            regime=regime,
+        )
+        sort_key = edge100 + boost
+        ts = str(sig.get("ts") or _iso(now_dt))
+        ts_dt = _parse_ts(ts)
+        age_sec = max(0, int((now_dt - ts_dt).total_seconds()))
+        active_lots = int(sig.get("active_lots") or 0)
+        listed_share = 0.0 if active_total <= 0 else _clamp(float(active_lots) / float(active_total), 0.0, 1.0)
+        row = {
+            "variant_id": str(sig.get("variant_id") or ""),
+            "variant_label": str(sig.get("variant_label") or ""),
+            "collection": str(sig.get("collection") or ""),
+            "model": str(sig.get("model") or ""),
+            "background": str(sig.get("background") or ""),
+            "pattern": str(sig.get("pattern") or ""),
+            "price_ton": sig.get("price_ton"),
+            "floor_ton": float(sig.get("floor_ton") or 0.0),
+            "fair_ton": float(sig.get("fair_ton") or 0.0),
+            "median_24h_ton": float(sig.get("median_24h_ton") or 0.0),
+            "undervalue_pct": float(sig.get("undervalue_pct") or 0.0),
+            "expected_profit_pct": float(sig.get("expected_profit_pct") or 0.0),
+            "active_lots": active_lots,
+            "listed_share": listed_share,
+            "liquidity_score": float(sig.get("liquidity_score") or 0.0),
+            "absorption_30m": float(sig.get("absorption_30m") or 0.0),
+            "listing_pressure": float(sig.get("listing_pressure") or 0.0),
+            "depth_score": float(sig.get("depth_score") or 0.0),
+            "score100": float(sig.get("score100") or 0.0),
+            "conf_pct": float(sig.get("conf_pct") or 0.0),
+            "edgeRank_raw": edge_raw,
+            "edgeRank100": edge100,
+            "market_regime": regime,
+            "action": resolved_action,
+            "reasons": [
+                f"EdgeRank={edge100:.1f} (порог BUY={float(thresholds.get('edge_buy') or 60.0):.0f})",
+                f"Профит после fees: {float(sig.get('expected_profit_pct') or 0.0):.1f}%",
+                f"Недооценка: {float(sig.get('undervalue_pct') or 0.0):.1f}%",
+            ],
+            "risk_flags": [],
+            "decision_trace": {
+                "regime": regime,
+                "thresholds": thresholds,
+                "normalized": norms,
+                "gates": action_trace.get("gates") if isinstance(action_trace, dict) else [],
+                "missing_for_buy": action_trace.get("missing_for_buy") if isinstance(action_trace, dict) else [],
+                "boost": round(boost, 3),
+            },
+            "sort_key": sort_key,
+            "updated_at": ts,
+            "age_sec": age_sec,
+        }
+        risks = []
+        if float(row["listing_pressure"]) > float(thresholds.get("lp_max") or 3.0):
+            risks.append(f"Давление продавцов: LP={float(row['listing_pressure']):.2f}")
+        if float(row["depth_score"]) < 0.25:
+            risks.append(f"Глубина слабая: depth={float(row['depth_score']):.2f}")
+        if float(row["conf_pct"]) < float(thresholds.get("conf_min") or 35.0):
+            risks.append(f"Низкая уверенность: Conf={float(row['conf_pct']):.0f}%")
+        row["risk_flags"] = risks[:3]
+        return row
+
+    def catalog_feed_v1(
+        self,
+        q: str | None = None,
+        action: list[str] | None = None,
+        market_regime: list[str] | None = None,
+        edgeRank_min: float | None = None,
+        conf_min: float | None = None,
+        profit_min_pct: float | None = None,
+        liq_min: float | None = None,
+        depth_min: float | None = None,
+        ar_min: float | None = None,
+        lp_max: float | None = None,
+        active_lots_min: int | None = None,
+        active_lots_max: int | None = None,
+        listed_share_min: float | None = None,
+        listed_share_max: float | None = None,
+        preset: str | None = None,
+        sort: str | None = None,
+        dir: str | None = None,
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> dict:
+        allowed_actions = {"BUY", "SELL", "WATCH", "SKIP"}
+        allowed_regimes = {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}
+        action_filter = {str(x or "").strip().upper() for x in (action or []) if str(x or "").strip()}
+        regime_filter = {str(x or "").strip().upper() for x in (market_regime or []) if str(x or "").strip()}
+        if any(x not in allowed_actions for x in action_filter):
+            bad = sorted([x for x in action_filter if x not in allowed_actions])
+            raise ValueError(f"unsupported_action:{','.join(bad)}")
+        if any(x not in allowed_regimes for x in regime_filter):
+            bad = sorted([x for x in regime_filter if x not in allowed_regimes])
+            raise ValueError(f"unsupported_market_regime:{','.join(bad)}")
+        preset_key = str(preset or "").strip().upper()
+        if preset_key and preset_key not in {"TOP_BUY", "WATCHLIST", "RISK_OFF_SAFE", "UNDERVALUED", "SELL_PRESSURE"}:
+            raise ValueError(f"unsupported_preset:{preset_key}")
+
+        sort_key = str(sort or "edgerank").strip().lower()
+        if sort_key not in {"edgerank", "profit", "liquidity", "undervalue", "updated"}:
+            raise ValueError("unsupported_sort")
+        sort_dir = str(dir or "desc").strip().lower()
+        if sort_dir not in {"asc", "desc"}:
+            raise ValueError("unsupported_dir")
+
+        lim = max(1, min(int(limit or 200), 1000))
+        cache_key = (
+            "catalog_feed_v1",
+            str(q or "").strip().lower(),
+            tuple(sorted(action_filter)),
+            tuple(sorted(regime_filter)),
+            None if edgeRank_min is None else float(edgeRank_min),
+            None if conf_min is None else float(conf_min),
+            None if profit_min_pct is None else float(profit_min_pct),
+            None if liq_min is None else float(liq_min),
+            None if depth_min is None else float(depth_min),
+            None if ar_min is None else float(ar_min),
+            None if lp_max is None else float(lp_max),
+            None if active_lots_min is None else int(active_lots_min),
+            None if active_lots_max is None else int(active_lots_max),
+            None if listed_share_min is None else float(listed_share_min),
+            None if listed_share_max is None else float(listed_share_max),
+            preset_key,
+            sort_key,
+            sort_dir,
+            lim,
+            str(cursor or ""),
+            int(getattr(self, "_data_version", 0)),
+        )
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        query_norm = str(q or "").strip().lower()
+        now_dt = _now()
+        regime_snapshot = self._market_regime_snapshot_v1()
+        depth_cache: dict[str, tuple[int, float]] = {}
+        sigs = [self._v1_signal(v, mode="tz", regime_snapshot=regime_snapshot, depth_cache=depth_cache) for v in self.variants.values()]
+        active_total = sum(int(s.get("active_lots") or 0) for s in sigs if isinstance(s, dict))
+
+        rows: list[dict] = []
+        for sig in sigs:
+            if not isinstance(sig, dict):
+                continue
+            row = self._catalog_row_v1(sig, active_total=float(active_total), now_dt=now_dt)
+            if query_norm:
+                hay = " ".join([
+                    str(row.get("variant_id") or ""),
+                    str(row.get("variant_label") or ""),
+                    str(row.get("collection") or ""),
+                    str(row.get("model") or ""),
+                    str(row.get("background") or ""),
+                    str(row.get("pattern") or ""),
+                ]).lower()
+                if query_norm not in hay:
+                    continue
+            if action_filter and str(row.get("action") or "").upper() not in action_filter:
+                continue
+            if regime_filter and str(row.get("market_regime") or "").upper() not in regime_filter:
+                continue
+            if edgeRank_min is not None and float(row.get("edgeRank100") or 0.0) < float(edgeRank_min):
+                continue
+            if conf_min is not None and float(row.get("conf_pct") or 0.0) < float(conf_min):
+                continue
+            if profit_min_pct is not None and float(row.get("expected_profit_pct") or 0.0) < float(profit_min_pct):
+                continue
+            if liq_min is not None and float(row.get("liquidity_score") or 0.0) < float(liq_min):
+                continue
+            if depth_min is not None and float(row.get("depth_score") or 0.0) < float(depth_min):
+                continue
+            if ar_min is not None and float(row.get("absorption_30m") or 0.0) < float(ar_min):
+                continue
+            if lp_max is not None and float(row.get("listing_pressure") or 0.0) > float(lp_max):
+                continue
+            if active_lots_min is not None and int(row.get("active_lots") or 0) < int(active_lots_min):
+                continue
+            if active_lots_max is not None and int(row.get("active_lots") or 0) > int(active_lots_max):
+                continue
+            if listed_share_min is not None and float(row.get("listed_share") or 0.0) < float(listed_share_min):
+                continue
+            if listed_share_max is not None and float(row.get("listed_share") or 0.0) > float(listed_share_max):
+                continue
+            if not self._catalog_matches_preset(row, preset_key):
+                continue
+            rows.append(row)
+
+        reverse = (sort_dir == "desc")
+        # Deterministic multi-key sorting per catalog mapping:
+        # default_sort: sort_key desc, edgeRank100 desc, expected_profit_pct desc, updated_at desc.
+        def _base_score(item: dict) -> float:
+            if sort_key == "profit":
+                return float(item.get("expected_profit_pct") or 0.0)
+            if sort_key == "liquidity":
+                return float(item.get("liquidity_score") or 0.0)
+            if sort_key == "undervalue":
+                return float(item.get("undervalue_pct") or 0.0)
+            if sort_key == "updated":
+                ts = str(item.get("updated_at") or "")
+                dt = _parse_ts(ts)
+                return float(dt.timestamp()) if isinstance(dt, datetime) else 0.0
+            return float(item.get("sort_key") or item.get("edgeRank100") or 0.0)
+        def _sort_tuple(item: dict) -> tuple[float, float, float, float]:
+            ts = str(item.get("updated_at") or "")
+            dt = _parse_ts(ts)
+            tsv = float(dt.timestamp()) if isinstance(dt, datetime) else 0.0
+            return (
+                _base_score(item),
+                float(item.get("edgeRank100") or 0.0),
+                float(item.get("expected_profit_pct") or 0.0),
+                tsv,
+            )
+        rows.sort(key=_sort_tuple, reverse=reverse)
+
+        off = self._cursor_offset(cursor)
+        chunk = rows[off : off + lim]
+        next_cursor = str(off + lim) if (off + lim) < len(rows) else None
+        payload = {"items": chunk, "next_cursor": next_cursor}
+        self._cache_set(cache_key, payload)
+        return payload
+
+    def catalog_variant_v1(self, variant_id: str) -> dict:
+        variant_key = str(variant_id or "").strip()
+        if not variant_key:
+            raise KeyError("variant_not_found")
+        cache_key = (
+            "catalog_variant_v1",
+            variant_key,
+            int(getattr(self, "_data_version", 0)),
+        )
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+        variant = self.variants.get(variant_key) if isinstance(self.variants, dict) else None
+        if not isinstance(variant, dict):
+            raise KeyError("variant_not_found")
+
+        now_dt = _now()
+        regime_snapshot = self._market_regime_snapshot_v1()
+        depth_cache: dict[str, tuple[int, float]] = {}
+        sig = self._v1_signal(variant, mode="tz", regime_snapshot=regime_snapshot, depth_cache=depth_cache)
+        if not isinstance(sig, dict):
+            raise KeyError("variant_not_found")
+        active_total = sum(
+            int(s.get("active_lots") or 0)
+            for s in [self._v1_signal(v, mode="tz", regime_snapshot=regime_snapshot, depth_cache=depth_cache) for v in self.variants.values()]
+            if isinstance(s, dict)
+        )
+        row = self._catalog_row_v1(sig, active_total=float(active_total), now_dt=now_dt)
+
+        out = dict(row)
+        metrics = (variant or {}).get("metrics") if isinstance(variant, dict) else {}
+        out["listings_10m"] = int((metrics or {}).get("new_listings_10m") or 0)
+        out["volume_24h_ton"] = float((metrics or {}).get("volume_ton_24h") or 0.0)
+        try:
+            history = self.metric_v1(
+                metric="FLOOR_HISTORY",
+                scope="VARIANT",
+                variant_id=variant_key,
+                window="24h",
+                interval_sec=3600,
+                limit=48,
+            )
+            out["floor_history"] = history.get("points") if isinstance(history.get("points"), list) else []
+        except Exception:
+            out["floor_history"] = []
+        self._cache_set(cache_key, out)
+        return out
+
+    def build_catalog_row_event_v1(self, row: dict, ts: str | None = None) -> dict:
+        return {
+            "event": "catalog.row",
+            "ts": str(ts or _iso(_now())),
+            "payload": row if isinstance(row, dict) else {},
+        }
+
+    def _catalog_row_stream_key(self, row: dict) -> str:
+        return str((row or {}).get("variant_id") or "").strip()
+
+    def _catalog_row_stream_digest(self, row: dict) -> str:
+        digest_payload = {
+            "variant_id": str((row or {}).get("variant_id") or ""),
+            "updated_at": str((row or {}).get("updated_at") or ""),
+            "floor_ton": (row or {}).get("floor_ton"),
+            "fair_ton": (row or {}).get("fair_ton"),
+            "edgeRank100": (row or {}).get("edgeRank100"),
+            "conf_pct": (row or {}).get("conf_pct"),
+            "action": str((row or {}).get("action") or ""),
+            "market_regime": str((row or {}).get("market_regime") or ""),
+        }
+        raw = json.dumps(digest_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+    def catalog_stream_events_v1(self, limit: int = 200) -> dict:
+        lim = max(1, min(int(limit or 200), 1000))
+        runtime = self._catalog_stream_runtime if isinstance(getattr(self, "_catalog_stream_runtime", None), dict) else {}
+        if not runtime:
+            runtime = {"data_version": -1, "rows_by_key": {}, "events": [], "seq": 0, "max_events": 4000}
+            self._catalog_stream_runtime = runtime
+
+        data_version = int(getattr(self, "_data_version", 0))
+        if int(runtime.get("data_version", -1)) != data_version:
+            prev_rows = runtime.get("rows_by_key") if isinstance(runtime.get("rows_by_key"), dict) else {}
+            next_rows: dict[str, str] = {}
+            next_events = runtime.get("events") if isinstance(runtime.get("events"), list) else []
+            seq = int(runtime.get("seq") or 0)
+            max_events = max(500, int(runtime.get("max_events") or 4000))
+            refresh_ts = _iso(_now())
+            feed_rows = self.catalog_feed_v1(limit=min(max(lim * 2, 300), 1200)).get("items") or []
+            for row in feed_rows:
+                if not isinstance(row, dict):
+                    continue
+                key = self._catalog_row_stream_key(row)
+                if not key:
+                    continue
+                digest = self._catalog_row_stream_digest(row)
+                next_rows[key] = digest
+                if str(prev_rows.get(key) or "") == digest:
+                    continue
+                seq += 1
+                event_id = f"cat:{data_version}:{seq}:{key}"
+                next_events.append({"event_id": event_id, "ts": refresh_ts, "payload": dict(row)})
+            runtime["rows_by_key"] = next_rows
+            runtime["data_version"] = data_version
+            runtime["seq"] = seq
+            if len(next_events) > max_events:
+                next_events = next_events[-max_events:]
+            runtime["events"] = next_events
+
+        events = runtime.get("events") if isinstance(runtime.get("events"), list) else []
+        chunk = events[-lim:] if len(events) > lim else list(events)
+        return {"items": chunk}
+
+    def _screeners_row_stream_key(self, row: dict) -> str:
+        variant_id = str((row or {}).get("variant_id") or "").strip()
+        screener_type = str((row or {}).get("screener_type") or "").strip().upper()
+        return f"{variant_id}|{screener_type}"
+
+    def _screeners_row_stream_digest(self, row: dict) -> str:
+        digest_payload = {
+            "ts": str((row or {}).get("ts") or ""),
+            "price_ton": (row or {}).get("price_ton"),
+            "floor_ton": (row or {}).get("floor_ton"),
+            "fair_ton": (row or {}).get("fair_ton"),
+            "undervalue_pct": (row or {}).get("undervalue_pct"),
+            "expected_profit_pct": (row or {}).get("expected_profit_pct"),
+            "score100": (row or {}).get("score100"),
+            "conf_pct": (row or {}).get("conf_pct"),
+            "edgeRank100": (row or {}).get("edgeRank100"),
+            "market_regime": str((row or {}).get("market_regime") or ""),
+            "action": str((row or {}).get("action") or ""),
+        }
+        raw = json.dumps(digest_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+    def screeners_stream_events_v1(self, limit: int = 100) -> dict:
+        lim = max(1, min(int(limit or 100), 500))
+        runtime = self._screeners_stream_runtime if isinstance(getattr(self, "_screeners_stream_runtime", None), dict) else {}
+        if not runtime:
+            runtime = {
+                "data_version": -1,
+                "rows_by_key": {},
+                "events": [],
+                "seq": 0,
+                "max_events": 4000,
+            }
+            self._screeners_stream_runtime = runtime
+
+        data_version = int(getattr(self, "_data_version", 0))
+        if int(runtime.get("data_version", -1)) != data_version:
+            prev_rows = runtime.get("rows_by_key") if isinstance(runtime.get("rows_by_key"), dict) else {}
+            next_rows: dict[str, str] = {}
+            next_events = runtime.get("events") if isinstance(runtime.get("events"), list) else []
+            seq = int(runtime.get("seq") or 0)
+            max_events = max(500, int(runtime.get("max_events") or 4000))
+            refresh_ts = _iso(_now())
+
+            base_limit = min(max(lim * 4, 300), 1200)
+            feed_rows = self.screeners_feed_v1(limit=base_limit).get("items") or []
+            for row in feed_rows:
+                if not isinstance(row, dict):
+                    continue
+                key = self._screeners_row_stream_key(row)
+                if not key or key == "|":
+                    continue
+                digest = self._screeners_row_stream_digest(row)
+                next_rows[key] = digest
+                if str(prev_rows.get(key) or "") == digest:
+                    continue
+                seq += 1
+                row_payload = dict(row)
+                event_id = f"scr:{data_version}:{seq}:{key}"
+                row_payload["_stream_event_id"] = event_id
+                row_payload["_stream_emitted_at"] = refresh_ts
+                next_events.append(
+                    {
+                        "event_id": event_id,
+                        "ts": refresh_ts,
+                        "payload": row_payload,
+                    }
+                )
+
+            runtime["rows_by_key"] = next_rows
+            runtime["data_version"] = data_version
+            runtime["seq"] = seq
+            if len(next_events) > max_events:
+                next_events = next_events[-max_events:]
+            runtime["events"] = next_events
+
+        events = runtime.get("events") if isinstance(runtime.get("events"), list) else []
+        chunk = events[-lim:] if len(events) > lim else list(events)
+        return {"items": chunk}
+
     def signal_by_id_v1(self, signal_id: str, mode: str | None = None) -> dict | None:
-        for item in self.signals_v1(limit=5000, mode=mode).get("items") or []:
+        eff_mode = self._effective_v1_mode(mode)
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "signal_by_id_v1",
+            str(signal_id or ""),
+            str(eff_mode or "legacy"),
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
+        payload = None
+        for item in self.signals_v1(limit=5000, mode=eff_mode).get("items") or []:
             if str(item.get("signal_id") or "") == str(signal_id or ""):
-                return item
-        return None
+                payload = item
+                break
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def build_signal_created_event_v1(
         self,
@@ -5552,8 +6880,24 @@ class GiftAnalyticsService:
     ) -> list[dict]:
         wanted = set(types or [])
         all_types = {"signal.created", "metric.updated", "listing.event", "market.status", "variant.updated", "collection.updated", "provider.health"}
+        unsupported = sorted(str(x) for x in wanted if str(x) not in all_types)
+        if unsupported:
+            raise ValueError(f"unsupported_stream_event_type:{unsupported[0]}")
         if not wanted:
             wanted = set(all_types)
+        rt_ttl_sec = min(5.0, max(0.5, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "stream_events_v1",
+            tuple(sorted(wanted)),
+            str(self._effective_v1_mode(mode) or "legacy"),
+            str(variant_id or ""),
+            str(collection_id or ""),
+            int(getattr(self, "_data_version", 0)),
+            int(getattr(self, "_listing_runtime_error_count", 0)),
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
         now_iso = _iso(_now())
         out: list[dict] = []
         overview = self.overview_v1(mode=mode)
@@ -5682,6 +7026,7 @@ class GiftAnalyticsService:
         variant_filter = str(variant_id or "").strip()
         collection_filter = str(collection_id or "").strip()
         if not variant_filter and not collection_filter:
+            self._rt_cache_set(rt_cache_key, out)
             return out
 
         filtered: list[dict] = []
@@ -5694,6 +7039,7 @@ class GiftAnalyticsService:
             match_collection = (not collection_filter) or (ev_collection_id == collection_filter) or (key == collection_filter)
             if match_variant and match_collection:
                 filtered.append(ev)
+        self._rt_cache_set(rt_cache_key, filtered)
         return filtered
 
     def _signal_signature(self, signal: dict) -> str:
@@ -5727,6 +7073,7 @@ class GiftAnalyticsService:
                 version = int(ev.get("version") or 1)
                 trace_id = str(ev.get("trace_id") or "")
                 if etype == "metric.updated":
+                    store.xadd_event("stream:metrics.updated", etype, key, payload, version=version, trace_id=trace_id)
                     store.xadd_event("stream:metrics", etype, key, payload, version=version, trace_id=trace_id)
                     store.publish("pub:metrics", ev)
                     metric = str(payload.get("metric") or "").upper()
@@ -5751,6 +7098,17 @@ class GiftAnalyticsService:
                 elif etype == "provider.health":
                     store.xadd_event("stream:provider", etype, key, payload, version=version, trace_id=trace_id)
                     store.publish("pub:provider", ev)
+            for ev in self.stream_events_v1(types={"market.status"}, mode=mode):
+                key = str(ev.get("key") or "market:status")
+                payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+                version = int(ev.get("version") or 1)
+                trace_id = str(ev.get("trace_id") or "")
+                store.xadd_event("stream:market.status", "market.status", key, payload, version=version, trace_id=trace_id)
+                store.publish("pub:market.status", ev)
+                try:
+                    self.telegram_notifier.enqueue_market_status(ev)
+                except Exception:
+                    pass
 
             for sig in signals:
                 variant_id = str(sig.get("variant_id") or "")
@@ -5763,6 +7121,14 @@ class GiftAnalyticsService:
                 env = self.build_signal_created_event_v1(sig)
                 env_payload = env.get("payload") if isinstance(env.get("payload"), dict) else {}
                 store.xadd_event(
+                    "stream:signal.created",
+                    "signal.created",
+                    variant_id,
+                    env_payload,
+                    version=int(env.get("version") or 1),
+                    trace_id=str(env.get("trace_id") or ""),
+                )
+                store.xadd_event(
                     "stream:signals",
                     "signal.created",
                     variant_id,
@@ -5774,6 +7140,32 @@ class GiftAnalyticsService:
                 details = self.variant_details_v1(variant_id, mode=mode) or {}
                 variant_agg = details.get("variant") if isinstance(details.get("variant"), dict) else sig
                 store.set_json(f"variant:{variant_id}:agg", variant_agg, store.kv_variant_ttl_sec)
+                try:
+                    self.telegram_notifier.enqueue_gift_signal(self.build_signal_created_event_v2(sig))
+                except Exception:
+                    pass
+
+            catalog_rows = self.catalog_feed_v1(limit=300).get("items") or []
+            for row in catalog_rows:
+                if not isinstance(row, dict):
+                    continue
+                variant_id = str(row.get("variant_id") or "").strip()
+                if not variant_id:
+                    continue
+                signature = self._catalog_row_stream_digest(row)
+                if not store.dedupe_signal(variant_id, "CATALOG", signature):
+                    continue
+                env = self.build_catalog_row_event_v1(row)
+                env_payload = env.get("payload") if isinstance(env.get("payload"), dict) else {}
+                store.xadd_event(
+                    "stream:catalog",
+                    "catalog.row",
+                    variant_id,
+                    env_payload,
+                    version=1,
+                    trace_id=str(uuid.uuid4()),
+                )
+                store.publish("pub:catalog", env)
 
             collections = self.collections_v1(limit=5000).get("items") or []
             collections = sorted(collections, key=lambda x: int(x.get("active_lots_total") or 0), reverse=True)
@@ -5880,6 +7272,10 @@ class GiftAnalyticsService:
             _log_ingest(f"realtime publish skipped: {exc}")
 
     def metrics_definitions_v1(self) -> list[dict]:
+        cache_key = ("metrics_definitions_v1",)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
         unit_ranges: dict[str, tuple[float | None, float | None]] = {
             "COUNT": (0.0, None),
             "BOOL": (0.0, 1.0),
@@ -5945,6 +7341,7 @@ class GiftAnalyticsService:
                 if scoped.get("max_value") is None:
                     scoped["max_value"] = metric_max if metric_max is not None else unit_max
                 out.append(scoped)
+        self._cache_set(cache_key, out)
         return out
 
     def _resolve_metric_scope(self, scope: str | None, market: bool, collection_id: str | None, variant_id: str | None) -> str:
@@ -6167,6 +7564,23 @@ class GiftAnalyticsService:
         interval_sec = self._metric_interval_to_seconds(interval)
         lim = max(1, min(int(limit or 500), 5000))
         eff_mode = self._effective_v1_mode(mode)
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "metrics_v1",
+            metric_name,
+            scope_name,
+            bool(market),
+            str(collection_id or ""),
+            str(variant_id or ""),
+            str(from_ts or ""),
+            str(to_ts or ""),
+            str(interval or ""),
+            int(lim),
+            str(eff_mode or "legacy"),
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
         now_dt = _now()
         now_iso = _iso(now_dt)
         points: list[dict] = []
@@ -6509,7 +7923,7 @@ class GiftAnalyticsService:
 
         if not points:
             points = [{"ts": now_iso, "value": 0.0}]
-        return {
+        payload = {
             "metric": metric_name,
             "scope": scope_name,
             "market": bool(scope_name == "MARKET"),
@@ -6520,6 +7934,8 @@ class GiftAnalyticsService:
             "stale": self.is_stale(),
             "engine_mode": eff_mode,
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def _is_listing_new(self, now: datetime, first_seen_at: str, relisted_at: str | None, window_sec: int) -> bool:
         first_seen_dt = _parse_ts(first_seen_at)
@@ -6757,7 +8173,12 @@ class GiftAnalyticsService:
                 "url_configured": bool(self.listing_mt_api_url),
                 "url_used": cache_url_used or None,
             }
-        allow_snapshot_when_url_empty = self.listing_primary_source in {"mtproto", "mtproto_api"}
+        allow_snapshot_fallback = bool(
+            self.listing_mt_allow_snapshot_fallback
+            and self.listing_primary_source in {"mtproto", "mtproto_api"}
+            and not bool(self.listing_strict_primary)
+        )
+        allow_snapshot_when_url_empty = allow_snapshot_fallback
         if (not self.listing_mt_api_url) and (not allow_snapshot_when_url_empty):
             cache.update(
                 {
@@ -6854,7 +8275,7 @@ class GiftAnalyticsService:
             if not rows:
                 error = last_error or "mtproto_unknown_fetch_error"
 
-        if not rows:
+        if not rows and allow_snapshot_fallback:
             snap_items = self.mt_listings_snapshot.get("items") if isinstance(self.mt_listings_snapshot, dict) else []
             if isinstance(snap_items, list):
                 for item in snap_items:
@@ -7056,6 +8477,19 @@ class GiftAnalyticsService:
         return out
 
     def listing_source_status_v1(self, allow_remote: bool = True) -> dict:
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "listing_source_status_v1",
+            bool(allow_remote),
+            str(self.listing_primary_source or ""),
+            bool(self.listing_strict_primary),
+            str(self.listing_mt_api_url or ""),
+            int(getattr(self, "_data_version", 0)),
+        )
+        if not allow_remote:
+            cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+            if cached_payload is not None:
+                return cached_payload
         if allow_remote:
             _, status = self._refresh_mt_listing_source(force=False)
         else:
@@ -7076,18 +8510,27 @@ class GiftAnalyticsService:
         ):
             source_probe = str(status.get("source") or "")
             rows_probe = int(status.get("rows_count") or 0)
-            if source_probe in {"disabled", "mtproto_cache_empty"} and rows_probe <= 0:
+            error_probe = str(status.get("error") or "").strip()
+            needs_recovery_warmup = rows_probe <= 0 and (
+                source_probe in {"disabled", "mtproto_cache_empty"}
+                or bool(error_probe)
+            )
+            if needs_recovery_warmup:
                 warmup_started = self._start_listing_mt_warmup_async()
                 if warmup_started:
                     status["source"] = "mtproto_warmup"
-                    if not str(status.get("error") or "").strip():
+                    if not error_probe:
                         status["error"] = "mtproto_cache_cold_warmup_started"
                 elif self._listing_mt_warmup_running:
                     status["source"] = "mtproto_warmup"
-                    if not str(status.get("error") or "").strip():
+                    if not error_probe:
                         status["error"] = "mtproto_cache_cold_warmup_in_progress"
         source = str(status.get("source") or "")
-        if source in {"disabled", "mtproto_cache_empty"} and self.listing_primary_source in {"auto", "fragment"}:
+        if (
+            self.listing_allow_fragment_fallback
+            and source in {"disabled", "mtproto_cache_empty"}
+            and self.listing_primary_source in {"auto", "fragment"}
+        ):
             active_rows = 0
             for row in (self.listing_state or {}).values():
                 if not isinstance(row, dict):
@@ -7107,7 +8550,7 @@ class GiftAnalyticsService:
         degraded = bool(source.startswith("mtproto")) and (rows_count == 0)
         if degraded and not error:
             error = "mtproto_empty_payload"
-        return {
+        payload = {
             "ok": not bool(error),
             "status": "degraded" if degraded else "ok",
             "primary_mode": self.listing_primary_source,
@@ -7133,6 +8576,9 @@ class GiftAnalyticsService:
             "warmup_started": bool(warmup_started),
             "warmup_last_error": str(self._listing_mt_warmup_last_error or ""),
         }
+        if not allow_remote:
+            self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def _listing_window_to_seconds(self, window: str | None, default: str = "30m") -> int:
         raw = str(window or default).strip().lower()
@@ -7140,6 +8586,18 @@ class GiftAnalyticsService:
         if raw not in allowed:
             raise ValueError(f"unsupported_window:{raw}")
         return int(WINDOWS.get(raw, WINDOWS[default]))
+
+    def _listing_public_source_error(self, rows: list[dict] | None, source_status: dict | None) -> str:
+        source = str((source_status or {}).get("source") or "").strip().lower()
+        error = str((source_status or {}).get("error") or "").strip()
+        if not error:
+            return ""
+        rows_count = len(rows or [])
+        if rows_count <= 0:
+            return error
+        if source in {"fragment.verified_snapshot", "mtproto_snapshot"}:
+            return ""
+        return error
 
     def _listing_source_rows_v1(
         self,
@@ -7150,9 +8608,21 @@ class GiftAnalyticsService:
         now = _now()
         if sync_tracker:
             self._sync_listing_tracker_state(now, persist=False)
-        source_status = {"source": "fragment.verified_snapshot", "error": "", "updated_at": self.state.get("updated_at")}
-        rows: list[dict] = []
         primary_mode = self.listing_primary_source
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "_listing_source_rows_v1",
+            int(window_sec or 0),
+            bool(allow_remote),
+            str(primary_mode or "auto"),
+            bool(self.listing_strict_primary),
+            int(getattr(self, "_listing_runtime_error_count", 0)),
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
+        source_status = {"source": "mtproto_api", "error": "mtproto_empty_payload", "updated_at": self.state.get("updated_at")}
+        rows: list[dict] = []
         if primary_mode in {"auto", "mtproto", "mtproto_api"}:
             if allow_remote:
                 mt_rows, mt_status = self._refresh_mt_listing_source(force=False, window_sec=window_sec)
@@ -7174,7 +8644,8 @@ class GiftAnalyticsService:
                     "updated_at": mt_status.get("updated_at") or self.state.get("updated_at"),
                 }
         strict_primary = bool(self.listing_strict_primary and primary_mode in {"mtproto", "mtproto_api"})
-        if not rows and not strict_primary:
+        allow_fragment_fallback = bool(self.listing_allow_fragment_fallback and primary_mode in {"auto", "fragment"})
+        if not rows and not strict_primary and allow_fragment_fallback:
             rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
             if not str(source_status.get("source") or "").startswith("mtproto"):
                 source_status = {
@@ -7188,7 +8659,9 @@ class GiftAnalyticsService:
                 "error": str(source_status.get("error") or "mtproto_empty_payload"),
                 "updated_at": source_status.get("updated_at") or self.state.get("updated_at"),
             }
-        return rows, source_status
+        payload = (rows, source_status)
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def _listing_new_realtime_source_ok(self, source_status: dict, now: datetime | None = None) -> tuple[bool, str]:
         now_dt = now if isinstance(now, datetime) else _now()
@@ -7221,6 +8694,11 @@ class GiftAnalyticsService:
         return age_sec <= float(strict_window)
 
     def _market_regime_snapshot_v1(self) -> dict:
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = ("_market_regime_snapshot_v1", int(getattr(self, "_data_version", 0)))
+        cached = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached is not None:
+            return cached
         market_overview = self.market_overview()
         market_state_ru = str(market_overview.get("market_state") or "").strip().lower()
         trend_map = {
@@ -7250,12 +8728,14 @@ class GiftAnalyticsService:
             "RISK_OFF": "🔴",
             "PANIC": "⚠",
         }.get(regime, "🟡")
-        return {
+        payload = {
             "market_regime": regime,
             "market_regime_badge": badge,
             "trend": trend,
             "avg_change_7d": avg_7d,
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def _listing_condition_match(self, condition: dict, ctx: dict[str, float]) -> bool:
         if not isinstance(condition, dict) or not condition:
@@ -7291,31 +8771,59 @@ class GiftAnalyticsService:
         return True
 
     def _listing_action_from_profiles_v1(self, regime: str, ctx: dict[str, float], fallback_action: str = "WATCH") -> str:
-        # Strict TZ decision engine (default): BUY/SELL/WATCH/SKIP gates from PRO New Listings TZ.
-        if self.listing_decision_mode in {"tz", "tz_strict", "strict"}:
-            edge_rank = float(ctx.get("edgeRank100") or 0.0)
-            conf_pct = float(ctx.get("conf") or 0.0)
-            expected_profit_pct = float(ctx.get("expected_profit_pct") or 0.0)
-            liquidity_norm = float(ctx.get("liquidity_norm") or 0.0)
-            absorption = float(ctx.get("absorption") or 0.0)
-            listing_pressure = float(ctx.get("listing_pressure") or 0.0)
-            if (
-                edge_rank >= 60.0
-                and conf_pct >= 35.0
-                and expected_profit_pct >= 8.0
-                and liquidity_norm >= 0.35
-                and absorption >= 0.9
-            ):
-                return "BUY"
-            if listing_pressure >= 4.0 and absorption <= 0.8:
-                return "SELL"
-            if 55.0 <= edge_rank < 60.0:
-                return "WATCH"
-            return "SKIP"
-
         normalized_regime = str(regime or "MEAN_REVERT").strip().upper()
         if normalized_regime not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}:
             normalized_regime = "MEAN_REVERT"
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        ctx_cache_key = tuple(sorted((str(k), round(float(v or 0.0), 6)) for k, v in (ctx or {}).items()))
+        rt_cache_key = (
+            "_listing_action_from_profiles_v1",
+            str(self.listing_decision_mode or ""),
+            normalized_regime,
+            str(fallback_action or ""),
+            ctx_cache_key,
+            int(getattr(self, "_data_version", 0)),
+        )
+        cached = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached is not None:
+            return cached
+        decision_mode = str(getattr(self, "listing_decision_mode", "") or "").strip().lower()
+        if decision_mode == "tz_strict":
+            edge_rank = float(ctx.get("edgeRank100") or 0.0)
+            conf = float(ctx.get("conf") or 0.0)
+            expected_profit = float(ctx.get("expected_profit_pct") or 0.0)
+            liquidity_pct = float(ctx.get("liquidity_norm") or 0.0) * 100.0
+            absorption = float(ctx.get("absorption") or 0.0)
+            listing_pressure = float(ctx.get("listing_pressure") or 0.0)
+            volume_velocity = float(ctx.get("volume_velocity") or 0.0)
+            strict_buy = (
+                edge_rank >= 55.0
+                and conf >= 35.0
+                and expected_profit >= 8.0
+                and liquidity_pct >= 35.0
+                and absorption >= 0.9
+                and listing_pressure <= 4.0
+                and (normalized_regime != "PANIC" or volume_velocity >= 1.0)
+            )
+            if strict_buy:
+                payload = "BUY"
+                self._rt_cache_set(rt_cache_key, payload)
+                return payload
+            if listing_pressure >= 5.0 and absorption <= 0.8:
+                payload = "SELL"
+                self._rt_cache_set(rt_cache_key, payload)
+                return payload
+            if edge_rank < 50.0 and (expected_profit < 5.0 or liquidity_pct < 25.0):
+                payload = "SKIP"
+                self._rt_cache_set(rt_cache_key, payload)
+                return payload
+            if edge_rank >= 55.0 or conf >= 30.0:
+                payload = "WATCH"
+                self._rt_cache_set(rt_cache_key, payload)
+                return payload
+            payload = fallback_action if fallback_action in {"BUY", "SELL", "WATCH", "SKIP"} else "SKIP"
+            self._rt_cache_set(rt_cache_key, payload)
+            return payload
         profile = self.listing_signal_profiles.get(normalized_regime) if isinstance(self.listing_signal_profiles, dict) else None
         if not isinstance(profile, dict):
             profile = {}
@@ -7339,7 +8847,9 @@ class GiftAnalyticsService:
             action = "SKIP"
         if action == "SKIP" and self._listing_condition_match(global_watch, ctx):
             action = "WATCH"
-        return action if action in {"BUY", "SELL", "WATCH", "SKIP"} else "SKIP"
+        payload = action if action in {"BUY", "SELL", "WATCH", "SKIP"} else "SKIP"
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def _edge_rank_raw_v1(
         self,
@@ -7356,6 +8866,26 @@ class GiftAnalyticsService:
         regime_key = str(regime or "MEAN_REVERT").strip().upper()
         if regime_key not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}:
             regime_key = "MEAN_REVERT"
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "_edge_rank_raw_v1",
+            regime_key,
+            round(float(score100 or 0.0), 4),
+            round(float(conf_pct or 0.0), 4),
+            round(float(expected_profit_ratio or 0.0), 6),
+            round(float(liquidity_score_pct or 0.0), 4),
+            round(float(absorption_30m or 0.0), 6),
+            round(float(listing_pressure or 0.0), 6),
+            round(float(depth_score or 0.0), 6),
+            round(float(volume_velocity or 0.0), 6),
+            round(float(self.edge_lp_divisor or 8.0), 6),
+            round(float(self.edge_panic_vv_baseline or 0.8), 6),
+            round(float(self.edge_panic_vv_range or 1.0), 6),
+            int(getattr(self, "_data_version", 0)),
+        )
+        cached = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached is not None:
+            return cached
         c_norm = _clamp(float(conf_pct or 0.0) / 100.0, 0.0, 1.0)
         s_norm = _clamp(float(score100 or 0.0) / 100.0, 0.0, 1.0)
         ep_norm = _clamp(float(expected_profit_ratio or 0.0) / 0.30, 0.0, 1.0)
@@ -7379,7 +8909,9 @@ class GiftAnalyticsService:
             edge_raw += vv_bonus * vv_norm
         edge_raw = _clamp(edge_raw, 0.0, 1.0)
         edge_rank = _clamp(edge_raw, 0.0, 1.0) * c_norm
-        return round(edge_raw, 6), round(edge_rank * 100.0, 1)
+        payload = (round(edge_raw, 6), round(edge_rank * 100.0, 1))
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def _listing_pro_item_from_row(
         self,
@@ -7564,6 +9096,16 @@ class GiftAnalyticsService:
         }
 
     def _listing_removed_events_v1(self, since_dt: datetime | None = None, variant_id: str | None = None) -> list[dict]:
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "_listing_removed_events_v1",
+            str(_iso(since_dt) if since_dt is not None else ""),
+            str(variant_id or ""),
+            int(getattr(self, "_data_version", 0)),
+        )
+        cached = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached is not None:
+            return cached
         out: list[dict] = []
         variant_filter = str(variant_id or "").strip()
         for entry in self.listing_tracker_state.values():
@@ -7610,11 +9152,24 @@ class GiftAnalyticsService:
             key = f"{row.get('type')}|{row.get('listing_key')}|{row.get('ts')}"
             if key not in dedupe:
                 dedupe[key] = row
-        return list(dedupe.values())
+        payload = list(dedupe.values())
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def market_status_v1(self, window: str | None = None) -> dict:
-        now = _now()
         window_raw = str(window or "30m").strip().lower()
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "market_status_v1",
+            window_raw,
+            str(self.listing_primary_source or "auto"),
+            bool(self.listing_strict_primary),
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
+
+        now = _now()
         window_sec = self._listing_window_to_seconds(window_raw, default="30m")
         regime = self._market_regime_snapshot_v1()
         summary = self.market_overview()
@@ -7683,7 +9238,7 @@ class GiftAnalyticsService:
             elif t == "SKIP":
                 signals_1h["skip"] += 1
         whale_ratio, whale_impulse, _ = self._whale_ratio_and_impulse(now, variant_ids=variant_ids)
-        source_error = str(source_status.get("error") or "")
+        source_error = self._listing_public_source_error(listing_rows_base, source_status)
         data_health = "DEGRADED" if (self.is_stale() or bool(source_error)) else "OK"
         data_conf = 88
         if data_health == "DEGRADED":
@@ -7734,8 +9289,9 @@ class GiftAnalyticsService:
         if data_health == "DEGRADED":
             miss_rate = 1.0
         duplicate_rate = (float(duplicates) / max(1.0, float(len(listing_rows)))) * 100.0
-        return {
+        payload = {
             "ts": _iso(now),
+            "updated_at": str(summary.get("updated_at") or self.state.get("updated_at") or _iso(now)),
             "window": window_raw if window_raw in {"10m", "30m", "1h", "6h", "24h"} else "30m",
             "window_sec": window_sec,
             "market_regime": regime.get("market_regime"),
@@ -7776,6 +9332,8 @@ class GiftAnalyticsService:
             "source": source_status.get("source") or "fragment.verified_snapshot",
             "source_error": source_error,
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def listings_new_v1(
         self,
@@ -7800,6 +9358,36 @@ class GiftAnalyticsService:
         variant_id: str = "",
         q: str = "",
     ) -> dict:
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "listings_new_v1",
+            int(limit or 200),
+            str(cursor or ""),
+            str(window or "30m"),
+            tuple(sorted(str(x or "").strip().upper() for x in (market_regime or []) if str(x or "").strip())),
+            tuple(sorted(str(x or "").strip().upper() for x in (action or []) if str(x or "").strip())),
+            float(edgeRank_min or 0.0),
+            float(conf_min or 0.0),
+            float(profit_min or 0.0),
+            float(undervalue_min or 0.0),
+            float(liq_min or 0.0),
+            float(lp_max or 0.0),
+            float(ar_min or 0.0),
+            float(vv_min or 0.0),
+            bool(only_pro_alerts),
+            str(collection or ""),
+            str(model or ""),
+            str(background or ""),
+            str(pattern or ""),
+            str(variant_id or ""),
+            str(q or ""),
+            str(self.listing_primary_source or "auto"),
+            bool(self.listing_strict_primary),
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
+
         now = _now()
         window_sec = self._listing_window_to_seconds(window, default="30m")
         lim = max(1, min(int(limit or 200), 500))
@@ -7810,7 +9398,7 @@ class GiftAnalyticsService:
         if source_reason:
             source_error_text = f"{source_error_text}; {source_reason}".strip("; ").strip()
         if not source_ok:
-            return {
+            payload = {
                 "items": [],
                 "next_cursor": None,
                 "server_ts": _iso(now),
@@ -7821,6 +9409,8 @@ class GiftAnalyticsService:
                 "row_processing_errors": 0,
                 "row_processing_error_samples": [],
             }
+            self._rt_cache_set(rt_cache_key, payload)
+            return payload
         rows = self._apply_listing_filters(
             rows,
             only_new=True,
@@ -7959,7 +9549,7 @@ class GiftAnalyticsService:
             if row_failure_samples:
                 row_err = f"{row_err}; sample={','.join(row_failure_samples)}"
             source_error_out = f"{source_error_out}; {row_err}".strip("; ").strip()
-        return {
+        payload = {
             "items": chunk,
             "next_cursor": next_cursor,
             "server_ts": _iso(now),
@@ -7970,6 +9560,8 @@ class GiftAnalyticsService:
             "row_processing_errors": row_failures,
             "row_processing_error_samples": row_failure_samples,
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def listings_race_v1(
         self,
@@ -7982,6 +9574,24 @@ class GiftAnalyticsService:
         include_low_priority: bool = False,
         q: str = "",
     ) -> dict:
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "listings_race_v1",
+            int(limit or 200),
+            str(cursor or ""),
+            str(window or "30m"),
+            str(direction or "ANY"),
+            float(delta_pct_min or 0.0),
+            bool(only_pro_alerts),
+            bool(include_low_priority),
+            str(q or ""),
+            str(self.listing_primary_source or "auto"),
+            bool(self.listing_strict_primary),
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
+
         now = _now()
         window_sec = self._listing_window_to_seconds(window, default="30m")
         source_status = self.listing_source_status_v1(allow_remote=False)
@@ -8236,7 +9846,7 @@ class GiftAnalyticsService:
                 source_error = f"{source_error}; sample={','.join(row_failure_samples)}"
             if source_error_base:
                 source_error = f"{source_error_base}; {source_error}"
-        return {
+        payload = {
             "items": chunk,
             "next_cursor": next_cursor,
             "server_ts": _iso(now),
@@ -8247,6 +9857,8 @@ class GiftAnalyticsService:
             "row_processing_errors": row_failures,
             "row_processing_error_samples": row_failure_samples,
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def listings_history_v1(
         self,
@@ -8272,6 +9884,17 @@ class GiftAnalyticsService:
         res = str(resolution or "1m").strip().lower()
         if res not in resolution_map:
             raise ValueError(f"unsupported_resolution:{res}")
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "listings_history_v1",
+            variant_key,
+            str(from_ts or ""),
+            str(to_ts or ""),
+            res,
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
         interval_sec = resolution_map[res]
         history = self.variant_history.get(variant_key, [])
         floor_points = self._series_points_from_history(history, "floor_ton", from_dt, to_dt, interval_sec, limit=5000)
@@ -8349,7 +9972,7 @@ class GiftAnalyticsService:
                 }
             )
         events.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
-        return {
+        payload = {
             "variant_id": variant_key,
             "from": _iso(from_dt),
             "to": _iso(to_dt),
@@ -8363,6 +9986,8 @@ class GiftAnalyticsService:
             "events": events[:2000],
             "server_ts": _iso(now),
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def listings_v1(
         self,
@@ -8375,8 +10000,26 @@ class GiftAnalyticsService:
         background_q: str = "",
         pattern_q: str = "",
     ) -> dict:
-        now = _now()
         window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "listings_v1",
+            int(limit or 100),
+            str(cursor or ""),
+            bool(only_new),
+            int(window_sec),
+            str(collection_q or ""),
+            str(model_q or ""),
+            str(background_q or ""),
+            str(pattern_q or ""),
+            str(self.listing_primary_source or "auto"),
+            bool(self.listing_strict_primary),
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
+
+        now = _now()
         rows, source_status = self._listing_source_rows_v1(window_sec=window_sec, allow_remote=True, sync_tracker=True)
         rows = self._apply_listing_filters(
             rows,
@@ -8390,20 +10033,33 @@ class GiftAnalyticsService:
         lim = max(1, min(int(limit or 100), 500))
         chunk = rows[off : off + lim]
         next_cursor = str(off + lim) if (off + lim) < len(rows) else None
-        return {
+        payload = {
             "items": chunk,
             "next_cursor": next_cursor,
             "window_sec": window_sec,
             "source": source_status.get("source") or "fragment.verified_snapshot",
-            "source_error": source_status.get("error") or "",
+            "source_error": self._listing_public_source_error(rows, source_status),
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def listings_summary_v1(self, new_window_sec: int | None = None) -> dict:
-        now = _now()
         window_sec = max(30, min(int(new_window_sec or self.listing_new_window_sec), 7 * 24 * 3600))
+        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_cache_key = (
+            "listings_summary_v1",
+            int(window_sec),
+            str(self.listing_primary_source or "auto"),
+            bool(self.listing_strict_primary),
+        )
+        cached_payload = self._rt_cache_get(rt_cache_key, ttl_sec=rt_ttl_sec)
+        if cached_payload is not None:
+            return cached_payload
+
+        now = _now()
         rows, source_status = self._listing_source_rows_v1(window_sec=window_sec, allow_remote=True, sync_tracker=True)
         source = str(source_status.get("source") or "fragment.verified_snapshot")
-        source_error = str(source_status.get("error") or "")
+        source_error = self._listing_public_source_error(rows, source_status)
         by_collection: Dict[str, int] = {}
         active_total = len(rows)
         new_total = 0
@@ -8424,7 +10080,7 @@ class GiftAnalyticsService:
                 price_samples.append(price)
 
         top_collections = sorted(by_collection.items(), key=lambda x: x[1], reverse=True)[:8]
-        return {
+        payload = {
             "active_total": active_total,
             "new_total": new_total,
             "relisted_total": relisted_total,
@@ -8444,6 +10100,8 @@ class GiftAnalyticsService:
             "source": source,
             "source_error": source_error,
         }
+        self._rt_cache_set(rt_cache_key, payload)
+        return payload
 
     def listings_events_v1(
         self,

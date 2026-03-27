@@ -55,7 +55,9 @@ def _token_ok(handler: BaseHTTPRequestHandler, token: str) -> bool:
 class MTProtoListingBridgeState:
     def __init__(self) -> None:
         self.lock = threading.RLock()
-        self.refresh_sec = max(1.0, float(os.getenv("MT_BRIDGE_REFRESH_SEC", "2.0")))
+        self.refresh_sec = max(0.3, float(os.getenv("MT_BRIDGE_REFRESH_SEC", "0.8")))
+        self.head_poll_min_sec = max(0.3, float(os.getenv("MT_BRIDGE_HEAD_POLL_MIN_SEC", "0.3")))
+        self.head_poll_max_sec = max(self.head_poll_min_sec, float(os.getenv("MT_BRIDGE_HEAD_POLL_MAX_SEC", "0.8")))
         self.gift_types_refresh_sec = max(60.0, float(os.getenv("MT_BRIDGE_GIFT_TYPES_REFRESH_SEC", "900")))
         self.max_gift_types = max(1, int(os.getenv("MT_BRIDGE_MAX_GIFT_TYPES", "120")))
         self.max_gift_types_per_cycle = max(1, int(os.getenv("MT_BRIDGE_MAX_GIFT_TYPES_PER_CYCLE", "22")))
@@ -71,6 +73,10 @@ class MTProtoListingBridgeState:
         self.cold_interval_sec = max(5.0, float(os.getenv("MT_BRIDGE_COLD_INTERVAL_SEC", "20.0")))
         self.hot_count_threshold = max(10, int(os.getenv("MT_BRIDGE_HOT_COUNT_THRESHOLD", "80")))
         self.warm_count_threshold = max(3, int(os.getenv("MT_BRIDGE_WARM_COUNT_THRESHOLD", "18")))
+        self.backfill_min_sec = max(5.0, float(os.getenv("MT_BRIDGE_BACKFILL_MIN_SEC", "5.0")))
+        self.backfill_max_sec = max(self.backfill_min_sec, float(os.getenv("MT_BRIDGE_BACKFILL_MAX_SEC", "10.0")))
+        self.max_backfill_pages_per_cycle = max(0, int(os.getenv("MT_BRIDGE_MAX_BACKFILL_PAGES_PER_CYCLE", "2")))
+        self.removed_confirm_misses = max(1, int(os.getenv("MT_BRIDGE_REMOVED_CONFIRM_MISSES", "3")))
         self.api_id = int((os.getenv("MT_BRIDGE_API_ID", "0") or "0").strip() or "0")
         self.api_hash = (os.getenv("MT_BRIDGE_API_HASH", "") or "").strip()
         self.string_session = (os.getenv("MT_BRIDGE_STRING_SESSION", "") or "").strip()
@@ -181,7 +187,7 @@ class MTProtoListingBridgeState:
         except Exception:
             return None
 
-    async def _fetch_resale_for_gift(self, gift_id: int) -> list[dict]:
+    async def _fetch_resale_page_for_gift(self, gift_id: int, offset: str = "") -> tuple[list[dict], str]:
         client = await self._ensure_client()
         try:
             from telethon.tl import functions
@@ -189,7 +195,7 @@ class MTProtoListingBridgeState:
             raise RuntimeError(f"telethon_tl_import_failed:{type(exc).__name__}") from exc
         req = functions.payments.GetResaleStarGiftsRequest(
             gift_id=int(gift_id),
-            offset="",
+            offset=str(offset or ""),
             limit=int(self.per_gift_limit),
         )
         res = await client(req)
@@ -237,7 +243,31 @@ class MTProtoListingBridgeState:
                     "preview_url": "",
                 }
             )
-        return out
+        next_offset = str(getattr(res, "next_offset", "") or "").strip()
+        return out, next_offset
+
+    async def _fetch_resale_for_gift(self, gift_id: int, with_backfill: bool = False) -> dict:
+        # Head page is always fetched first; backfill scans follow next_offset chain.
+        head_items, next_offset = await self._fetch_resale_page_for_gift(gift_id=gift_id, offset="")
+        all_items = list(head_items)
+        pages_fetched = 1
+        if with_backfill and self.max_backfill_pages_per_cycle > 0:
+            pages_left = int(self.max_backfill_pages_per_cycle)
+            cursor = str(next_offset or "")
+            while cursor and pages_left > 0:
+                page_items, cursor_next = await self._fetch_resale_page_for_gift(gift_id=gift_id, offset=cursor)
+                all_items.extend(page_items)
+                cursor = str(cursor_next or "")
+                pages_left -= 1
+                pages_fetched += 1
+        return {
+            "items": all_items,
+            "head_count": len(head_items),
+            "active_count": len(all_items),
+            "next_offset": str(next_offset or ""),
+            "pages_fetched": pages_fetched,
+            "backfill_used": bool(with_backfill),
+        }
 
     def _pick_due_gift_types(self, all_gift_ids: list[int]) -> list[int]:
         ids = [int(x) for x in all_gift_ids[: self.max_gift_types]]
@@ -273,12 +303,19 @@ class MTProtoListingBridgeState:
         now_ts = time.time()
         interval = self._next_interval_for_count(active_count, changed)
         jitter = random.uniform(0.0, min(0.8, interval * 0.12))
+        prev = self.poll_state_by_gift.get(str(int(gift_id))) if isinstance(self.poll_state_by_gift, dict) else {}
+        next_backfill_ts = float((prev or {}).get("next_backfill_ts") or 0.0)
+        if next_backfill_ts <= 0.0:
+            next_backfill_ts = now_ts + random.uniform(self.backfill_min_sec, self.backfill_max_sec)
         self.poll_state_by_gift[str(int(gift_id))] = {
             "last_polled_ts": now_ts,
             "last_active_count": int(active_count),
             "next_due_ts": now_ts + interval + jitter,
             "last_changed": bool(changed),
             "interval_sec": float(interval),
+            "next_backfill_ts": float(next_backfill_ts),
+            "absent_streak": int((prev or {}).get("absent_streak") or 0),
+            "next_offset": str((prev or {}).get("next_offset") or ""),
         }
 
     async def _ingest_mtproto(self) -> tuple[list[dict], str, set[str]]:
@@ -296,31 +333,53 @@ class MTProtoListingBridgeState:
         items: list[dict] = []
         self.last_cycle_polled = []
         sem = asyncio.Semaphore(self.max_parallel_requests)
+        now_ts = time.time()
 
-        async def _fetch_one(gid: int, idx: int) -> tuple[int, list[dict], bool]:
+        async def _fetch_one(gid: int, idx: int) -> tuple[int, dict, bool]:
             if self.per_request_delay_sec > 0:
                 await asyncio.sleep(self.per_request_delay_sec * float(idx))
             async with sem:
                 try:
-                    chunk = await asyncio.wait_for(self._fetch_resale_for_gift(gid), timeout=self.timeout_sec)
-                    return gid, chunk, True
+                    st = self.poll_state_by_gift.get(str(int(gid))) or {}
+                    need_backfill = bool(
+                        self.max_backfill_pages_per_cycle > 0
+                        and float(st.get("next_backfill_ts") or 0.0) <= now_ts
+                    )
+                    payload = await asyncio.wait_for(
+                        self._fetch_resale_for_gift(gid, with_backfill=need_backfill),
+                        timeout=self.timeout_sec,
+                    )
+                    return gid, payload, True
                 except Exception:
-                    return gid, [], False
+                    return gid, {"items": [], "head_count": 0, "active_count": 0, "next_offset": "", "pages_fetched": 0, "backfill_used": False}, False
 
         tasks = [_fetch_one(int(gid), i) for i, gid in enumerate(selected_ids)]
-        for gid, chunk, ok in await asyncio.gather(*tasks):
-            items.extend(chunk)
+        for gid, payload, ok in await asyncio.gather(*tasks):
+            chunk = payload.get("items") if isinstance(payload, dict) else []
+            if isinstance(chunk, list):
+                items.extend(chunk)
             state_before = self.poll_state_by_gift.get(str(int(gid))) or {}
             prev_count = int(state_before.get("last_active_count") or -1)
-            cur_count = len(chunk)
+            head_count = int(payload.get("head_count") or 0) if isinstance(payload, dict) else 0
+            cur_count = int(payload.get("active_count") or 0) if isinstance(payload, dict) else 0
             changed = prev_count != cur_count
             self._update_poll_state(gid, active_count=cur_count, changed=changed)
+            current_state = self.poll_state_by_gift.get(str(int(gid))) or {}
+            if isinstance(current_state, dict):
+                if bool(payload.get("backfill_used")):
+                    current_state["next_backfill_ts"] = time.time() + random.uniform(self.backfill_min_sec, self.backfill_max_sec)
+                current_state["next_offset"] = str(payload.get("next_offset") or "")
+                current_state["head_count"] = int(head_count)
+                current_state["pages_fetched"] = int(payload.get("pages_fetched") or 0)
             self.last_cycle_polled.append(
                 {
                     "gift_type_id": str(int(gid)),
+                    "head_count": int(head_count),
                     "active_count": int(cur_count),
                     "changed": bool(changed),
                     "ok": bool(ok),
+                    "backfill_used": bool(payload.get("backfill_used")),
+                    "pages_fetched": int(payload.get("pages_fetched") or 0),
                     "next_interval_sec": float((self.poll_state_by_gift.get(str(int(gid))) or {}).get("interval_sec") or self.cold_interval_sec),
                 }
             )
@@ -380,6 +439,7 @@ class MTProtoListingBridgeState:
                     "relist_count": 0,
                     "active": True,
                     "last_relisted_at": None,
+                    "absent_streak": 0,
                 }
                 self.tracker_by_key[key] = entry
             else:
@@ -388,6 +448,7 @@ class MTProtoListingBridgeState:
                     entry["last_relisted_at"] = now_iso
                 entry["active"] = True
                 entry["last_seen_at"] = now_iso
+            entry["absent_streak"] = 0
             first_seen_at = str(entry.get("first_seen_at") or now_iso)
             relisted_at = str(entry.get("last_relisted_at") or "")
             first_dt = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
@@ -415,16 +476,22 @@ class MTProtoListingBridgeState:
         elif scoped_existing_keys:
             absent_keys = set(k for k in scoped_existing_keys if k not in active_keys)
         for key in absent_keys:
-            active_item_by_key.pop(key, None)
             entry = self.tracker_by_key.get(key)
             if isinstance(entry, dict):
+                streak = int(entry.get("absent_streak") or 0) + 1
+                entry["absent_streak"] = streak
+                if streak < int(self.removed_confirm_misses):
+                    continue
                 entry["active"] = False
                 entry["last_absent_at"] = now_iso
+                entry["last_seen_at"] = str(entry.get("last_seen_at") or now_iso)
+                entry["absent_streak"] = 0
+            active_item_by_key.pop(key, None)
 
         for key, entry in list(self.tracker_by_key.items()):
             if key in active_keys or key in active_item_by_key:
                 continue
-            last_seen = str(entry.get("last_seen_at") or "")
+            last_seen = str(entry.get("last_absent_at") or entry.get("last_seen_at") or "")
             try:
                 last_ts = datetime.fromisoformat(last_seen.replace("Z", "+00:00")).timestamp() if last_seen else 0.0
             except Exception:
@@ -485,7 +552,17 @@ class MTProtoListingBridgeState:
             started = time.time()
             self.ingest_once()
             elapsed = max(0.0, time.time() - started)
-            wait_s = max(0.5, self.refresh_sec - elapsed + random.uniform(0.0, 0.4))
+            polled = self.last_cycle_polled if isinstance(self.last_cycle_polled, list) else []
+            changed_count = sum(1 for row in polled if bool((row or {}).get("changed")))
+            active_total = sum(int((row or {}).get("active_count") or 0) for row in polled)
+            target = self.head_poll_max_sec
+            if changed_count > 0 or active_total >= self.hot_count_threshold:
+                target = self.head_poll_min_sec
+            elif active_total >= self.warm_count_threshold:
+                target = (self.head_poll_min_sec + self.head_poll_max_sec) / 2.0
+            elif self.refresh_sec > 0:
+                target = min(self.head_poll_max_sec, max(self.head_poll_min_sec, self.refresh_sec))
+            wait_s = max(0.25, target - elapsed + random.uniform(0.0, 0.08))
             self._stop.wait(wait_s)
 
     def payload(self) -> dict:
@@ -517,6 +594,12 @@ class MTProtoListingBridgeState:
                 "scheduler": {
                     "max_per_cycle": self.max_gift_types_per_cycle,
                     "bootstrap_per_cycle": self.bootstrap_gift_types_per_cycle,
+                    "head_poll_min_sec": self.head_poll_min_sec,
+                    "head_poll_max_sec": self.head_poll_max_sec,
+                    "backfill_min_sec": self.backfill_min_sec,
+                    "backfill_max_sec": self.backfill_max_sec,
+                    "max_backfill_pages_per_cycle": self.max_backfill_pages_per_cycle,
+                    "removed_confirm_misses": self.removed_confirm_misses,
                     "hot_interval_sec": self.hot_interval_sec,
                     "warm_interval_sec": self.warm_interval_sec,
                     "cold_interval_sec": self.cold_interval_sec,

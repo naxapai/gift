@@ -1,0 +1,57 @@
+{
+  "streams": {
+    "stream:listings": {
+      "retention": "24h",
+      "events": [
+        "listing.new",
+        "listing.price_changed",
+        "listing.removed"
+      ]
+    },
+    "stream:signals": {
+      "retention": "30d",
+      "events": [
+        "signal.generated"
+      ]
+    },
+    "stream:market": {
+      "retention": "7d",
+      "events": [
+        "market.status.updated"
+      ]
+    },
+    "stream:screeners": {
+      "retention": "7d",
+      "events": [
+        "screener.row"
+      ]
+    }
+  },
+  "consumer_groups": {
+    "cg:enricher": [
+      "stream:listings"
+    ],
+    "cg:signal_engine": [
+      "stream:listings",
+      "stream:market"
+    ],
+    "cg:screeners": [
+      "stream:listings",
+      "stream:signals",
+      "stream:market"
+    ],
+    "cg:api_sse": [
+      "stream:listings",
+      "stream:signals",
+      "stream:screeners"
+    ],
+    "cg:telegram": [
+      "stream:signals"
+    ]
+  },
+  "envelope": {
+    "event": "string",
+    "ts": "RFC3339",
+    "payload": "object"
+  }
+}

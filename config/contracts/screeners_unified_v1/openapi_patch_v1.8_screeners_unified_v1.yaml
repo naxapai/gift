@@ -1,0 +1,212 @@
+openapi_patch:
+  info:
+    version: 1.8.0
+  components:
+    schemas:
+      MarketRegime:
+        type: string
+        description: Режим рынка (используется для адаптации порогов DecisionEngine
+          и ranking/boost; EdgeRank фиксирован).
+        enum:
+        - RISK_ON
+        - MEAN_REVERT
+        - RISK_OFF
+        - PANIC
+      SignalAction:
+        type: string
+        description: Действие по сигналу (единая механика).
+        enum:
+        - BUY
+        - SELL
+        - WATCH
+        - SKIP
+      ScreenerType:
+        type: string
+        description: Тип скринера (витрина возможностей).
+        enum:
+        - NEW_LISTINGS
+        - RACE_MODE
+        - UNDERVALUED
+        - MOMENTUM_BUY
+        - BREAKDOWN_SELL
+        - WHALE_ACTIVITY
+        - LIQUIDITY_SPIKE
+        - VOLATILITY_SURGE
+      ScreenerRowPro:
+        type: object
+        additionalProperties: false
+        description: 'Строка скринера (PRO). EdgeRank фиксированная формула: EdgeRank_raw
+          = 0.35*EP + 0.25*S + 0.15*L + 0.10*AR + 0.10*D - 0.15*LP; EdgeRank = clamp(EdgeRank_raw,0,1)
+          * C. Адаптация под режим рынка: динамические пороги DecisionEngine + ranking/boost
+          + reasons/risk_flags.'
+        required:
+        - ts
+        - screener_type
+        - variant_id
+        - variant_label
+        - action
+        - market_regime
+        - edgeRank100
+        - score100
+        - conf_pct
+        properties:
+          ts:
+            type: string
+            format: date-time
+            description: Время события (UTC).
+          screener_type:
+            $ref: '#/components/schemas/ScreenerType'
+          variant_id:
+            type: string
+          variant_label:
+            type: string
+          collection:
+            type: string
+          model:
+            type: string
+          background:
+            type: string
+          pattern:
+            type: string
+          price_ton:
+            type: number
+          floor_ton:
+            type: number
+          fair_ton:
+            type: number
+          undervalue_pct:
+            type: number
+          expected_profit_pct:
+            type: number
+          liquidity_score:
+            type: number
+          absorption_30m:
+            type: number
+          listing_pressure:
+            type: number
+          depth_score:
+            type: number
+          score100:
+            type: number
+          conf_pct:
+            type: number
+          edgeRank_raw:
+            type: number
+          edgeRank100:
+            type: number
+          market_regime:
+            $ref: '#/components/schemas/MarketRegime'
+          action:
+            $ref: '#/components/schemas/SignalAction'
+          reasons:
+            type: array
+            items:
+              type: string
+          risk_flags:
+            type: array
+            items:
+              type: string
+          decision_trace:
+            type: object
+            additionalProperties: true
+      ScreenerFeedResponse:
+        type: object
+        additionalProperties: false
+        required:
+        - items
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/ScreenerRowPro'
+          next_cursor:
+            type: string
+            nullable: true
+  paths:
+    /v1/screeners/feed:
+      get:
+        summary: Лента скринеров (PRO)
+        description: 'Данные для страницы /#screeners: таблица скринеров с фильтрами
+          и ранжированием по EdgeRank (фиксирован).'
+        parameters:
+        - name: screener_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ScreenerType'
+        - name: market_regime
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/MarketRegime'
+        - name: action
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SignalAction'
+        - name: edgeRank_min
+          in: query
+          required: false
+          schema:
+            type: number
+            description: Min EdgeRank100 (0..100).
+        - name: conf_min
+          in: query
+          required: false
+          schema:
+            type: number
+            description: Min conf_pct (0..100).
+        - name: profit_min_pct
+          in: query
+          required: false
+          schema:
+            type: number
+            description: Min expected_profit_pct (доля).
+        - name: liq_min
+          in: query
+          required: false
+          schema:
+            type: number
+            description: Min liquidity_score (0..100).
+        - name: ar_min
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: lp_max
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 500
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            nullable: true
+        responses:
+          '200':
+            description: OK
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ScreenerFeedResponse'
+    /v1/stream/screeners:
+      get:
+        summary: SSE поток скринеров (PRO)
+        description: 'SSE для страницы /#screeners. Событие: screener.row'
+        responses:
+          '200':
+            description: SSE stream
+            content:
+              text/event-stream:
+                schema:
+                  type: string

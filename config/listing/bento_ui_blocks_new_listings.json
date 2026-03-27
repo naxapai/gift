@@ -1,0 +1,163 @@
+{
+  "version": "1.0",
+  "page": "new_listings",
+  "route": "/#new-listings",
+  "ui_language": "ru",
+  "description": "Bento Grid структура страницы NEW LISTINGS (PRO Scanner)",
+  "blocks": [
+    {
+      "id": "market_header",
+      "type": "MARKET_CONTEXT_HEADER",
+      "title": "Режим рынка и контекст",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 0,
+          "w": 12,
+          "h": 2
+        }
+      },
+      "data_source": "/v1/market/status?window=30m",
+      "realtime": "market.status"
+    },
+    {
+      "id": "pro_filters",
+      "type": "FILTER_BAR",
+      "title": "PRO Фильтры",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 2,
+          "w": 12,
+          "h": 1
+        }
+      },
+      "filters": [
+        "edgeRank_min",
+        "conf_min",
+        "profit_min",
+        "liq_min",
+        "lp_max",
+        "ar_min",
+        "vv_min",
+        "market_regime",
+        "action",
+        "only_pro_alerts"
+      ]
+    },
+    {
+      "id": "listing_signals_table",
+      "type": "TABLE_LISTING_SIGNALS",
+      "title": "Сигналы листинга",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 3,
+          "w": 12,
+          "h": 3
+        }
+      },
+      "data_source": "/v1/listings/signals?mode=tz&sort_by=ts&sort_dir=desc",
+      "realtime": "signal.generated",
+      "columns": [
+        "variant_label",
+        "action",
+        "score100",
+        "conf_pct",
+        "floor_ton",
+        "fair_ton"
+      ],
+      "default_sort": [
+        "ts desc",
+        "score100 desc"
+      ]
+    },
+    {
+      "id": "new_scanner_table",
+      "type": "TABLE_NEW_LISTINGS",
+      "title": "NEW Scanner",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 6,
+          "w": 12,
+          "h": 6
+        }
+      },
+      "data_source": "/v1/listings/new",
+      "realtime": "listing.new",
+      "columns": [
+        "age",
+        "variant_label",
+        "price_ton",
+        "floor_ton",
+        "fair_ton",
+        "undervalue_pct",
+        "edgeRank100",
+        "score100",
+        "conf_pct",
+        "expected_profit_pct",
+        "market_regime_badge",
+        "liquidity_score",
+        "absorption_30m",
+        "listing_pressure",
+        "depth_score",
+        "action"
+      ],
+      "default_sort": [
+        "edgeRank100 desc",
+        "expected_profit_pct desc",
+        "age asc"
+      ]
+    },
+    {
+      "id": "race_scanner_table",
+      "type": "TABLE_RACE_MODE",
+      "title": "RACE Scanner",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 12,
+          "w": 12,
+          "h": 4
+        }
+      },
+      "data_source": "/v1/listings/race",
+      "realtime": "listing.price_changed",
+      "columns": [
+        "variant_label",
+        "prev_price_ton",
+        "price_ton",
+        "delta_pct",
+        "direction",
+        "edgeRank100",
+        "market_regime_badge",
+        "action"
+      ],
+      "default_sort": [
+        "delta_pct desc",
+        "edgeRank100 desc"
+      ]
+    },
+    {
+      "id": "execution_health",
+      "type": "METRICS_PANEL",
+      "title": "Execution Health",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 16,
+          "w": 12,
+          "h": 2
+        }
+      },
+      "metrics": [
+        "detect_latency_p95",
+        "detect_latency_p99",
+        "miss_rate",
+        "duplicate_rate",
+        "sse_disconnect_rate"
+      ]
+    }
+  ]
+}

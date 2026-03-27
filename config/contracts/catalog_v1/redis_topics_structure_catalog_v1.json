@@ -1,0 +1,38 @@
+{
+  "streams": {
+    "stream:listings": {
+      "retention": "24h",
+      "events": [
+        "listing.new",
+        "listing.price_changed",
+        "listing.removed"
+      ]
+    },
+    "stream:market": {
+      "retention": "7d",
+      "events": [
+        "market.status.updated"
+      ]
+    },
+    "stream:catalog": {
+      "retention": "7d",
+      "events": [
+        "catalog.row"
+      ]
+    }
+  },
+  "consumer_groups": {
+    "cg:catalog_builder": [
+      "stream:listings",
+      "stream:market"
+    ],
+    "cg:api_sse_catalog": [
+      "stream:catalog"
+    ]
+  },
+  "envelope": {
+    "event": "string",
+    "ts": "RFC3339",
+    "payload": "object"
+  }
+}

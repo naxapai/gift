@@ -1,0 +1,333 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700;800&display=swap");
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --bg: #edf2fa;
+  --panel: #ffffff;
+  --ink: #14151a;
+  --muted: #5f6874;
+  --line: #d2dced;
+  --accent: #1b63e6;
+  --accent-2: #d97706;
+  --danger: #b91c1c;
+  --radius: 16px;
+  --radius-hero: 22px;
+  --shadow-soft: 0 10px 28px rgba(20, 28, 24, 0.08);
+  --shadow-lift: 0 14px 30px rgba(20, 28, 24, 0.14);
+  font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--ink);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(900px 420px at 10% -8%, #dff1ff 0%, rgba(223, 241, 255, 0) 65%),
+    radial-gradient(780px 380px at 104% 12%, #f8ecd8 0%, rgba(248, 236, 216, 0) 62%),
+    linear-gradient(160deg, #f7f9ff 0%, #eef3fb 55%, #e8eef8 100%);
+}
+
+.bg-app-gradient {
+  background:
+    radial-gradient(900px 420px at 10% -8%, #dff1ff 0%, rgba(223, 241, 255, 0) 65%),
+    radial-gradient(780px 380px at 104% 12%, #f8ecd8 0%, rgba(248, 236, 216, 0) 62%),
+    linear-gradient(160deg, #f7f9ff 0%, #eef3fb 55%, #e8eef8 100%);
+}
+
+.shadow-soft {
+  box-shadow: var(--shadow-soft);
+}
+
+.gmz-panel {
+  border: 1px solid #d6deed;
+  border-radius: var(--radius);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(252, 253, 252, 0.96) 100%),
+    var(--panel);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    var(--shadow-soft);
+}
+
+.gmz-input,
+.gmz-select {
+  width: 100%;
+  min-height: 42px;
+  border-radius: 12px;
+  border: 1px solid #cfd9e9;
+  background: #ffffffdf;
+  padding: 0 12px;
+  font-size: 0.98rem;
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 #ffffff;
+}
+
+.gmz-input::placeholder {
+  color: #9aa4b2;
+}
+
+.gmz-input:hover,
+.gmz-select:hover {
+  border-color: #9fbef1;
+}
+
+.gmz-input:focus-visible,
+.gmz-select:focus-visible {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px rgba(27, 99, 230, 0.16),
+    inset 0 1px 0 #ffffff;
+}
+
+.gmz-btn {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  min-height: 42px;
+  padding: 0 14px;
+  cursor: pointer;
+  font-weight: 700;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.gmz-btn:active {
+  transform: translateY(1px);
+}
+
+.gmz-btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.gmz-btn-primary:hover {
+  box-shadow: 0 10px 22px rgba(27, 99, 230, 0.22);
+}
+
+.gmz-btn-ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.gmz-btn-ghost:hover {
+  border-color: #9fbef1;
+}
+
+.gmz-table-wrap {
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid #d8dfec;
+  background: #fff;
+}
+
+.gmz-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.gmz-table th,
+.gmz-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid #edf1f7;
+  font-size: 0.95rem;
+}
+
+.gmz-table th {
+  font-weight: 700;
+  color: #4f5d70;
+  background: #f9fbff;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.gmz-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.gmz-chip.buy { background: #1b63e6; }
+.gmz-chip.watch { background: #d97706; }
+.gmz-chip.hold { background: #64748b; }
+.gmz-chip.sell { background: #b91c1c; }
+
+.gmz-card-hero {
+  border-radius: var(--radius-hero);
+}
+
+.gmz-select-wrap {
+  position: relative;
+}
+
+.gmz-select-trigger {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-radius: 12px;
+  border: 1px solid #cfd9e9;
+  background: #ffffffdf;
+  padding: 0 12px;
+  font-size: 0.98rem;
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 #ffffff;
+  cursor: pointer;
+}
+
+.gmz-select-trigger:hover {
+  border-color: #9fbef1;
+}
+
+.gmz-select-trigger.is-open {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px rgba(27, 99, 230, 0.16),
+    inset 0 1px 0 #ffffff;
+}
+
+.gmz-select-caret {
+  color: #64748b;
+  transition: transform 120ms ease;
+}
+
+.gmz-select-caret.is-open {
+  transform: rotate(180deg);
+}
+
+.gmz-select-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 280px;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid #cfd9e9;
+  background: #ffffff;
+  box-shadow: var(--shadow-lift);
+  padding: 4px;
+}
+
+.gmz-select-option {
+  width: 100%;
+  display: block;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #334155;
+  cursor: pointer;
+}
+
+.gmz-select-option:hover {
+  background: #eef5ff;
+}
+
+.gmz-select-option.is-active {
+  background: #eaf3ff;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.gmz-panel input:not([type="checkbox"]),
+.gmz-panel input[type="number"],
+.gmz-panel input[type="text"],
+.gmz-panel select {
+  width: 100%;
+  min-height: 42px;
+  border-radius: 12px;
+  border: 1px solid #cfd9e9;
+  background: #ffffffdf;
+  padding: 0 12px;
+  font-size: 0.98rem;
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 #ffffff;
+}
+
+.gmz-panel input:not([type="checkbox"])::placeholder {
+  color: #9aa4b2;
+}
+
+.gmz-panel input:not([type="checkbox"]):hover,
+.gmz-panel select:hover {
+  border-color: #9fbef1;
+}
+
+.gmz-panel input:not([type="checkbox"]):focus-visible,
+.gmz-panel select:focus-visible {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px rgba(27, 99, 230, 0.16),
+    inset 0 1px 0 #ffffff;
+}
+
+.gmz-panel table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.gmz-panel table th,
+.gmz-panel table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid #edf1f7;
+  font-size: 0.95rem;
+}
+
+.gmz-panel table th {
+  font-weight: 700;
+  color: #4f5d70;
+}
+
+.gmz-panel .sticky th {
+  background: #f9fbff;
+}
+
+.bento-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.gmz-filters-panel {
+  min-height: 0;
+}
+
+@media (min-width: 1280px) {
+  .bento-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .bento-grid.signals-layout-grid {
+    grid-template-columns: minmax(320px, 1.15fr) minmax(0, 4.85fr);
+  }
+}

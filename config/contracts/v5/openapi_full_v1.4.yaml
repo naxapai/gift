@@ -1,0 +1,839 @@
+openapi: 3.0.3
+info:
+  title: GiftMarketZone API
+  version: "1.4.0"
+  description: >
+    Production-ready API для аналитики Telegram Gifts: коллекции, варианты, метрики, сигналы (BUY/SELL),
+    избранное, алерты и realtime stream. Метрики и идентификаторы стандартизированы через MetricType.
+servers:
+  - url: https://giftmarketzone.com
+    description: Production
+
+paths:
+  /v1/overview:
+    get:
+      summary: Обзор рынка (дашборд)
+      responses:
+        "200":
+          description: Overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OverviewResponse"
+              examples:
+                overview_ok:
+                  summary: Пример ответа Overview
+                  value:
+                    market_index: 64.3
+                    market_state: рост
+                    counts: { gifts: 1234, collections: 45, models: 210 }
+                    top_signals: []
+                    recommendation: null
+                    key_metrics: { volume24h_ton: 3210.5, avg_liquidity24h: 0.74, synth_floor_share: 0.12 }
+                    provider_health:
+                      - { provider: mtproto_resale, p95_ms: 420, err_pct: 0.8, degraded: false, ts: 2026-02-25T22:16:59Z }
+                    stale: false
+
+  /v1/collections:
+    get:
+      summary: Список коллекций (агрегаты)
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Поиск по названию/ID
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: Collections list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedCollectionSummary"
+
+  /v1/collections/{collection_id}:
+    get:
+      summary: Карточка коллекции
+      parameters:
+        - in: path
+          name: collection_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Collection details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionDetails"
+
+  /v1/variants:
+    get:
+      summary: Список вариантов (агрегаты) с фильтрами
+      parameters:
+        - in: query
+          name: collection_id
+          schema: { type: string }
+        - in: query
+          name: model
+          schema: { type: string }
+        - in: query
+          name: background
+          schema: { type: string }
+        - in: query
+          name: pattern
+          schema: { type: string }
+        - in: query
+          name: min_score
+          schema: { type: number, format: float, minimum: 0, maximum: 1 }
+          description: Минимальный score (0..1)
+        - in: query
+          name: action
+          schema:
+            type: string
+            enum: [BUY, SELL, WATCH, SKIP]
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [score_desc, undervalue_desc, trend_desc, lots_desc, floor_change_24h_desc]
+            default: score_desc
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: Variants list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedVariantSummary"
+
+  /v1/variants/{variant_id}:
+    get:
+      summary: Карточка варианта + лоты + breakdown
+      parameters:
+        - in: path
+          name: variant_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Variant details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VariantDetails"
+
+  /v1/signals:
+    get:
+      summary: Список сигналов (история) + фильтры
+      parameters:
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [BUY, SELL, WATCH, SKIP]
+        - in: query
+          name: min_score
+          schema: { type: number, format: float, minimum: 0, maximum: 1 }
+          description: Минимальный score (0..1)
+        - in: query
+          name: since
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: Signals list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedSignal"
+
+  /v1/signals/{signal_id}:
+    get:
+      summary: Детали сигнала (с explain)
+      parameters:
+        - in: path
+          name: signal_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Signal details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Signal"
+
+  /v1/metrics:
+    get:
+      summary: Получить значения метрик (последние или таймсерии)
+      description: >
+        Возвращает метрики по рынку/коллекции/варианту. Для таймсерий используйте from/to + interval.
+      parameters:
+        - in: query
+          name: metric
+          required: true
+          schema:
+            $ref: "#/components/schemas/MetricType"
+        - in: query
+          name: scope
+          schema:
+            $ref: "#/components/schemas/MetricScope"
+          description: Область метрики
+        - in: query
+          name: market
+          schema: { type: boolean }
+          description: Если true — метрика по рынку (игнорирует collection_id/variant_id)
+        - in: query
+          name: collection_id
+          schema: { type: string }
+        - in: query
+          name: variant_id
+          schema: { type: string }
+        - in: query
+          name: from
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          schema: { type: string, format: date-time }
+        - in: query
+          name: interval
+          schema:
+            type: string
+            enum: [1m, 5m, 15m, 1h, 6h, 24h]
+          description: Шаг агрегации таймсерии
+        - in: query
+          name: limit
+          schema: { type: integer, default: 500, minimum: 1, maximum: 5000 }
+      responses:
+        "200":
+          description: Metrics list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsResponse"
+
+  /v1/metrics/definitions:
+    get:
+      summary: Справочник метрик (RU название, единицы, диапазоны)
+      responses:
+        "200":
+          description: Metric definitions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MetricDefinition"
+
+  /v1/favorites:
+    get:
+      summary: Список избранного
+      responses:
+        "200":
+          description: Favorites list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FavoritesResponse"
+    post:
+      summary: Добавить/обновить избранное
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FavoriteUpsert"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ok" }
+    delete:
+      summary: Удалить из избранного
+      parameters:
+        - in: query
+          name: variant_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ok" }
+
+  /v1/alerts:
+    get:
+      summary: Получить правила алертов
+      responses:
+        "200":
+          description: Alerts list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AlertsResponse"
+    post:
+      summary: Создать/обновить правило алерта (rule_json)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlertRuleUpsert"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ok" }
+
+  /v1/alerts/test:
+    post:
+      summary: Отправить тестовый алерт в Telegram
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rule_id: { type: string }
+              required: [rule_id]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ok" }
+
+
+  /v1/market/status:
+    get:
+      summary: Статус рынка (агрегаты + режим)
+      parameters:
+        - in: query
+          name: window
+          schema: { type: string, enum: [10m, 30m, 1h, 6h, 24h], default: 30m }
+          description: Окно для скоростных метрик
+      responses:
+        "200":
+          description: MarketStatusResponse
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketStatusResponse"
+              examples:
+                market_ok:
+                  summary: Пример статуса рынка
+                  value:
+                    ts: 2026-02-24T08:57:28Z
+                    market_regime: RISK_OFF
+                    market_regime_badge: "🔴"
+                    data_health: OK
+                    data_conf_pct: 78
+                    trend: падение
+                    velocity_score: 28
+                    vol_level: HIGH
+                    flow:
+                      volume_velocity: 0.9
+                      absorption: 0.7
+                      listing_pressure: 5.2
+                    liquidity:
+                      liquidity_score: 31
+                      depth_5pct: { lots: 420, ton: 1680 }
+                    supply:
+                      active_lots: 22885
+                      delta_lots_1h: 640
+                      listing_velocity_10m: 210
+                      listing_velocity_norm: 0.70
+                    whales:
+                      whale_ratio_pct: 18
+                      whale_impulse: null
+                    signals_1h: { buy: 0, sell: 89, watch: 12, skip: 132 }
+                    provider_health: { p95_ms: 420, err_pct: 0.8 }
+
+  /v1/stream:
+    get:
+      summary: SSE поток обновлений (signals/metrics/variants/collections/provider)
+      parameters:
+        - in: query
+          name: types
+          schema:
+            type: string
+          description: 'CSV фильтр типов событий: signal.created, metric.updated, listing.event, provider.health'
+        - in: query
+          name: variant_id
+          schema: { type: string }
+          description: Фильтр по variant_id
+        - in: query
+          name: collection_id
+          schema: { type: string }
+          description: Фильтр по collection_id
+        - in: query
+          name: heartbeat
+          schema: { type: integer, default: 15000, minimum: 5000, maximum: 60000 }
+          description: Интервал heartbeat (ms)
+      description: >
+        Server-Sent Events. Event types: signal.created, metric.updated, variant.updated, collection.updated, provider.health
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+components:
+  schemas:
+    Ok:
+      type: object
+      properties:
+        ok: { type: boolean }
+      required: [ok]
+
+    MetricScope:
+      type: string
+      description: Уровень агрегации метрики
+      enum: [MARKET, COLLECTION, VARIANT]
+
+    MetricUnit:
+      type: string
+      enum: [TON, STARS, PCT, COUNT, SCORE_0_1, SCORE_0_100, RATIO, BOOL, JSON]
+
+    MetricType:
+      type: string
+      description: Тип метрики аналитики подарков Telegram
+      enum:
+        - FLOOR_REALTIME
+        - FLOOR_HISTORY
+        - NEW_LISTINGS_REALTIME
+        - LISTING_FEED
+        - LISTING_VELOCITY
+        - LISTING_PRESSURE
+        - FAIR_PRICE
+        - UNDERVALUE
+        - EXPECTED_PROFIT
+        - LIQUIDITY_SCORE
+        - LIQUIDITY_HEATMAP
+        - LIQUIDITY_CHART
+        - VOLUME_CHART
+        - VOLUME_VELOCITY
+        - VELOCITY_SCORE
+        - ABSORPTION_RATE
+        - MARKET_DEPTH
+        - BUY_WALL_SCORE
+        - WHALE_RATIO
+        - WHALE_IMPULSE
+        - RARITY_SCORE
+        - VOLATILITY
+        - SUPPLY_CHART
+        - EDGE_SCORE
+        - BUY_SCORE
+        - SELL_SCORE
+        - MARKET_INDEX
+        - TREND_SCORE
+
+    MetricDefinition:
+      type: object
+      required: [metric, scope, title_ru, unit, is_timeseries, description]
+      properties:
+        metric: { $ref: "#/components/schemas/MetricType" }
+        scope: { $ref: "#/components/schemas/MetricScope" }
+        title_ru: { type: string }
+        unit: { $ref: "#/components/schemas/MetricUnit" }
+        is_timeseries: { type: boolean }
+        min_value: { type: number, format: double, nullable: true }
+        max_value: { type: number, format: double, nullable: true }
+        description: { type: string }
+
+    MetricPoint:
+      type: object
+      required: [ts, value]
+      properties:
+        ts: { type: string, format: date-time }
+        value: { type: number, format: double }
+        extra:
+          type: object
+          additionalProperties: true
+
+    MetricsResponse:
+      type: object
+      required: [metric, scope, points]
+      properties:
+        metric: { $ref: "#/components/schemas/MetricType" }
+        scope: { $ref: "#/components/schemas/MetricScope" }
+        market: { type: boolean, default: false }
+        collection_id: { type: string, nullable: true }
+        variant_id: { type: string, nullable: true }
+        unit: { $ref: "#/components/schemas/MetricUnit" }
+        points:
+          type: array
+          items: { $ref: "#/components/schemas/MetricPoint" }
+        stale:
+          type: boolean
+          description: Данные устарели (>120с)
+
+    OverviewResponse:
+      type: object
+      required: [market_index, market_state, counts, top_signals, key_metrics, provider_health, stale]
+      properties:
+        market_index:
+          type: number
+          format: float
+          description: Индекс рынка 0..100
+        market_state:
+          type: string
+          enum: [рост, флет, падение, неизвестно]
+        counts:
+          type: object
+          properties:
+            gifts: { type: integer }
+            collections: { type: integer }
+            models: { type: integer }
+        top_signals:
+          type: array
+          items: { $ref: "#/components/schemas/Signal" }
+        recommendation:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Signal"
+        key_metrics:
+          type: object
+          properties:
+            volume24h_ton: { type: number, format: float }
+            avg_liquidity24h: { type: number, format: float }
+            synth_floor_share: { type: number, format: float }
+        provider_health:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderHealth" }
+        stale:
+          type: boolean
+
+    ProviderHealth:
+      type: object
+      required: [provider, p95_ms, err_pct, degraded, ts]
+      properties:
+        provider: { type: string }
+        p95_ms: { type: integer }
+        err_pct: { type: number, format: float }
+        degraded: { type: boolean }
+        ts: { type: string, format: date-time }
+
+    CollectionSummary:
+      type: object
+      required: [collection_id, name, floor_ton, floor_type, delta_1h, delta_12h, delta_24h, active_lots_total, sales24h, liq6h, trend_t, liq_score, updated_at]
+      properties:
+        collection_id: { type: string }
+        name: { type: string }
+        floor_ton: { type: number, format: float }
+        floor_type: { type: string, enum: [real, synthetic] }
+        delta_1h: { type: number, format: float }
+        delta_12h: { type: number, format: float }
+        delta_24h: { type: number, format: float }
+        active_lots_total: { type: integer }
+        sales24h: { type: integer }
+        liq6h: { type: number, format: float }
+        trend_t: { type: number, format: float }
+        liq_score: { type: number, format: float }
+        updated_at: { type: string, format: date-time }
+
+    PagedCollectionSummary:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CollectionSummary" }
+        next_cursor:
+          nullable: true
+          type: string
+
+    CollectionDetails:
+      type: object
+      required: [collection, top_variants, floor_series]
+      properties:
+        collection: { $ref: "#/components/schemas/CollectionSummary" }
+        top_variants:
+          type: array
+          items: { $ref: "#/components/schemas/VariantSummary" }
+        floor_series:
+          type: array
+          items:
+            type: object
+            required: [ts, floor_ton]
+            properties:
+              ts: { type: string, format: date-time }
+              floor_ton: { type: number, format: float }
+
+    VariantSummary:
+      type: object
+      required: [variant_id, collection_id, collection_name, model, background, pattern, active_lots, price_ton, floor_ton, floor_type, median_ton, fair_ton, undervalue, trend_t, liq_score, risk_pen, score, score100, confidence, conf_pct, expected_profit_pct, action_hint, reasons, risk_flags, stale, updated_at]
+      properties:
+        variant_id: { type: string }
+        collection_id: { type: string }
+        collection_name: { type: string }
+        model: { type: string }
+        background: { type: string }
+        pattern: { type: string }
+        active_lots: { type: integer }
+        price_ton: { type: number, format: float, description: "min_price_ton (P)" }
+        floor_ton: { type: number, format: float }
+        floor_type: { type: string, enum: [real, synthetic] }
+        median_ton: { type: number, format: float }
+        fair_ton: { type: number, format: float }
+        undervalue: { type: number, format: float }
+        trend_t: { type: number, format: float }
+        liq_score: { type: number, format: float }
+        risk_pen: { type: number, format: float }
+        score: { type: number, format: float }
+        score100: { type: number, format: float }
+        confidence: { type: number, format: float }
+        conf_pct: { type: number, format: float }
+        expected_profit_pct: { type: number, format: float }
+        action_hint: { type: string, enum: [BUY, SELL, WATCH, SKIP] }
+        reasons:
+          type: array
+          items: { type: string }
+        risk_flags:
+          type: array
+          items: { type: string }
+        stale: { type: boolean }
+        updated_at: { type: string, format: date-time }
+
+    PagedVariantSummary:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/VariantSummary" }
+        next_cursor:
+          nullable: true
+          type: string
+
+    VariantDetails:
+      type: object
+      required: [variant, listings, breakdown]
+      properties:
+        variant: { $ref: "#/components/schemas/VariantSummary" }
+        listings:
+          type: array
+          items:
+            type: object
+            required: [listing_id, price_ton, status, observed_at]
+            properties:
+              listing_id: { type: string }
+              price_ton: { type: number, format: float }
+              price_stars: { type: number, format: float, nullable: true }
+              status: { type: string, enum: [ACTIVE, SOLD, CANCELED] }
+              observed_at: { type: string, format: date-time }
+        breakdown:
+          type: object
+          additionalProperties: true
+
+    Signal:
+      type: object
+      required: [signal_id, ts, type, variant_id, collection_id, collection, score100, conf_pct, reasons, risk_flags]
+      properties:
+        signal_id: { type: string, format: uuid }
+        ts: { type: string, format: date-time }
+        type: { type: string, enum: [BUY, SELL, WATCH, SKIP] }
+        variant_id: { type: string }
+        collection_id: { type: string }
+        collection: { type: string }
+        model: { type: string, nullable: true }
+        background: { type: string, nullable: true }
+        pattern: { type: string, nullable: true }
+        score100: { type: number, format: float }
+        conf_pct: { type: number, format: float }
+        price_ton: { type: number, format: float, nullable: true }
+        floor_ton: { type: number, format: float, nullable: true }
+        fair_ton: { type: number, format: float, nullable: true }
+        undervalue: { type: number, format: float, nullable: true }
+        expected_profit_pct: { type: number, format: float, nullable: true }
+        forecast24h_pct_min: { type: number, format: float, nullable: true }
+        forecast24h_pct_max: { type: number, format: float, nullable: true }
+        active_lots: { type: integer, nullable: true }
+        liquidity24h: { type: number, format: float, nullable: true }
+        reasons:
+          type: array
+          items: { type: string }
+        risk_flags:
+          type: array
+          items: { type: string }
+
+    PagedSignal:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Signal" }
+        next_cursor:
+          nullable: true
+          type: string
+
+    FavoritesResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [variant_id, created_at]
+            properties:
+              variant_id: { type: string }
+              note: { type: string, nullable: true }
+              created_at: { type: string, format: date-time }
+
+    FavoriteUpsert:
+      type: object
+      required: [variant_id]
+      properties:
+        variant_id: { type: string }
+        note: { type: string, nullable: true }
+
+    AlertsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [rule_id, name, rule_json, enabled, created_at]
+            properties:
+              rule_id: { type: string }
+              name: { type: string }
+              rule_json:
+                type: object
+                additionalProperties: true
+              enabled: { type: boolean }
+              created_at: { type: string, format: date-time }
+
+    AlertRuleUpsert:
+      type: object
+      required: [name, rule_json]
+      properties:
+        rule_id: { type: string, nullable: true }
+        name: { type: string }
+        rule_json:
+          type: object
+          additionalProperties: true
+        enabled: { type: boolean, default: true }
+
+  examples:
+    TelegramMessage_BUY:
+      summary: Текст сообщения BUY в Telegram (шаблон)
+      value: |
+        GiftMarketZone: Сигналы :
+        BUY | score 82.4 | conf 71%
+        Коллекция: snakebox
+        Модель: Bluebell
+        Фон: Cobalt Blue
+        Узор: Hourglass
+
+        Покупка: ожидается рост (24ч: +4.0%…+18.0%, оценка 82.4, уверенность 71%)
+
+        Прогноз 24ч: рост, диапазон +4.0%…+18.0%
+        Причины:
+        - Недооценка: 14.9% (Fair 9.4 TON > Price 8.0 TON)
+        - Скорость поглощения: 1.2 (рынок выкупает быстрее, чем выставляют)
+        - Скорость объёма: 1.67 (10м выше нормы)
+
+        Риск:
+        - Возможен slippage при низкой глубине
+
+        Время сигнала: 2026-02-25 01:16:59 МСК
+    TelegramMessage_SELL:
+      summary: Текст сообщения SELL в Telegram (шаблон)
+      value: |
+        GiftMarketZone: Сигналы :
+        SELL | score 32.9 | conf 52%
+        Коллекция: snakebox
+        Модель: Bluebell
+        Фон: Cobalt Blue
+        Узор: Hourglass
+
+        Продажа: ожидается снижение (24ч: -41.5%…-8.5%, оценка 32.9, уверенность 52%)
+
+        Прогноз 24ч: снижение, диапазон -41.5%…-8.5%
+        Причины:
+        - Активных лотов: 42.
+        - Ликвидность 24h: 0.6.
+
+        Риск:
+        - Низкая глубина: активных лотов 42.
+
+        Время сигнала: 2026-02-25 01:16:59 МСК
+
+components:
+  schemas:
+    MarketStatusResponse:
+      type: object
+      properties:
+        ts: { type: string, format: date-time }
+        market_regime: { type: string, enum: [RISK_ON, MEAN_REVERT, RISK_OFF, PANIC] }
+        market_regime_badge: { type: string, enum: ["🟢","🟡","🔴","⚠"] }
+        data_health: { type: string, enum: [OK, DEGRADED] }
+        data_conf_pct: { type: integer, minimum: 0, maximum: 100 }
+        trend: { type: string, enum: [рост, флет, падение] }
+        velocity_score: { type: integer, minimum: 0, maximum: 100 }
+        vol_level: { type: string, enum: [LOW, MED, HIGH] }
+        flow:
+          type: object
+          properties:
+            volume_velocity: { type: number }
+            absorption: { type: number }
+            listing_pressure: { type: number }
+        liquidity:
+          type: object
+          properties:
+            liquidity_score: { type: integer, minimum: 0, maximum: 100 }
+            depth_5pct:
+              type: object
+              properties:
+                lots: { type: integer }
+                ton: { type: number }
+        supply:
+          type: object
+          properties:
+            active_lots: { type: integer }
+            delta_lots_1h: { type: integer }
+            listing_velocity_10m: { type: integer }
+            listing_velocity_norm: { type: number }
+        whales:
+          type: object
+          properties:
+            whale_ratio_pct: { type: number }
+            whale_impulse: { type: number, nullable: true }
+        signals_1h:
+          type: object
+          properties:
+            buy: { type: integer }
+            sell: { type: integer }
+            watch: { type: integer }
+            skip: { type: integer }
+        provider_health:
+          type: object
+          properties:
+            p95_ms: { type: integer }
+            err_pct: { type: number }

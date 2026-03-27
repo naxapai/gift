@@ -22,6 +22,16 @@ import bot as signal_bot
 
 ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
+SPA_FRONTEND_ROUTES = {
+    "/catalog",
+    "/screeners",
+    "/signals",
+    "/listing",
+    "/favorites",
+    "/cabinet",
+    "/settings",
+    "/admin",
+}
 
 _STATE: GiftAnalyticsService | None = None
 _STATE_LOCK = threading.Lock()
@@ -37,6 +47,8 @@ def _state() -> GiftAnalyticsService:
     return _STATE
 
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
+PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL", "https://giftmarketzone.com").strip() or "https://giftmarketzone.com").rstrip("/")
+PUBLIC_BASE_HOST = (urlparse(PUBLIC_BASE_URL).netloc or "giftmarketzone.com").split(":")[0].strip().lower() or "giftmarketzone.com"
 TELEGRAM_BOT_TOKEN = (
     os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     or os.getenv("TG_BOT_TOKEN", "").strip()
@@ -65,6 +77,16 @@ BOT_API_BASE_URL = os.getenv("BOT_API_BASE_URL", "").strip()
 BOT_API_AUTH_TOKEN = os.getenv("BOT_API_AUTH_TOKEN", "").strip() or API_AUTH_TOKEN
 BRIDGE_API_TOKEN = os.getenv("BRIDGE_API_TOKEN", "").strip() or os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip()
 BRIDGE_API_PATH = (os.getenv("BRIDGE_API_PATH", "/bridge/gifts/verified").strip() or "/bridge/gifts/verified")
+AUTH_COOKIE_DOMAIN = os.getenv("AUTH_COOKIE_DOMAIN", "").strip().lower()
+TON_COOKIE_DOMAIN = os.getenv("TON_COOKIE_DOMAIN", AUTH_COOKIE_DOMAIN).strip().lower()
+CORS_ALLOWED_ORIGINS_RAW = os.getenv(
+    "CORS_ALLOWED_ORIGINS",
+    f"{PUBLIC_BASE_URL},https://telegram-gifts-market.onrender.com,http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
+).strip()
+TON_PROOF_ALLOWED_DOMAINS_RAW = os.getenv(
+    "TON_PROOF_ALLOWED_DOMAINS",
+    f"{PUBLIC_BASE_HOST},telegram-gifts-market.onrender.com,localhost,127.0.0.1",
+).strip()
 ADMIN_TELEGRAM_USER_ID = os.getenv("ADMIN_TELEGRAM_USER_ID", "").strip()
 ADMIN_TELEGRAM_USER_IDS_RAW = os.getenv("ADMIN_TELEGRAM_USER_IDS", "").strip()
 SIGNAL_ENGINE_OVERRIDES_FILE = ROOT / "data" / "signal_engine_overrides.json"
@@ -108,6 +130,35 @@ _HTTP_METRICS_LAT_BY_ROUTE: dict[str, deque[float]] = defaultdict(lambda: deque(
 _SSE_METRICS_ACTIVE: dict[str, int] = defaultdict(int)
 _SSE_METRICS_OPENS: dict[str, int] = defaultdict(int)
 _SSE_METRICS_ABRUPT_CLOSES: dict[str, int] = defaultdict(int)
+_ADMIN_RT_CACHE_LOCK = threading.Lock()
+_ADMIN_RT_CACHE: dict[tuple, tuple[float, object]] = {}
+
+
+def _split_csv(raw: str) -> list[str]:
+    return [part.strip() for part in str(raw or "").split(",") if part.strip()]
+
+
+CORS_ALLOWED_ORIGINS = {item.rstrip("/") for item in _split_csv(CORS_ALLOWED_ORIGINS_RAW)}
+TON_PROOF_ALLOWED_DOMAINS = {item.strip().lower() for item in _split_csv(TON_PROOF_ALLOWED_DOMAINS_RAW)}
+
+
+def _admin_rt_cache_get(key: tuple, ttl_sec: float | None = None):
+    ttl = 0.0 if ttl_sec is None else max(0.0, float(ttl_sec))
+    now = time.time()
+    with _ADMIN_RT_CACHE_LOCK:
+        item = _ADMIN_RT_CACHE.get(tuple(key))
+        if not item:
+            return None
+        ts, payload = item
+        if ttl > 0.0 and (now - float(ts)) > ttl:
+            _ADMIN_RT_CACHE.pop(tuple(key), None)
+            return None
+        return json.loads(json.dumps(payload, ensure_ascii=False))
+
+
+def _admin_rt_cache_set(key: tuple, payload):
+    with _ADMIN_RT_CACHE_LOCK:
+        _ADMIN_RT_CACHE[tuple(key)] = (time.time(), json.loads(json.dumps(payload, ensure_ascii=False)))
 
 
 def _observe_sse_open(stream: str) -> None:
@@ -123,6 +174,101 @@ def _observe_sse_close(stream: str, *, abrupt: bool) -> None:
         _SSE_METRICS_ACTIVE[key] = max(0, int(_SSE_METRICS_ACTIVE.get(key, 0)) - 1)
         if abrupt:
             _SSE_METRICS_ABRUPT_CLOSES[key] += 1
+
+
+def _v1_stream_snapshot_token(svc: GiftAnalyticsService) -> str:
+    state = svc.state if isinstance(getattr(svc, "state", None), dict) else {}
+    try:
+        listing_status = svc.listing_source_status_v1(allow_remote=False)
+    except Exception:
+        listing_status = {}
+    payload = {
+        "data_version": int(getattr(svc, "_data_version", 0)),
+        "updated_at": str(state.get("updated_at") or ""),
+        "last_error": str(state.get("last_error") or ""),
+        "ingest_in_progress": bool(state.get("ingest_in_progress")),
+        "listing_source": str((listing_status or {}).get("source") or ""),
+        "listing_updated_at": str((listing_status or {}).get("updated_at") or ""),
+        "listing_error": str((listing_status or {}).get("error") or (listing_status or {}).get("last_error") or ""),
+        "listing_rows_count": int((listing_status or {}).get("rows_count") or 0),
+        "listing_degraded": bool((listing_status or {}).get("degraded")),
+        "listing_runtime_error_count": int(getattr(svc, "_listing_runtime_error_count", 0)),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _v1_signals_stream_snapshot_token(svc: GiftAnalyticsService, mode: str | None = None) -> str:
+    state = svc.state if isinstance(getattr(svc, "state", None), dict) else {}
+    payload = {
+        "mode": str(mode or ""),
+        "engine_mode": str(getattr(svc, "v1_signal_engine_mode", "") or ""),
+        "data_version": int(getattr(svc, "_data_version", 0)),
+        "updated_at": str(state.get("updated_at") or ""),
+        "last_error": str(state.get("last_error") or ""),
+        "ingest_in_progress": bool(state.get("ingest_in_progress")),
+        "listing_runtime_error_count": int(getattr(svc, "_listing_runtime_error_count", 0)),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _v1_listings_stream_snapshot_token(
+    svc: GiftAnalyticsService,
+    *,
+    window: str | None = None,
+    include_low_priority: bool = False,
+) -> str:
+    try:
+        listing_status = svc.listing_source_status_v1(allow_remote=False)
+    except Exception:
+        listing_status = {}
+    listing_state = svc.listing_state if isinstance(getattr(svc, "listing_state", None), dict) else {}
+    tracker_state = svc.listing_tracker_state if isinstance(getattr(svc, "listing_tracker_state", None), dict) else {}
+    payload = {
+        "window": str(window or ""),
+        "include_low_priority": bool(include_low_priority),
+        "data_version": int(getattr(svc, "_data_version", 0)),
+        "listing_runtime_error_count": int(getattr(svc, "_listing_runtime_error_count", 0)),
+        "listing_source": str((listing_status or {}).get("source") or ""),
+        "listing_updated_at": str((listing_status or {}).get("updated_at") or ""),
+        "listing_error": str((listing_status or {}).get("error") or (listing_status or {}).get("last_error") or ""),
+        "listing_rows_count": int((listing_status or {}).get("rows_count") or 0),
+        "listing_degraded": bool((listing_status or {}).get("degraded")),
+        "listing_state_size": len(listing_state),
+        "tracker_state_size": len(tracker_state),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _v1_listings_events_stream_snapshot_token(
+    svc: GiftAnalyticsService,
+    *,
+    new_window_sec: int,
+    include_relisted: bool,
+) -> str:
+    try:
+        listing_status = svc.listing_source_status_v1(allow_remote=False)
+    except Exception:
+        listing_status = {}
+    listing_state = svc.listing_state if isinstance(getattr(svc, "listing_state", None), dict) else {}
+    tracker_state = svc.listing_tracker_state if isinstance(getattr(svc, "listing_tracker_state", None), dict) else {}
+    payload = {
+        "new_window_sec": int(new_window_sec),
+        "include_relisted": bool(include_relisted),
+        "data_version": int(getattr(svc, "_data_version", 0)),
+        "listing_runtime_error_count": int(getattr(svc, "_listing_runtime_error_count", 0)),
+        "listing_source": str((listing_status or {}).get("source") or ""),
+        "listing_updated_at": str((listing_status or {}).get("updated_at") or ""),
+        "listing_error": str((listing_status or {}).get("error") or (listing_status or {}).get("last_error") or ""),
+        "listing_rows_count": int((listing_status or {}).get("rows_count") or 0),
+        "listing_degraded": bool((listing_status or {}).get("degraded")),
+        "listing_state_size": len(listing_state),
+        "tracker_state_size": len(tracker_state),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 def _sse_disconnect_rate_pct_locked(stream: str | None = None) -> float:
@@ -301,6 +447,14 @@ def _normalize_tz_gates_payload(payload: dict | None, report_source: str = "file
 
 
 def _build_tz_gates_payload_runtime() -> dict:
+    try:
+        data_version = int(getattr(_state(), "_data_version", 0))
+    except Exception:
+        data_version = 0
+    cache_key = ("tz_gates_runtime", data_version)
+    cached = _admin_rt_cache_get(cache_key, ttl_sec=30.0)
+    if isinstance(cached, dict):
+        return cached
     from scripts.backtest_tz_signals import run as backtest_run
 
     horizon_hours = _as_int_env("TZ_GATES_HORIZON_HOURS", 24)
@@ -317,7 +471,9 @@ def _build_tz_gates_payload_runtime() -> dict:
         "report_source": "runtime",
         "report": report,
     }
-    return _normalize_tz_gates_payload(payload, report_source="runtime")
+    normalized = _normalize_tz_gates_payload(payload, report_source="runtime")
+    _admin_rt_cache_set(cache_key, normalized)
+    return normalized
 
 
 SIGNAL_ENGINE_DEFAULTS: dict = {
@@ -426,12 +582,26 @@ _LISTING_WINDOWS_SEC = {
     "24h": 24 * 60 * 60,
 }
 
+_BOOL_TRUE_VALUES = {"1", "true", "yes", "on"}
+_BOOL_FALSE_VALUES = {"0", "false", "no", "off"}
+
 
 def _listing_window_to_sec(value: str | None, default: str = "30m") -> tuple[str, int]:
     raw = str(value or default).strip().lower()
     if raw not in _LISTING_WINDOWS_SEC:
         raise ValueError(f"unsupported_window:{raw}")
     return raw, int(_LISTING_WINDOWS_SEC[raw])
+
+
+def _parse_query_bool(value: str | None, *, default: bool, field: str) -> bool:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return bool(default)
+    if raw in _BOOL_TRUE_VALUES:
+        return True
+    if raw in _BOOL_FALSE_VALUES:
+        return False
+    raise ValueError(f"invalid_{field}")
 
 
 def _parse_iso_utc(value: str | None) -> datetime | None:
@@ -652,6 +822,12 @@ def _signal_engine_effective_config() -> tuple[dict, dict, dict]:
 
 def _signal_engine_signal_preview(limit: int, cfg: dict) -> dict:
     svc = _state()
+    cfg_hash = hashlib.sha256(json.dumps(cfg or {}, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    data_version = int(getattr(svc, "_data_version", 0))
+    cache_key = ("signal_engine_preview", int(limit or 0), cfg_hash, data_version)
+    cached = _admin_rt_cache_get(cache_key, ttl_sec=20.0)
+    if isinstance(cached, dict):
+        return cached
     rows = (svc.list_variants(sort="reco_score_desc", page=1, page_size=max(50, min(limit * 3, 5000))).get("items") or [])
     out: list[dict] = []
     alpha = _safe_float(((cfg.get("fair_price") or {}).get("alpha")), 0.7)
@@ -778,12 +954,14 @@ def _signal_engine_signal_preview(limit: int, cfg: dict) -> dict:
         )
         if len(out) >= limit:
             break
-    return {
+    payload = {
         "ok": True,
         "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "total": len(out),
         "items": out,
     }
+    _admin_rt_cache_set(cache_key, payload)
+    return payload
 
 def _run_full_sync_once() -> tuple[bool, str]:
     env = os.environ.copy()
@@ -1168,6 +1346,25 @@ def _add_security_headers(handler: BaseHTTPRequestHandler) -> None:
     handler.send_header("X-Frame-Options", "DENY")
     handler.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
     handler.send_header("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    origin = _cors_origin_for_request(handler)
+    if origin:
+        handler.send_header("Access-Control-Allow-Origin", origin)
+        handler.send_header("Access-Control-Allow-Credentials", "true")
+        handler.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+        handler.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        handler.send_header("Vary", "Origin")
+
+
+def _cors_origin_for_request(handler: BaseHTTPRequestHandler) -> str:
+    origin = (handler.headers.get("Origin", "") or "").strip().rstrip("/")
+    if not origin:
+        return ""
+    request_origin = _request_origin(handler).rstrip("/")
+    if origin == request_origin:
+        return origin
+    if origin in CORS_ALLOWED_ORIGINS:
+        return origin
+    return ""
 
 
 def _cookie_secure(handler: BaseHTTPRequestHandler) -> bool:
@@ -1179,8 +1376,16 @@ def _cookie_secure(handler: BaseHTTPRequestHandler) -> bool:
     return True
 
 
+def _cookie_domain_attr(value: str) -> str:
+    domain = str(value or "").strip().lower().lstrip(".")
+    if not domain or domain in {"localhost", "127.0.0.1", "::1"}:
+        return ""
+    return f"Domain={domain}"
+
+
 def _build_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, max_age: int) -> str:
     secure = _cookie_secure(handler)
+    cookie_domain = _cookie_domain_attr(AUTH_COOKIE_DOMAIN)
     parts = [
         f"{SESSION_COOKIE_NAME}={session_id}",
         "Path=/",
@@ -1188,6 +1393,8 @@ def _build_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, max_
         "SameSite=Lax",
         f"Max-Age={max_age}",
     ]
+    if cookie_domain:
+        parts.append(cookie_domain)
     if secure:
         parts.append("Secure")
     return "; ".join(parts)
@@ -1195,6 +1402,7 @@ def _build_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, max_
 
 def _build_clear_session_cookie(handler: BaseHTTPRequestHandler) -> str:
     secure = _cookie_secure(handler)
+    cookie_domain = _cookie_domain_attr(AUTH_COOKIE_DOMAIN)
     parts = [
         f"{SESSION_COOKIE_NAME}=",
         "Path=/",
@@ -1202,6 +1410,8 @@ def _build_clear_session_cookie(handler: BaseHTTPRequestHandler) -> str:
         "SameSite=Lax",
         "Max-Age=0",
     ]
+    if cookie_domain:
+        parts.append(cookie_domain)
     if secure:
         parts.append("Secure")
     return "; ".join(parts)
@@ -1209,6 +1419,7 @@ def _build_clear_session_cookie(handler: BaseHTTPRequestHandler) -> str:
 
 def _build_ton_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, max_age: int) -> str:
     secure = _cookie_secure(handler)
+    cookie_domain = _cookie_domain_attr(TON_COOKIE_DOMAIN)
     parts = [
         f"{TON_SESSION_COOKIE_NAME}={session_id}",
         "Path=/",
@@ -1216,6 +1427,8 @@ def _build_ton_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, 
         "SameSite=Lax",
         f"Max-Age={max_age}",
     ]
+    if cookie_domain:
+        parts.append(cookie_domain)
     if secure:
         parts.append("Secure")
     return "; ".join(parts)
@@ -1223,6 +1436,7 @@ def _build_ton_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, 
 
 def _build_clear_ton_session_cookie(handler: BaseHTTPRequestHandler) -> str:
     secure = _cookie_secure(handler)
+    cookie_domain = _cookie_domain_attr(TON_COOKIE_DOMAIN)
     parts = [
         f"{TON_SESSION_COOKIE_NAME}=",
         "Path=/",
@@ -1230,6 +1444,8 @@ def _build_clear_ton_session_cookie(handler: BaseHTTPRequestHandler) -> str:
         "SameSite=Lax",
         "Max-Age=0",
     ]
+    if cookie_domain:
+        parts.append(cookie_domain)
     if secure:
         parts.append("Secure")
     return "; ".join(parts)
@@ -1263,8 +1479,6 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> dict:
 
 
 def _auth_user_from_request(handler: BaseHTTPRequestHandler) -> dict | None:
-    if not AUTH_REQUIRED:
-        return None
     cookies = _parse_cookies(handler)
     sid = cookies.get(SESSION_COOKIE_NAME, "")
     session = AUTH.get_session(sid)
@@ -1288,7 +1502,9 @@ def _ua_hash(handler: BaseHTTPRequestHandler) -> str:
 
 
 def _host_only(handler: BaseHTTPRequestHandler) -> str:
-    return (handler.headers.get("Host", "") or "").split(":")[0].strip().lower()
+    forwarded_host = (handler.headers.get("X-Forwarded-Host", "") or "").strip()
+    host = forwarded_host or (handler.headers.get("Host", "") or PUBLIC_BASE_HOST)
+    return host.split(":")[0].strip().lower()
 
 
 def _fetch_ton_wallet_balance(address: str) -> tuple[float | None, str]:
@@ -1367,16 +1583,19 @@ def _validate_ton_verify_payload(handler: BaseHTTPRequestHandler, payload: dict)
     if now_ts - ts > TON_PROOF_MAX_AGE_SEC:
         return False, "proof_expired", None
     host = _host_only(handler)
-    if domain_value and domain_value != host:
+    allowed_domains = set(TON_PROOF_ALLOWED_DOMAINS)
+    allowed_domains.add(host)
+    if domain_value and domain_value not in allowed_domains:
         return False, "proof_domain_mismatch", None
-    ok, reason = TON_AUTH.consume_challenge(proof_payload, host=host, ua_hash=_ua_hash(handler))
+    challenge_host = domain_value or host
+    ok, reason = TON_AUTH.consume_challenge(proof_payload, host=challenge_host, ua_hash=_ua_hash(handler))
     if not ok:
         return False, reason, None
     wallet = {
         "address": address,
         "chain": chain,
         "public_key": public_key,
-        "domain": domain_value or host,
+        "domain": challenge_host,
         "verified_at": now_ts,
         "proof_timestamp": ts,
         # В MVP валидируем challenge/domain/time/replay. Криптовалидация сигнатуры добавляется отдельным модулем.
@@ -1463,6 +1682,10 @@ def _bridge_verified_payload() -> dict:
     }
 
 
+def _bridge_owned_gifts_payload(telegram_user_id: str = "", username: str = "") -> dict:
+    return _state().owned_gifts_bridge_v1(telegram_user_id=telegram_user_id, username=username)
+
+
 def _json_response(
     handler: BaseHTTPRequestHandler,
     payload: dict,
@@ -1546,7 +1769,8 @@ def _serve_file(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
 
 
 def _request_origin(handler: BaseHTTPRequestHandler) -> str:
-    host = handler.headers.get("Host", "") or "127.0.0.1:8080"
+    forwarded_host = (handler.headers.get("X-Forwarded-Host", "") or "").strip()
+    host = forwarded_host or (handler.headers.get("Host", "") or PUBLIC_BASE_HOST)
     xf_proto = (handler.headers.get("X-Forwarded-Proto", "") or "").strip().lower()
     proto = xf_proto if xf_proto in {"http", "https"} else "http"
     host_only = host.split(":")[0].strip().lower()
@@ -1555,8 +1779,16 @@ def _request_origin(handler: BaseHTTPRequestHandler) -> str:
     return f"{proto}://{host}"
 
 
+def _public_origin_for_handler(handler: BaseHTTPRequestHandler) -> str:
+    request_origin = _request_origin(handler).rstrip("/")
+    req_host = urlparse(request_origin).netloc.split(":")[0].strip().lower()
+    if req_host in {"localhost", "127.0.0.1", "::1"} or req_host.startswith("127."):
+        return request_origin
+    return PUBLIC_BASE_URL.rstrip("/")
+
+
 def _tonconnect_manifest(handler: BaseHTTPRequestHandler) -> None:
-    origin = _request_origin(handler)
+    origin = _public_origin_for_handler(handler)
     payload = {
         "url": origin,
         "name": "GiftMarketZone",
@@ -1577,6 +1809,12 @@ class RequestHandler(BaseHTTPRequestHandler):
         if isinstance(exc, OSError):
             return getattr(exc, "errno", None) in {32, 54, 104}
         return False
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(HTTPStatus.NO_CONTENT)
+        _add_security_headers(self)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def handle(self) -> None:
         try:
@@ -1639,6 +1877,29 @@ class RequestHandler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/bridge/gifts/owned":
+            if not BRIDGE_API_TOKEN:
+                _json_response(
+                    self,
+                    {"ok": False, "error": "bridge_token_not_configured"},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    cache_control="no-store",
+                )
+                return
+            if not _bridge_token_ok(self):
+                _json_response(
+                    self,
+                    {"ok": False, "error": "unauthorized"},
+                    status=HTTPStatus.UNAUTHORIZED,
+                    cache_control="no-store",
+                )
+                return
+            params = parse_qs(parsed.query)
+            telegram_user_id = str((params.get("telegram_user_id") or [""])[0] or "").strip()
+            username = str((params.get("username") or [""])[0] or "").strip()
+            _json_response(self, _bridge_owned_gifts_payload(telegram_user_id=telegram_user_id, username=username), cache_control="no-store")
+            return
+
         if path == "/api/auth/bootstrap":
             user = _auth_user_from_request(self)
             _json_response(
@@ -1671,6 +1932,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "bot_username": TELEGRAM_BOT_USERNAME,
                     "session_ttl_sec": AUTH_SESSION_TTL_SEC,
                     "max_auth_age_sec": TELEGRAM_AUTH_MAX_AGE_SEC,
+                    "public_base_url": PUBLIC_BASE_URL,
                 },
                 cache_control="no-store",
             )
@@ -1689,6 +1951,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 },
                 cache_control="no-store",
             )
+            return
+
+        if path == "/api/auth/telegram/owned-gifts":
+            user = _auth_user_from_request(self)
+            _json_response(self, _state().telegram_owned_gifts_v1(user), cache_control="no-store")
             return
 
         if path == "/api/admin/access":
@@ -1733,6 +2000,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "session_ttl_sec": TON_AUTH_SESSION_TTL_SEC,
                     "proof_max_age_sec": TON_PROOF_MAX_AGE_SEC,
                     "challenge_ttl_sec": TON_CHALLENGE_TTL_SEC,
+                    "public_base_url": PUBLIC_BASE_URL,
+                    "public_base_host": PUBLIC_BASE_HOST,
+                    "proof_allowed_domains": sorted(TON_PROOF_ALLOWED_DOMAINS),
+                    "cookie_domain": TON_COOKIE_DOMAIN or AUTH_COOKIE_DOMAIN or None,
                 },
                 cache_control="no-store",
             )
@@ -1782,6 +2053,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/assets/"):
             _serve_file(self, path.replace("/assets/", ""))
+            return
+        if path in SPA_FRONTEND_ROUTES or path.startswith("/variant/"):
+            _serve_file(self, "index.html")
             return
 
         if path == "/healthz":
@@ -2157,6 +2431,135 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, payload, cache_control="no-store")
             return
 
+        if path == "/v1/screeners/feed":
+            params = parse_qs(parsed.query)
+            screener_type = [str(x) for x in (params.get("screener_type") or [])]
+            market_regime = [str(x) for x in (params.get("market_regime") or [])]
+            action = [str(x) for x in (params.get("action") or [])]
+            edge_rank_raw = (params.get("edgeRank_min") or [None])[0]
+            conf_min_raw = (params.get("conf_min") or [None])[0]
+            profit_min_raw = (params.get("profit_min_pct") or [None])[0]
+            liq_min_raw = (params.get("liq_min") or [None])[0]
+            ar_min_raw = (params.get("ar_min") or [None])[0]
+            lp_max_raw = (params.get("lp_max") or [None])[0]
+            try:
+                edge_rank_min = float(edge_rank_raw) if edge_rank_raw not in (None, "") else None
+                conf_min = float(conf_min_raw) if conf_min_raw not in (None, "") else None
+                profit_min_pct = float(profit_min_raw) if profit_min_raw not in (None, "") else None
+                liq_min = float(liq_min_raw) if liq_min_raw not in (None, "") else None
+                ar_min = float(ar_min_raw) if ar_min_raw not in (None, "") else None
+                lp_max = float(lp_max_raw) if lp_max_raw not in (None, "") else None
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_numeric_filter"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                limit = int((params.get("limit") or ["100"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            cursor = (params.get("cursor") or [None])[0]
+            try:
+                payload = _state().screeners_feed_v1(
+                    screener_type=screener_type,
+                    market_regime=market_regime,
+                    action=action,
+                    edgeRank_min=edge_rank_min,
+                    conf_min=conf_min,
+                    profit_min_pct=profit_min_pct,
+                    liq_min=liq_min,
+                    ar_min=ar_min,
+                    lp_max=lp_max,
+                    limit=limit,
+                    cursor=cursor,
+                )
+                _json_response(self, payload, cache_control="no-store")
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            return
+
+        if path == "/v1/catalog/feed":
+            params = parse_qs(parsed.query)
+            q = (params.get("q") or [""])[0]
+            action = [str(x) for x in (params.get("action") or [])]
+            market_regime = [str(x) for x in (params.get("market_regime") or [])]
+            preset = (params.get("preset") or [None])[0]
+            sort = (params.get("sort") or [None])[0]
+            dir_value = (params.get("dir") or [None])[0]
+            edge_raw = (params.get("edgeRank_min") or [None])[0]
+            conf_raw = (params.get("conf_min") or [None])[0]
+            profit_raw = (params.get("profit_min_pct") or [None])[0]
+            liq_raw = (params.get("liq_min") or [None])[0]
+            depth_raw = (params.get("depth_min") or [None])[0]
+            ar_raw = (params.get("ar_min") or [None])[0]
+            lp_raw = (params.get("lp_max") or [None])[0]
+            lots_min_raw = (params.get("active_lots_min") or [None])[0]
+            lots_max_raw = (params.get("active_lots_max") or [None])[0]
+            listed_min_raw = (params.get("listed_share_min") or [None])[0]
+            listed_max_raw = (params.get("listed_share_max") or [None])[0]
+            try:
+                edge_rank_min = float(edge_raw) if edge_raw not in (None, "") else None
+                conf_min = float(conf_raw) if conf_raw not in (None, "") else None
+                profit_min_pct = float(profit_raw) if profit_raw not in (None, "") else None
+                liq_min = float(liq_raw) if liq_raw not in (None, "") else None
+                depth_min = float(depth_raw) if depth_raw not in (None, "") else None
+                ar_min = float(ar_raw) if ar_raw not in (None, "") else None
+                lp_max = float(lp_raw) if lp_raw not in (None, "") else None
+                active_lots_min = int(lots_min_raw) if lots_min_raw not in (None, "") else None
+                active_lots_max = int(lots_max_raw) if lots_max_raw not in (None, "") else None
+                listed_share_min = float(listed_min_raw) if listed_min_raw not in (None, "") else None
+                listed_share_max = float(listed_max_raw) if listed_max_raw not in (None, "") else None
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_numeric_filter"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                limit = int((params.get("limit") or ["200"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 1000:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            cursor = (params.get("cursor") or [None])[0]
+            try:
+                payload = _state().catalog_feed_v1(
+                    q=q,
+                    action=action,
+                    market_regime=market_regime,
+                    edgeRank_min=edge_rank_min,
+                    conf_min=conf_min,
+                    profit_min_pct=profit_min_pct,
+                    liq_min=liq_min,
+                    depth_min=depth_min,
+                    ar_min=ar_min,
+                    lp_max=lp_max,
+                    active_lots_min=active_lots_min,
+                    active_lots_max=active_lots_max,
+                    listed_share_min=listed_share_min,
+                    listed_share_max=listed_share_max,
+                    preset=preset,
+                    sort=sort,
+                    dir=dir_value,
+                    limit=limit,
+                    cursor=cursor,
+                )
+                _json_response(self, payload, cache_control="no-store")
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            return
+
+        if path.startswith("/v1/catalog/variant/") and path.count("/") == 4:
+            variant_id = unquote(path.split("/")[-1])
+            try:
+                payload = _state().catalog_variant_v1(variant_id)
+            except KeyError:
+                _json_response(self, {"ok": False, "error": "variant_not_found"}, status=HTTPStatus.NOT_FOUND, cache_control="no-store")
+                return
+            _json_response(self, payload, cache_control="no-store")
+            return
+
         # Canonical v1 listing endpoints: always delegate to core service methods.
         # Keep legacy duplicated handlers below unreachable to avoid divergent logic.
         if path == "/v1/listings/new":
@@ -2215,6 +2618,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                     variant_id=variant_id,
                     q=q,
                 )
+                if isinstance(payload, dict):
+                    payload.setdefault("row_processing_errors", 0)
+                    payload.setdefault("row_processing_error_samples", [])
                 _json_response(self, payload, cache_control="no-store")
             except ValueError as exc:
                 _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
@@ -2229,6 +2635,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                         "window_sec": 0,
                         "source": "runtime_error",
                         "source_error": f"listings_new_runtime_error:{exc.__class__.__name__}:{exc}",
+                        "row_processing_errors": 1,
+                        "row_processing_error_samples": [
+                            {
+                                "error_class": exc.__class__.__name__,
+                                "error": str(exc),
+                                "listing_key": "",
+                                "variant_id": str(variant_id or ""),
+                            }
+                        ],
                     },
                     cache_control="no-store",
                 )
@@ -2266,6 +2681,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                     include_low_priority=include_low_priority,
                     q=q,
                 )
+                if isinstance(payload, dict):
+                    payload.setdefault("row_processing_errors", 0)
+                    payload.setdefault("row_processing_error_samples", [])
                 _json_response(self, payload, cache_control="no-store")
             except ValueError as exc:
                 _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
@@ -2280,6 +2698,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                         "window_sec": 0,
                         "source": "runtime_error",
                         "source_error": f"listings_race_runtime_error:{exc.__class__.__name__}:{exc}",
+                        "row_processing_errors": 1,
+                        "row_processing_error_samples": [
+                            {
+                                "error_class": exc.__class__.__name__,
+                                "error": str(exc),
+                                "listing_key": "",
+                                "variant_id": "",
+                            }
+                        ],
                     },
                     cache_control="no-store",
                 )
@@ -2331,7 +2758,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     background_q=background,
                     pattern_q=pattern,
                 )
-                source = str((base or {}).get("source") or "fragment.verified_snapshot")
+                source = str((base or {}).get("source") or "mtproto_api")
                 source_error = str((base or {}).get("source_error") or "")
                 rows = (base or {}).get("items") if isinstance(base, dict) else []
                 rows = rows if isinstance(rows, list) else []
@@ -2532,7 +2959,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 market_regime_current, market_badge_current = _market_regime_snapshot_compat()
-                source = str((base_payload or {}).get("source") or "fragment.verified_snapshot")
+                source = str((base_payload or {}).get("source") or "mtproto_api")
                 source_error = str((base_payload or {}).get("source_error") or "")
                 q_norm = str(q or "").strip().lower()
                 now = datetime.now(timezone.utc)
@@ -2684,17 +3111,37 @@ class RequestHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             since = (params.get("since") or [None])[0]
             window = (params.get("window") or ["30m"])[0]
-            include_low_priority = ((params.get("include_low_priority") or ["false"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            include_low_priority_raw = (params.get("include_low_priority") or [None])[0]
+            try:
+                include_low_priority = _parse_query_bool(
+                    include_low_priority_raw,
+                    default=False,
+                    field="include_low_priority",
+                )
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             try:
                 limit = int((params.get("limit") or ["200"])[0])
             except Exception:
-                limit = 200
-            limit = max(1, min(limit, 500))
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             try:
                 interval_sec = float((params.get("interval_sec") or ["2.0"])[0])
             except Exception:
-                interval_sec = 2.0
-            interval_sec = max(0.8, min(interval_sec, 10.0))
+                _json_response(self, {"ok": False, "error": "invalid_interval_sec"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if interval_sec < 0.8 or interval_sec > 10.0:
+                _json_response(self, {"ok": False, "error": "invalid_interval_sec_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                _state()._listing_window_to_seconds(window, default="30m")  # noqa: SLF001
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
 
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -2707,80 +3154,96 @@ class RequestHandler(BaseHTTPRequestHandler):
             abrupt_close = False
             try:
                 last_seen_ts = since or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                last_snapshot_token = ""
                 sent_ids: set[str] = set()
                 sent_listing_keys: dict[str, float] = {}
                 dedupe_ttl = float(max(60, int(getattr(_state(), "listing_event_dedupe_ttl_sec", 600))))
                 deadline = time.time() + 25
                 while time.time() < deadline:
+                    out_events: list[tuple[str, str, dict]] = []
+                    max_ts = last_seen_ts
+                    sent = 0
                     try:
-                        new_payload = _state().listings_new_v1(limit=limit, window=window, only_pro_alerts=False)
-                        race_payload = _state().listings_race_v1(
-                            limit=limit,
+                        svc = _state()
+                        snapshot_token = _v1_listings_stream_snapshot_token(
+                            svc,
                             window=window,
-                            direction="ANY",
-                            delta_pct_min=0.0,
-                            only_pro_alerts=False,
                             include_low_priority=include_low_priority,
                         )
-                        removed_payload = _state()._listing_removed_events_v1()  # noqa: SLF001
                     except Exception:
                         self.wfile.write(b": keepalive\n\n")
                         self.wfile.flush()
                         time.sleep(interval_sec)
                         continue
 
-                    out_events: list[tuple[str, str, dict]] = []
                     now_mono = time.monotonic()
                     for key, seen_ts in list(sent_listing_keys.items()):
                         if (now_mono - seen_ts) >= dedupe_ttl:
                             sent_listing_keys.pop(key, None)
-                    for row in (new_payload.get("items") or []):
-                        if not isinstance(row, dict):
+                    if snapshot_token != last_snapshot_token:
+                        last_snapshot_token = snapshot_token
+                        try:
+                            new_payload = svc.listings_new_v1(limit=limit, window=window, only_pro_alerts=False)
+                            race_payload = svc.listings_race_v1(
+                                limit=limit,
+                                window=window,
+                                direction="ANY",
+                                delta_pct_min=0.0,
+                                only_pro_alerts=False,
+                                include_low_priority=include_low_priority,
+                            )
+                            removed_payload = svc._listing_removed_events_v1()  # noqa: SLF001
+                        except Exception:
+                            self.wfile.write(b": keepalive\n\n")
+                            self.wfile.flush()
+                            time.sleep(interval_sec)
                             continue
-                        ts = str(row.get("ts_detected") or "")
-                        if not ts or ts <= last_seen_ts:
-                            continue
-                        listing_key = str(row.get("listing_key") or "")
-                        dedupe_key = f"listing.new|{listing_key}"
-                        if listing_key and dedupe_key in sent_listing_keys:
-                            continue
-                        if listing_key:
-                            sent_listing_keys[dedupe_key] = now_mono
-                        out_events.append(("listing.new", ts, row))
-                    for row in (race_payload.get("items") or []):
-                        if not isinstance(row, dict):
-                            continue
-                        ts = str(row.get("ts_detected") or "")
-                        if not ts or ts <= last_seen_ts:
-                            continue
-                        listing_key = str(row.get("listing_key") or "")
-                        dedupe_key = f"listing.price_changed|{listing_key}"
-                        if listing_key and dedupe_key in sent_listing_keys:
-                            continue
-                        if listing_key:
-                            sent_listing_keys[dedupe_key] = now_mono
-                        out_events.append(("listing.price_changed", ts, row))
-                    for row in (removed_payload or []):
-                        if not isinstance(row, dict):
-                            continue
-                        ts = str(row.get("ts") or "")
-                        if not ts or ts <= last_seen_ts:
-                            continue
-                        out_events.append(("listing.removed", ts, row))
 
-                    out_events.sort(key=lambda x: x[1])
-                    max_ts = last_seen_ts
-                    sent = 0
-                    for ev_name, ts, payload in out_events:
-                        event_id = f"{ev_name}|{payload.get('listing_key')}|{ts}"
-                        if event_id in sent_ids:
-                            continue
-                        sent_ids.add(event_id)
-                        self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
-                        self.wfile.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
-                        sent += 1
-                        if ts > max_ts:
-                            max_ts = ts
+                        for row in (new_payload.get("items") or []):
+                            if not isinstance(row, dict):
+                                continue
+                            ts = str(row.get("ts_detected") or "")
+                            if not ts or ts <= last_seen_ts:
+                                continue
+                            listing_key = str(row.get("listing_key") or "")
+                            dedupe_key = f"listing.new|{listing_key}"
+                            if listing_key and dedupe_key in sent_listing_keys:
+                                continue
+                            if listing_key:
+                                sent_listing_keys[dedupe_key] = now_mono
+                            out_events.append(("listing.new", ts, row))
+                        for row in (race_payload.get("items") or []):
+                            if not isinstance(row, dict):
+                                continue
+                            ts = str(row.get("ts_detected") or "")
+                            if not ts or ts <= last_seen_ts:
+                                continue
+                            listing_key = str(row.get("listing_key") or "")
+                            dedupe_key = f"listing.price_changed|{listing_key}"
+                            if listing_key and dedupe_key in sent_listing_keys:
+                                continue
+                            if listing_key:
+                                sent_listing_keys[dedupe_key] = now_mono
+                            out_events.append(("listing.price_changed", ts, row))
+                        for row in (removed_payload or []):
+                            if not isinstance(row, dict):
+                                continue
+                            ts = str(row.get("ts") or "")
+                            if not ts or ts <= last_seen_ts:
+                                continue
+                            out_events.append(("listing.removed", ts, row))
+
+                        out_events.sort(key=lambda x: x[1])
+                        for ev_name, ts, payload in out_events:
+                            event_id = f"{ev_name}|{payload.get('listing_key')}|{ts}"
+                            if event_id in sent_ids:
+                                continue
+                            sent_ids.add(event_id)
+                            self.wfile.write(f"event: {ev_name}\n".encode("utf-8"))
+                            self.wfile.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+                            sent += 1
+                            if ts > max_ts:
+                                max_ts = ts
                     if len(sent_ids) > 10000:
                         sent_ids.clear()
                     health_payload = {
@@ -2893,7 +3356,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 background_q=background_q,
                 pattern_q=pattern_q,
             )
-            source = str((base or {}).get("source") or "fragment.verified_snapshot")
+            source = str((base or {}).get("source") or "mtproto_api")
             source_error = str((base or {}).get("source_error") or "")
             rows = (base or {}).get("items") if isinstance(base, dict) else []
             rows = rows if isinstance(rows, list) else []
@@ -2901,95 +3364,115 @@ class RequestHandler(BaseHTTPRequestHandler):
             now = datetime.now(timezone.utc)
 
             out: list[dict] = []
+            row_processing_errors = 0
+            row_processing_error_samples: list[dict] = []
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                ts_detected = str(row.get("first_seen_at") or row.get("last_seen_at") or "")
-                ts_dt = _parse_iso_utc(ts_detected)
-                if ts_dt is None:
-                    continue
-                if (now - ts_dt).total_seconds() > float(window_sec):
-                    continue
-
-                variant_id = str(row.get("variant_id") or "").strip()
-                if variant_q and variant_q != variant_id:
-                    continue
-                attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
-                collection = str(row.get("collection") or row.get("title") or row.get("collection_id") or row.get("gift_id") or "")
-                model = str(attrs.get("model") or "Unknown")
-                background = str(attrs.get("background") or "Unknown")
-                pattern = str(attrs.get("pattern") or "Unknown")
-                variant = state.variants.get(variant_id) if variant_id else None
-                preview_url = str(row.get("preview_url") or "")
-                if isinstance(variant, dict):
-                    traits = variant.get("traits") if isinstance(variant.get("traits"), dict) else {}
-                    model = str(((traits.get("model") or {}).get("name")) or model or "Unknown")
-                    background = str(((traits.get("background") or {}).get("name")) or background or "Unknown")
-                    pattern = str(((traits.get("pattern") or {}).get("name")) or pattern or "Unknown")
-                    preview_url = str(variant.get("preview_url") or preview_url)
-                variant_label = _listing_variant_label(collection, model, background, pattern)
-                signal_payload = state._v1_signal(variant, mode="tz") if isinstance(variant, dict) else {}
-                score100 = float(signal_payload.get("score100") or 0.0) if isinstance(signal_payload, dict) else 0.0
-                conf_pct = float(signal_payload.get("conf_pct") or 0.0) if isinstance(signal_payload, dict) else 0.0
-                expected_profit_pct = _norm_pct(float(signal_payload.get("expected_profit_pct") or 0.0)) if isinstance(signal_payload, dict) else 0.0
-                undervalue_pct = _norm_pct(float(signal_payload.get("undervalue") or 0.0)) if isinstance(signal_payload, dict) else 0.0
-                liquidity_score = _clamp(float(signal_payload.get("liquidity24h") or 0.0), 0.0, 1.0) * 100.0 if isinstance(signal_payload, dict) else 0.0
-                absorption_30m = float(signal_payload.get("absorption_rate") or 0.0) if isinstance(signal_payload, dict) else 0.0
-                listing_pressure = float(signal_payload.get("listing_pressure") or 0.0) if isinstance(signal_payload, dict) else 0.0
-                volume_velocity = float(signal_payload.get("volume_velocity") or 0.0) if isinstance(signal_payload, dict) else 0.0
-                action = str(signal_payload.get("type") or "WATCH") if isinstance(signal_payload, dict) else "WATCH"
-                edge_rank = _clamp((score100 * conf_pct) / 100.0, 0.0, 100.0)
-                if market_regime and market_regime_current not in market_regime:
-                    continue
-                if action_filter and action.upper() not in action_filter:
-                    continue
-                if edge_rank < edge_rank_min or conf_pct < conf_min:
-                    continue
-                if expected_profit_pct < profit_min or undervalue_pct < undervalue_min:
-                    continue
-                if liquidity_score < liq_min or listing_pressure > lp_max:
-                    continue
-                if absorption_30m < ar_min or volume_velocity < vv_min:
-                    continue
-                if only_pro_alerts and action.upper() not in {"BUY", "SELL"}:
-                    continue
-                if free_q:
-                    hay = " ".join([variant_label, variant_id, str(row.get("listing_key") or "")]).lower()
-                    if free_q not in hay:
+                try:
+                    ts_detected = str(row.get("first_seen_at") or row.get("last_seen_at") or "")
+                    ts_dt = _parse_iso_utc(ts_detected)
+                    if ts_dt is None:
                         continue
-                row_price_ton = _listing_row_price_ton_equiv(state, row)
-                item = {
-                    "listing_key": str(row.get("listing_key") or ""),
-                    "variant_id": variant_id or None,
-                    "collection_id": str(row.get("collection_id") or row.get("gift_id") or "") or None,
-                    "collection": collection or None,
-                    "model": model,
-                    "background": background,
-                    "pattern": pattern,
-                    "variant_label": variant_label,
-                    "preview_url": preview_url,
-                    "price_ton": round(row_price_ton, 6),
-                    "floor_ton": signal_payload.get("floor_ton") if isinstance(signal_payload, dict) else None,
-                    "fair_ton": signal_payload.get("fair_ton") if isinstance(signal_payload, dict) else None,
-                    "undervalue_pct": round(undervalue_pct, 2),
-                    "expected_profit_pct": round(expected_profit_pct, 2),
-                    "score100": round(score100, 1),
-                    "conf_pct": round(conf_pct, 1),
-                    "edgeRank100": round(edge_rank, 1),
-                    "edgeRank_raw": round(edge_rank / 100.0, 6),
-                    "action": action.upper(),
-                    "strength_tag": _signal_action_strength(action, score100),
-                    "liquidity_score": round(liquidity_score, 2),
-                    "absorption_30m": round(absorption_30m, 4),
-                    "listing_pressure": round(listing_pressure, 4),
-                    "volume_velocity": round(volume_velocity, 4),
-                    "market_regime": market_regime_current,
-                    "market_regime_badge": market_badge_current,
-                    "ts_detected": ts_detected,
-                    "latency_ms": max(0, int((now - ts_dt).total_seconds() * 1000.0)),
-                    "source": source,
-                }
-                out.append(item)
+                    if (now - ts_dt).total_seconds() > float(window_sec):
+                        continue
+
+                    variant_id = str(row.get("variant_id") or "").strip()
+                    if variant_q and variant_q != variant_id:
+                        continue
+                    attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+                    collection = str(row.get("collection") or row.get("title") or row.get("collection_id") or row.get("gift_id") or "")
+                    model = str(attrs.get("model") or "Unknown")
+                    background = str(attrs.get("background") or "Unknown")
+                    pattern = str(attrs.get("pattern") or "Unknown")
+                    variant = state.variants.get(variant_id) if variant_id else None
+                    preview_url = str(row.get("preview_url") or "")
+                    if isinstance(variant, dict):
+                        traits = variant.get("traits") if isinstance(variant.get("traits"), dict) else {}
+                        model = str(((traits.get("model") or {}).get("name")) or model or "Unknown")
+                        background = str(((traits.get("background") or {}).get("name")) or background or "Unknown")
+                        pattern = str(((traits.get("pattern") or {}).get("name")) or pattern or "Unknown")
+                        preview_url = str(variant.get("preview_url") or preview_url)
+                    variant_label = _listing_variant_label(collection, model, background, pattern)
+                    signal_payload = state._v1_signal(variant, mode="tz") if isinstance(variant, dict) else {}
+                    score100 = float(signal_payload.get("score100") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    conf_pct = float(signal_payload.get("conf_pct") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    expected_profit_pct = _norm_pct(float(signal_payload.get("expected_profit_pct") or 0.0)) if isinstance(signal_payload, dict) else 0.0
+                    undervalue_pct = _norm_pct(float(signal_payload.get("undervalue") or 0.0)) if isinstance(signal_payload, dict) else 0.0
+                    liquidity_score = _clamp(float(signal_payload.get("liquidity24h") or 0.0), 0.0, 1.0) * 100.0 if isinstance(signal_payload, dict) else 0.0
+                    absorption_30m = float(signal_payload.get("absorption_rate") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    listing_pressure = float(signal_payload.get("listing_pressure") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    volume_velocity = float(signal_payload.get("volume_velocity") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    action = str(signal_payload.get("type") or "WATCH") if isinstance(signal_payload, dict) else "WATCH"
+                    edge_rank = _clamp((score100 * conf_pct) / 100.0, 0.0, 100.0)
+                    if market_regime and market_regime_current not in market_regime:
+                        continue
+                    if action_filter and action.upper() not in action_filter:
+                        continue
+                    if edge_rank < edge_rank_min or conf_pct < conf_min:
+                        continue
+                    if expected_profit_pct < profit_min or undervalue_pct < undervalue_min:
+                        continue
+                    if liquidity_score < liq_min or listing_pressure > lp_max:
+                        continue
+                    if absorption_30m < ar_min or volume_velocity < vv_min:
+                        continue
+                    if only_pro_alerts and action.upper() not in {"BUY", "SELL"}:
+                        continue
+                    if free_q:
+                        hay = " ".join([variant_label, variant_id, str(row.get("listing_key") or "")]).lower()
+                        if free_q not in hay:
+                            continue
+                    row_price_ton = _listing_row_price_ton_equiv(state, row)
+                    item = {
+                        "listing_key": str(row.get("listing_key") or ""),
+                        "variant_id": variant_id or None,
+                        "collection_id": str(row.get("collection_id") or row.get("gift_id") or "") or None,
+                        "collection": collection or None,
+                        "model": model,
+                        "background": background,
+                        "pattern": pattern,
+                        "variant_label": variant_label,
+                        "preview_url": preview_url,
+                        "price_ton": round(row_price_ton, 6),
+                        "floor_ton": signal_payload.get("floor_ton") if isinstance(signal_payload, dict) else None,
+                        "fair_ton": signal_payload.get("fair_ton") if isinstance(signal_payload, dict) else None,
+                        "undervalue_pct": round(undervalue_pct, 2),
+                        "expected_profit_pct": round(expected_profit_pct, 2),
+                        "score100": round(score100, 1),
+                        "conf_pct": round(conf_pct, 1),
+                        "edgeRank100": round(edge_rank, 1),
+                        "edgeRank_raw": round(edge_rank / 100.0, 6),
+                        "action": action.upper(),
+                        "strength_tag": _signal_action_strength(action, score100),
+                        "liquidity_score": round(liquidity_score, 2),
+                        "absorption_30m": round(absorption_30m, 4),
+                        "listing_pressure": round(listing_pressure, 4),
+                        "volume_velocity": round(volume_velocity, 4),
+                        "market_regime": market_regime_current,
+                        "market_regime_badge": market_badge_current,
+                        "ts_detected": ts_detected,
+                        "latency_ms": max(0, int((now - ts_dt).total_seconds() * 1000.0)),
+                        "source": source,
+                    }
+                    out.append(item)
+                except Exception as exc:
+                    row_processing_errors += 1
+                    state._record_listing_runtime_error(  # noqa: SLF001
+                        block="listings_new",
+                        stage="http_row_processing",
+                        exc=exc,
+                        row=row if isinstance(row, dict) else None,
+                    )
+                    if len(row_processing_error_samples) < 3:
+                        row_processing_error_samples.append(
+                            {
+                                "error_class": exc.__class__.__name__,
+                                "error": str(exc),
+                                "listing_key": str((row or {}).get("listing_key") or ""),
+                                "variant_id": str((row or {}).get("variant_id") or ""),
+                            }
+                        )
             out.sort(key=lambda x: (float(x.get("edgeRank100") or 0.0), float(x.get("expected_profit_pct") or 0.0), str(x.get("ts_detected") or "")), reverse=True)
             off = 0
             try:
@@ -3008,6 +3491,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "window_sec": window_sec,
                     "source": source,
                     "source_error": source_error,
+                    "row_processing_errors": row_processing_errors,
+                    "row_processing_error_samples": row_processing_error_samples,
                 },
                 cache_control="no-store",
             )
@@ -3075,91 +3560,111 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             market_regime_current, market_badge_current = _market_regime_snapshot_compat()
-            source = str((base_payload or {}).get("source") or "fragment.verified_snapshot")
+            source = str((base_payload or {}).get("source") or "mtproto_api")
             source_error = str((base_payload or {}).get("source_error") or "")
             if not source:
                 source_status = state.listing_source_status_v1()
-                source = str((source_status or {}).get("source") or "fragment.verified_snapshot")
+                source = str((source_status or {}).get("source") or "mtproto_api")
                 source_error = str((source_status or {}).get("error") or "")
 
             out: list[dict] = []
+            row_processing_errors = 0
+            row_processing_error_samples: list[dict] = []
             tracker = state.listing_tracker_state if isinstance(state.listing_tracker_state, dict) else {}
             for entry in tracker.values():
                 if not isinstance(entry, dict):
                     continue
-                ts_detected = str(entry.get("last_price_changed_at") or entry.get("last_seen_at") or "")
-                ts_dt = _parse_iso_utc(ts_detected)
-                if ts_dt is None:
-                    continue
-                if (now - ts_dt).total_seconds() > float(window_sec):
-                    continue
-                prev_price = _safe_float(entry.get("prev_price_ton"), 0.0)
-                price_ton = _safe_float(entry.get("last_price_ton"), 0.0)
-                if prev_price <= 0.0 or price_ton <= 0.0:
-                    continue
-                delta_ton = price_ton - prev_price
-                if abs(delta_ton) < 1e-9:
-                    continue
-                delta_pct = (delta_ton / max(prev_price, 1e-9)) * 100.0
-                row_direction = "UP" if delta_ton > 0 else "DOWN"
-                if direction != "ANY" and row_direction != direction:
-                    continue
-                if abs(delta_pct) < delta_pct_min:
-                    continue
-                low_priority = abs(delta_pct) < 0.5
-                if low_priority and not include_low_priority:
-                    continue
-                variant_id = str(entry.get("variant_id") or "")
-                variant = state.variants.get(variant_id) if variant_id else None
-                base_id = str(entry.get("base_id") or "")
-                collection = base_id.replace("_", " ").title() if base_id else "Unknown"
-                model = "Unknown"
-                background = "Unknown"
-                pattern = "Unknown"
-                preview_url = str(entry.get("preview_url") or "")
-                if isinstance(variant, dict):
-                    traits = variant.get("traits") if isinstance(variant.get("traits"), dict) else {}
-                    model = str(((traits.get("model") or {}).get("name")) or model)
-                    background = str(((traits.get("background") or {}).get("name")) or background)
-                    pattern = str(((traits.get("pattern") or {}).get("name")) or pattern)
-                    preview_url = str(variant.get("preview_url") or preview_url)
-                label = _listing_variant_label(collection, model, background, pattern)
-                signal_payload = state._v1_signal(variant, mode="tz") if isinstance(variant, dict) else {}
-                score100 = float(signal_payload.get("score100") or 0.0) if isinstance(signal_payload, dict) else 0.0
-                conf_pct = float(signal_payload.get("conf_pct") or 0.0) if isinstance(signal_payload, dict) else 0.0
-                edge_rank = _clamp((score100 * conf_pct) / 100.0, 0.0, 100.0)
-                action = str(signal_payload.get("type") or "WATCH") if isinstance(signal_payload, dict) else "WATCH"
-                if only_pro_alerts and action.upper() not in {"BUY", "SELL"}:
-                    continue
-                if q:
-                    hay = " ".join([label, variant_id, str(entry.get("listing_key") or "")]).lower()
-                    if q not in hay:
+                try:
+                    ts_detected = str(entry.get("last_price_changed_at") or entry.get("last_seen_at") or "")
+                    ts_dt = _parse_iso_utc(ts_detected)
+                    if ts_dt is None:
                         continue
-                out.append(
-                    {
-                        "listing_key": str(entry.get("listing_key") or ""),
-                        "variant_id": variant_id or None,
-                        "collection_id": base_id or None,
-                        "collection": collection,
-                        "model": model,
-                        "background": background,
-                        "pattern": pattern,
-                        "variant_label": label,
-                        "preview_url": preview_url,
-                        "prev_price_ton": round(prev_price, 6),
-                        "price_ton": round(price_ton, 6),
-                        "delta_ton": round(delta_ton, 6),
-                        "delta_pct": round(delta_pct, 6),
-                        "direction": row_direction,
-                        "low_priority": low_priority,
-                        "market_regime": market_regime_current,
-                        "market_regime_badge": market_badge_current,
-                        "edgeRank100": round(edge_rank, 1),
-                        "action": action.upper(),
-                        "ts_detected": ts_detected,
-                        "source": source,
-                    }
-                )
+                    if (now - ts_dt).total_seconds() > float(window_sec):
+                        continue
+                    prev_price = _safe_float(entry.get("prev_price_ton"), 0.0)
+                    price_ton = _safe_float(entry.get("last_price_ton"), 0.0)
+                    if prev_price <= 0.0 or price_ton <= 0.0:
+                        continue
+                    delta_ton = price_ton - prev_price
+                    if abs(delta_ton) < 1e-9:
+                        continue
+                    delta_pct = (delta_ton / max(prev_price, 1e-9)) * 100.0
+                    row_direction = "UP" if delta_ton > 0 else "DOWN"
+                    if direction != "ANY" and row_direction != direction:
+                        continue
+                    if abs(delta_pct) < delta_pct_min:
+                        continue
+                    low_priority = abs(delta_pct) < 0.5
+                    if low_priority and not include_low_priority:
+                        continue
+                    variant_id = str(entry.get("variant_id") or "")
+                    variant = state.variants.get(variant_id) if variant_id else None
+                    base_id = str(entry.get("base_id") or "")
+                    collection = base_id.replace("_", " ").title() if base_id else "Unknown"
+                    model = "Unknown"
+                    background = "Unknown"
+                    pattern = "Unknown"
+                    preview_url = str(entry.get("preview_url") or "")
+                    if isinstance(variant, dict):
+                        traits = variant.get("traits") if isinstance(variant.get("traits"), dict) else {}
+                        model = str(((traits.get("model") or {}).get("name")) or model)
+                        background = str(((traits.get("background") or {}).get("name")) or background)
+                        pattern = str(((traits.get("pattern") or {}).get("name")) or pattern)
+                        preview_url = str(variant.get("preview_url") or preview_url)
+                    label = _listing_variant_label(collection, model, background, pattern)
+                    signal_payload = state._v1_signal(variant, mode="tz") if isinstance(variant, dict) else {}
+                    score100 = float(signal_payload.get("score100") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    conf_pct = float(signal_payload.get("conf_pct") or 0.0) if isinstance(signal_payload, dict) else 0.0
+                    edge_rank = _clamp((score100 * conf_pct) / 100.0, 0.0, 100.0)
+                    action = str(signal_payload.get("type") or "WATCH") if isinstance(signal_payload, dict) else "WATCH"
+                    if only_pro_alerts and action.upper() not in {"BUY", "SELL"}:
+                        continue
+                    if q:
+                        hay = " ".join([label, variant_id, str(entry.get("listing_key") or "")]).lower()
+                        if q not in hay:
+                            continue
+                    out.append(
+                        {
+                            "listing_key": str(entry.get("listing_key") or ""),
+                            "variant_id": variant_id or None,
+                            "collection_id": base_id or None,
+                            "collection": collection,
+                            "model": model,
+                            "background": background,
+                            "pattern": pattern,
+                            "variant_label": label,
+                            "preview_url": preview_url,
+                            "prev_price_ton": round(prev_price, 6),
+                            "price_ton": round(price_ton, 6),
+                            "delta_ton": round(delta_ton, 6),
+                            "delta_pct": round(delta_pct, 6),
+                            "direction": row_direction,
+                            "low_priority": low_priority,
+                            "market_regime": market_regime_current,
+                            "market_regime_badge": market_badge_current,
+                            "edgeRank100": round(edge_rank, 1),
+                            "action": action.upper(),
+                            "ts_detected": ts_detected,
+                            "source": source,
+                        }
+                    )
+                except Exception as exc:
+                    row_processing_errors += 1
+                    state._record_listing_runtime_error(  # noqa: SLF001
+                        block="listings_race",
+                        stage="http_row_processing",
+                        exc=exc,
+                        row=entry if isinstance(entry, dict) else None,
+                    )
+                    if len(row_processing_error_samples) < 3:
+                        row_processing_error_samples.append(
+                            {
+                                "error_class": exc.__class__.__name__,
+                                "error": str(exc),
+                                "listing_key": str((entry or {}).get("listing_key") or ""),
+                                "variant_id": str((entry or {}).get("variant_id") or ""),
+                            }
+                        )
 
             out.sort(key=lambda x: (abs(float(x.get("delta_pct") or 0.0)), str(x.get("ts_detected") or "")), reverse=True)
             off = 0
@@ -3179,6 +3684,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "window_sec": window_sec,
                     "source": source,
                     "source_error": source_error,
+                    "row_processing_errors": row_processing_errors,
+                    "row_processing_error_samples": row_processing_error_samples,
                 },
                 cache_control="no-store",
             )
@@ -3292,17 +3799,37 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 limit = int((params.get("limit") or ["200"])[0])
             except Exception:
-                limit = 200
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             try:
                 new_window_sec = int((params.get("new_window_sec") or ["120"])[0])
             except Exception:
-                new_window_sec = 120
-            include_relisted = ((params.get("include_relisted") or ["1"])[0]).strip().lower() in {"1", "true", "yes", "on"}
+                _json_response(self, {"ok": False, "error": "invalid_new_window_sec"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if new_window_sec < 30 or new_window_sec > (7 * 24 * 3600):
+                _json_response(self, {"ok": False, "error": "invalid_new_window_sec_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            include_relisted_raw = (params.get("include_relisted") or [None])[0]
+            try:
+                include_relisted = _parse_query_bool(
+                    include_relisted_raw,
+                    default=True,
+                    field="include_relisted",
+                )
+            except ValueError as exc:
+                _json_response(self, {"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
             try:
                 interval_sec = float((params.get("interval_sec") or ["2.5"])[0])
             except Exception:
-                interval_sec = 2.5
-            interval_sec = max(0.8, min(interval_sec, 10.0))
+                _json_response(self, {"ok": False, "error": "invalid_interval_sec"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if interval_sec < 0.8 or interval_sec > 10.0:
+                _json_response(self, {"ok": False, "error": "invalid_interval_sec_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
 
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -3315,42 +3842,54 @@ class RequestHandler(BaseHTTPRequestHandler):
             abrupt_close = False
             try:
                 last_seen_ts = since or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                last_snapshot_token = ""
                 sent_ids: set[str] = set()
                 sent_listing_keys: dict[str, float] = {}
                 dedupe_ttl = float(max(60, int(getattr(_state(), "listing_event_dedupe_ttl_sec", 600))))
                 deadline = time.time() + 25
                 while time.time() < deadline:
-                    payload = _state().listings_events_v1(
-                        limit=limit,
-                        cursor=None,
-                        since=last_seen_ts,
+                    svc = _state()
+                    snapshot_token = _v1_listings_events_stream_snapshot_token(
+                        svc,
                         new_window_sec=new_window_sec,
                         include_relisted=include_relisted,
                     )
-                    items = payload.get("items") if isinstance(payload, dict) else []
+                    payload = {"items": []}
+                    items = []
                     fresh = []
                     max_ts = last_seen_ts
+                    fresh = []
                     now_mono = time.monotonic()
                     for key, seen_ts in list(sent_listing_keys.items()):
                         if (now_mono - seen_ts) >= dedupe_ttl:
                             sent_listing_keys.pop(key, None)
-                    for ev in reversed(items if isinstance(items, list) else []):
-                        ts = str(ev.get("ts") or "")
-                        event_id = f"{ev.get('topic')}|{ev.get('listing_key')}|{ts}"
-                        if not ts or event_id in sent_ids:
-                            continue
-                        topic = str(ev.get("topic") or "")
-                        if topic in {"market.listing.new", "listing.new", "listing.price_changed", "market.listing.price_changed"}:
-                            listing_key = str(ev.get("listing_key") or "")
-                            dedupe_key = f"{topic}|{listing_key}"
-                            if listing_key and dedupe_key in sent_listing_keys:
+                    if snapshot_token != last_snapshot_token:
+                        last_snapshot_token = snapshot_token
+                        payload = svc.listings_events_v1(
+                            limit=limit,
+                            cursor=None,
+                            since=last_seen_ts,
+                            new_window_sec=new_window_sec,
+                            include_relisted=include_relisted,
+                        )
+                        items = payload.get("items") if isinstance(payload, dict) else []
+                        for ev in reversed(items if isinstance(items, list) else []):
+                            ts = str(ev.get("ts") or "")
+                            event_id = f"{ev.get('topic')}|{ev.get('listing_key')}|{ts}"
+                            if not ts or event_id in sent_ids:
                                 continue
-                            if listing_key:
-                                sent_listing_keys[dedupe_key] = now_mono
-                        sent_ids.add(event_id)
-                        fresh.append(ev)
-                        if ts > max_ts:
-                            max_ts = ts
+                            topic = str(ev.get("topic") or "")
+                            if topic in {"market.listing.new", "listing.new", "listing.price_changed", "market.listing.price_changed"}:
+                                listing_key = str(ev.get("listing_key") or "")
+                                dedupe_key = f"{topic}|{listing_key}"
+                                if listing_key and dedupe_key in sent_listing_keys:
+                                    continue
+                                if listing_key:
+                                    sent_listing_keys[dedupe_key] = now_mono
+                            sent_ids.add(event_id)
+                            fresh.append(ev)
+                            if ts > max_ts:
+                                max_ts = ts
 
                     if len(sent_ids) > 10000:
                         sent_ids.clear()
@@ -3480,7 +4019,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 types = set()
             variant_id_filter = (params.get("variant_id") or [None])[0]
             collection_id_filter = (params.get("collection_id") or [None])[0]
-            allowed_types = {"signal.created", "metric.updated", "listing.event", "provider.health", "variant.updated", "collection.updated"}
+            allowed_types = {"signal.created", "metric.updated", "listing.event", "market.status", "provider.health", "variant.updated", "collection.updated"}
             unknown_types = sorted([t for t in types if t not in allowed_types])
             if unknown_types:
                 _json_response(
@@ -3510,15 +4049,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             _observe_sse_open(stream_key)
             abrupt_close = False
             try:
-                last_updated = ""
+                last_snapshot_token = ""
                 deadline = time.time() + 25
                 while time.time() < deadline:
-                    overview = _state().overview_v1()
-                    updated = str((_state().state or {}).get("updated_at") or "")
+                    svc = _state()
+                    snapshot_token = _v1_stream_snapshot_token(svc)
                     try:
-                        if updated != last_updated:
-                            last_updated = updated
-                            for ev in _state().stream_events_v1(
+                        if snapshot_token != last_snapshot_token:
+                            last_snapshot_token = snapshot_token
+                            for ev in svc.stream_events_v1(
                                 types=types,
                                 mode=mode,
                                 variant_id=variant_id_filter,
@@ -3577,23 +4116,172 @@ class RequestHandler(BaseHTTPRequestHandler):
             _observe_sse_open(stream_key)
             abrupt_close = False
             try:
+                last_snapshot_token = ""
                 deadline = time.time() + 25
                 while time.time() < deadline:
                     now = time.time()
                     try:
                         sent_signal_ids = {k: v for k, v in sent_signal_ids.items() if (now - v) <= float(dedupe_ttl_sec)}
-                        payload = _state().signals_v1(limit=limit, mode=mode)
-                        rows = payload.get("items") if isinstance(payload.get("items"), list) else []
+                        svc = _state()
+                        snapshot_token = _v1_signals_stream_snapshot_token(svc, mode=mode)
                         emitted = 0
-                        for row in reversed(rows):
-                            sid = str((row or {}).get("signal_id") or "")
-                            if not sid:
+                        if snapshot_token != last_snapshot_token:
+                            last_snapshot_token = snapshot_token
+                            payload = svc.signals_v1(limit=limit, mode=mode)
+                            rows = payload.get("items") if isinstance(payload.get("items"), list) else []
+                            for row in reversed(rows):
+                                sid = str((row or {}).get("signal_id") or "")
+                                if not sid:
+                                    continue
+                                if sid in sent_signal_ids:
+                                    continue
+                                sent_signal_ids[sid] = now
+                                env = svc.build_signal_created_event_v2(row, ts=_tz_now_iso())
+                                self.wfile.write(b"event: signal.created\n")
+                                self.wfile.write(f"data: {json.dumps(env, ensure_ascii=False)}\n\n".encode("utf-8"))
+                                emitted += 1
+                        if emitted == 0:
+                            self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        abrupt_close = True
+                        break
+                    time.sleep(sleep_sec)
+            finally:
+                _observe_sse_close(stream_key, abrupt=abrupt_close)
+            return
+
+        if path == "/v1/stream/screeners":
+            params = parse_qs(parsed.query)
+            try:
+                heartbeat_ms = int((params.get("heartbeat") or ["15000"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_heartbeat"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if heartbeat_ms < 5000 or heartbeat_ms > 60000:
+                _json_response(self, {"ok": False, "error": "invalid_heartbeat_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                limit = int((params.get("limit") or ["100"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 500:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                dedupe_ttl_sec = int((params.get("dedupe_ttl_sec") or ["600"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_dedupe_ttl_sec"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if dedupe_ttl_sec < 60 or dedupe_ttl_sec > 3600:
+                _json_response(self, {"ok": False, "error": "invalid_dedupe_ttl_sec_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            sleep_sec = max(1.0, heartbeat_ms / 1000.0)
+            sent_event_ids: dict[str, float] = {}
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            stream_key = "v1/stream/screeners"
+            _observe_sse_open(stream_key)
+            abrupt_close = False
+            try:
+                deadline = time.time() + 25
+                while time.time() < deadline:
+                    now = time.time()
+                    sent_event_ids = {k: v for k, v in sent_event_ids.items() if (now - v) <= float(dedupe_ttl_sec)}
+                    try:
+                        svc = _state()
+                        emitted = 0
+                        payload = svc.screeners_stream_events_v1(limit=limit)
+                        events = payload.get("items") if isinstance(payload.get("items"), list) else []
+                        for item in events:
+                            if not isinstance(item, dict):
                                 continue
-                            if sid in sent_signal_ids:
+                            event_id = str(item.get("event_id") or "").strip()
+                            row = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+                            if not event_id:
+                                event_id = f"{row.get('variant_id')}|{row.get('screener_type')}|{row.get('ts')}"
+                            if event_id in sent_event_ids:
                                 continue
-                            sent_signal_ids[sid] = now
-                            env = _state().build_signal_created_event_v2(row, ts=_tz_now_iso())
-                            self.wfile.write(b"event: signal.created\n")
+                            sent_event_ids[event_id] = now
+                            env = svc.build_screener_row_event_v1(row, ts=str(item.get("ts") or _tz_now_iso()))
+                            self.wfile.write(b"event: screener.row\n")
+                            self.wfile.write(f"id: {event_id}\n".encode("utf-8"))
+                            self.wfile.write(f"data: {json.dumps(env, ensure_ascii=False)}\n\n".encode("utf-8"))
+                            emitted += 1
+                        if emitted == 0:
+                            self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        abrupt_close = True
+                        break
+                    time.sleep(sleep_sec)
+            finally:
+                _observe_sse_close(stream_key, abrupt=abrupt_close)
+            return
+
+        if path == "/v1/stream/catalog":
+            params = parse_qs(parsed.query)
+            try:
+                heartbeat_ms = int((params.get("heartbeat") or ["15000"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_heartbeat"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if heartbeat_ms < 5000 or heartbeat_ms > 60000:
+                _json_response(self, {"ok": False, "error": "invalid_heartbeat_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                limit = int((params.get("limit") or ["200"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_limit"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if limit < 1 or limit > 1000:
+                _json_response(self, {"ok": False, "error": "invalid_limit_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                dedupe_ttl_sec = int((params.get("dedupe_ttl_sec") or ["600"])[0])
+            except Exception:
+                _json_response(self, {"ok": False, "error": "invalid_dedupe_ttl_sec"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if dedupe_ttl_sec < 60 or dedupe_ttl_sec > 3600:
+                _json_response(self, {"ok": False, "error": "invalid_dedupe_ttl_sec_range"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            sleep_sec = max(1.0, heartbeat_ms / 1000.0)
+            sent_event_ids: dict[str, float] = {}
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            stream_key = "v1/stream/catalog"
+            _observe_sse_open(stream_key)
+            abrupt_close = False
+            try:
+                deadline = time.time() + 25
+                while time.time() < deadline:
+                    now = time.time()
+                    sent_event_ids = {k: v for k, v in sent_event_ids.items() if (now - v) <= float(dedupe_ttl_sec)}
+                    try:
+                        svc = _state()
+                        emitted = 0
+                        payload = svc.catalog_stream_events_v1(limit=limit)
+                        events = payload.get("items") if isinstance(payload.get("items"), list) else []
+                        for item in events:
+                            if not isinstance(item, dict):
+                                continue
+                            event_id = str(item.get("event_id") or "").strip()
+                            row = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+                            if not event_id:
+                                event_id = str(row.get("variant_id") or "")
+                            if not event_id or event_id in sent_event_ids:
+                                continue
+                            sent_event_ids[event_id] = now
+                            env = svc.build_catalog_row_event_v1(row, ts=str(item.get("ts") or _tz_now_iso()))
+                            self.wfile.write(b"event: catalog.row\n")
+                            self.wfile.write(f"id: {event_id}\n".encode("utf-8"))
                             self.wfile.write(f"data: {json.dumps(env, ensure_ascii=False)}\n\n".encode("utf-8"))
                             emitted += 1
                         if emitted == 0:
@@ -3661,6 +4349,29 @@ class RequestHandler(BaseHTTPRequestHandler):
             limit = max(1, min(limit, 500))
             _, _, effective = _signal_engine_effective_config()
             _json_response(self, _signal_engine_signal_preview(limit=limit, cfg=effective), cache_control="no-store")
+            return
+
+        if path == "/api/admin/telegram-delivery/config":
+            if not _require_admin(self):
+                return
+            _json_response(self, _state().telegram_delivery_config_v1(), cache_control="no-store")
+            return
+
+        if path == "/api/admin/telegram-delivery/status":
+            if not _require_admin(self):
+                return
+            _json_response(self, _state().telegram_delivery_status_v1(), cache_control="no-store")
+            return
+
+        if path == "/api/admin/telegram-delivery/journal":
+            if not _require_admin(self):
+                return
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get("limit") or ["50"])[0])
+            except Exception:
+                limit = 50
+            _json_response(self, _state().telegram_delivery_journal_v1(limit=limit), cache_control="no-store")
             return
 
         if path == "/api/admin/formula-gates/status":
@@ -4022,6 +4733,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                 cache_control="no-store",
             )
             return
+        if parsed.path == "/api/admin/telegram-delivery/config/reset":
+            if not _require_admin(self):
+                return
+            _json_response(self, _state().telegram_delivery_reset_config_v1(), cache_control="no-store")
+            return
+        if parsed.path == "/api/admin/telegram-delivery/test":
+            if not _require_admin(self):
+                return
+            payload = _read_json_body(self)
+            kind = str(payload.get("kind") or "gift_signal") if isinstance(payload, dict) else "gift_signal"
+            _json_response(self, _state().telegram_delivery_test_v1(kind=kind), cache_control="no-store")
+            return
         if parsed.path == "/api/alerts":
             rule = _read_json_body(self)
             _json_response(self, _state().alerts_create(rule), status=201)
@@ -4053,6 +4776,21 @@ class RequestHandler(BaseHTTPRequestHandler):
                 {"ok": True, "defaults": defaults, "overrides": saved_overrides, "effective": effective},
                 cache_control="no-store",
             )
+            return
+        if parsed.path == "/api/admin/telegram-delivery/config":
+            if not _require_admin(self):
+                return
+            payload = _read_json_body(self)
+            overrides = payload.get("overrides") if isinstance(payload, dict) and isinstance(payload.get("overrides"), dict) else payload
+            if not isinstance(overrides, dict):
+                _json_response(
+                    self,
+                    {"ok": False, "error": "invalid_payload", "message": "Ожидался JSON-объект overrides"},
+                    status=HTTPStatus.BAD_REQUEST,
+                    cache_control="no-store",
+                )
+                return
+            _json_response(self, _state().telegram_delivery_update_config_v1(overrides), cache_control="no-store")
             return
         if parsed.path.startswith("/api/alerts/"):
             alert_id = parsed.path.split("/")[-1]

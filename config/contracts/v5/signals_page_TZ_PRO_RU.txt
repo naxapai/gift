@@ -1,0 +1,121 @@
+======================================================================
+GiftMarketZone — ТЗ: Получение и отображение сигналов (страница /#signals) — PRO
+Версия: 1.0 (production) • Дата: 2026-03-03
+======================================================================
+
+1) Цель
+Сделать страницу /#signals “операционным терминалом” для PRO трейдера:
+- быстрый отбор сделок по EdgeRank (динамические веса под режим рынка)
+- единый механизм BUY/SELL/WATCH/SKIP с адаптацией под режим рынка
+- план сделки (target/stop), причины и риски в один клик
+- realtime обновления без перезагрузки
+
+2) Источники данных
+
+Спецификация API:
+- openapi_full_v1.6.yaml
+- /v1/signals -> SignalsFeedResponse (items: SignalItemPro)
+
+2.1 HTTP
+- GET /v1/signals (см. OpenAPI v1.5: фильтры/пагинация)
+
+- GET /v1/signals (keyset pagination: limit+cursor)
+- GET /v1/market/status?window=30m (контекст режима рынка + качество данных)
+
+2.2 Realtime (SSE или WS)
+- /v1/stream/signals, event: signal.created
+- дедуп: signal_id, TTL 10 минут
+
+3) Требования к payload сигнала (минимум)
+SignalItem обязан содержать:
+- action, market_regime (+ market_regime_badge), edgeRank100, edgeRank_raw, edgeRank_profile
+- score100, conf_pct, expected_profit_pct, undervalue_pct
+- price_ton, floor_ton, fair_ton, target_ton, stop_ton
+- liquidity_score, absorption_30m, listing_pressure, volume_velocity, depth_5pct_count, depth_5pct_ton
+- variant_id, variant_label
+- reasons[<=3], risk_flags[<=3], watch_trigger (nullable)
+- ts
+
+4) Механика расчёта (backend)
+
+------------------------------------------------------------------
+4.A Математика EdgeRank (обязательно для /#signals)
+------------------------------------------------------------------
+
+4.A.1 Нормализация компонент (все в диапазоне 0..1)
+C  = conf_pct / 100
+S  = score100 / 100
+EP = clamp(expected_profit_pct / 0.30, 0, 1)          // ref=30%
+L  = clamp(liquidity_score / 100, 0, 1)
+AR = clamp(absorption_30m / 2.0, 0, 1)                // ref=2.0
+LP = clamp(listing_pressure / 8.0, 0, 1)              // ref=8.0
+D  = clamp(depth_score, 0, 1)
+
+depth_score (рекомендуемая реализация):
+depth_5pct_count_norm = clamp(depth_5pct_count / 20, 0, 1)   // ref=20 лотов
+depth_5pct_ton_norm   = clamp(depth_5pct_ton   / 200, 0, 1)  // ref=200 TON
+depth_score = clamp(0.6*depth_5pct_count_norm + 0.4*depth_5pct_ton_norm, 0, 1)
+
+4.A.2 EdgeRank_raw (динамические веса под режим рынка — Signals page)
+RISK_ON:
+EdgeRank_raw = 0.40*EP + 0.25*S + 0.10*L + 0.10*AR + 0.05*D - 0.10*LP
+
+MEAN_REVERT (BASE):
+EdgeRank_raw = 0.35*EP + 0.25*S + 0.15*L + 0.10*AR + 0.10*D - 0.15*LP
+
+RISK_OFF:
+EdgeRank_raw = 0.25*EP + 0.20*S + 0.20*L + 0.15*AR + 0.15*D - 0.20*LP
+
+PANIC:
+EdgeRank_raw = 0.20*EP + 0.20*S + 0.25*L + 0.20*AR + 0.10*D - 0.25*LP
+
+4.A.3 Итоговый EdgeRank (учёт доверия)
+EdgeRank = clamp(EdgeRank_raw, 0, 1) * C
+EdgeRank100 = round(EdgeRank * 100)
+
+4.A.4 Обязательная отдача в API (для PRO UI)
+- edgeRank_raw (0..1), edgeRank100 (0..100), edgeRank_profile (= market_regime или BASE)
+- (желательно) edge_norms_summary и edge_weights_summary для row-expand (или фронт вычисляет по конфигу)
+
+4.1 EdgeRank (динамические веса)
+- веса выбирать по market_regime (RISK_ON / MEAN_REVERT / RISK_OFF / PANIC)
+- формула: EdgeRank = clamp(EdgeRank_raw,0,1) * C
+- реализация и конфиги: edgerank_weights_by_regime.json
+
+4.2 Action BUY/SELL/WATCH/SKIP (адаптация под режим)
+- Decision Engine v2
+- пороги и профили: signal_profiles_by_regime.json
+- quality gates: conf/sales24h
+- WATCH обязательно содержит watch_trigger (“что нужно, чтобы стать BUY”)
+
+5) UI/UX (PRO)
+5.1 Верхняя панель (sticky)
+- режим рынка (badge+текст), data_health, Conf рынка
+- 3 пункта “тактика сейчас” (из market.status или вычислить)
+- быстрый переключатель пресета “PRO-алерты”
+
+5.2 Таблица сигналов (виртуализация)
+- сортировка по умолчанию: EdgeRank desc, Conf desc, ts desc
+- sticky колонки: Действие, Режим
+- плотный режим (compact)
+- поддержка пресетов и расширенных фильтров
+
+5.3 Expand строки
+- Почему (<=3), Риски (<=3), Trigger (WATCH)
+- EdgeRank математика: raw + профиль (и, если возможно, краткая сводка весов/нормализаций)
+
+5.4 Фильтры
+- action, market_regime
+- EdgeRank>=55, Conf>=35, Profit>=8 (дефолт)
+- Liquidity>=35, LP<=4, AR>=0.9, VV>=1.0
+- поиск по variant_label/атрибутам
+
+6) Производительность
+- p95 /v1/signals <= 300ms (limit=200, прогретый кэш)
+- таблица 5–10k строк без лагов (виртуализация + keyset pagination)
+- realtime не должен “дублировать” (dedupe signal_id)
+
+7) Файлы для фронта
+- signals_page_pro_ui_mapping.json (колонки/фильтры/пресеты/expand)
+- bento_ui_signals_blocks.json (структура блоков страницы Signals)
+======================================================================

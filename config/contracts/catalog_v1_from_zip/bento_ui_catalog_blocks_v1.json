@@ -1,0 +1,158 @@
+{
+  "version": "1.0",
+  "page": "catalog",
+  "route": "/#catalog",
+  "ui_language": "ru",
+  "blocks": [
+    {
+      "id": "catalog_header",
+      "type": "MARKET_CONTEXT_HEADER",
+      "title": "Режим рынка и контекст",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 0,
+          "w": 12,
+          "h": 2
+        }
+      },
+      "data_source": "/v1/market/status?window=30m",
+      "realtime": "market.status.updated"
+    },
+    {
+      "id": "catalog_filters",
+      "type": "FILTER_BAR",
+      "title": "Фильтры и пресеты",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 2,
+          "w": 12,
+          "h": 1
+        }
+      },
+      "filters": [
+        "q",
+        "action",
+        "market_regime",
+        "edgeRank_min",
+        "conf_min",
+        "profit_min_pct",
+        "liq_min",
+        "depth_min",
+        "ar_min",
+        "lp_max",
+        "active_lots_min",
+        "active_lots_max",
+        "listed_share_min",
+        "listed_share_max",
+        "preset"
+      ]
+    },
+    {
+      "id": "catalog_table",
+      "type": "TABLE_CATALOG_PRO",
+      "title": "Каталог (PRO)",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 3,
+          "w": 9,
+          "h": 10
+        }
+      },
+      "data_source": "/v1/catalog/feed",
+      "realtime": "catalog.row",
+      "columns": [
+        "variant_label",
+        "floor_ton",
+        "fair_ton",
+        "undervalue_pct",
+        "expected_profit_pct",
+        "edgeRank100",
+        "conf_pct",
+        "liquidity_score",
+        "absorption_30m",
+        "listing_pressure",
+        "depth_score",
+        "active_lots",
+        "listed_share",
+        "market_regime",
+        "action",
+        "updated_at",
+        "age_sec"
+      ],
+      "default_sort": [
+        "sort_key desc",
+        "edgeRank100 desc",
+        "expected_profit_pct desc",
+        "updated_at desc"
+      ],
+      "row_expand": {
+        "sections": [
+          {
+            "title": "Причины",
+            "field": "reasons"
+          },
+          {
+            "title": "Риски",
+            "field": "risk_flags"
+          },
+          {
+            "title": "Decision Trace",
+            "field": "decision_trace"
+          }
+        ]
+      }
+    },
+    {
+      "id": "catalog_sidepanel",
+      "type": "SIDE_PANEL_VARIANT_QUICK_VIEW",
+      "title": "Вариант — детали",
+      "grid": {
+        "xl": {
+          "x": 9,
+          "y": 3,
+          "w": 3,
+          "h": 10
+        }
+      },
+      "data_source": "/v1/catalog/variant/{variant_id}",
+      "fields": [
+        "variant_label",
+        "floor_ton",
+        "fair_ton",
+        "undervalue_pct",
+        "expected_profit_pct",
+        "edgeRank100",
+        "conf_pct",
+        "liquidity_score",
+        "absorption_30m",
+        "listing_pressure",
+        "depth_score",
+        "active_lots",
+        "listed_share",
+        "market_regime",
+        "action"
+      ]
+    },
+    {
+      "id": "catalog_help",
+      "type": "DOC_CARD",
+      "title": "Как читать Catalog",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 13,
+          "w": 12,
+          "h": 2
+        }
+      },
+      "markdown": [
+        "• **EdgeRank** — фиксированный скор силы идеи.",
+        "• Режим рынка влияет на **пороги BUY/SELL/WATCH/SKIP** и **пресеты/ранжирование**.",
+        "• Раскрой строку, чтобы увидеть **Причины / Риски / Decision Trace**."
+      ]
+    }
+  ]
+}

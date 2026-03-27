@@ -1,0 +1,121 @@
+{
+  "version": "1.0",
+  "page": "screeners",
+  "route": "/#screeners",
+  "ui_language": "ru",
+  "blocks": [
+    {
+      "id": "screeners_header",
+      "type": "MARKET_CONTEXT_HEADER",
+      "title": "Режим рынка и контекст",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 0,
+          "w": 12,
+          "h": 2
+        }
+      },
+      "data_source": "/v1/market/status?window=30m",
+      "realtime": "market.status.updated"
+    },
+    {
+      "id": "screeners_filters",
+      "type": "FILTER_BAR",
+      "title": "Фильтры",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 2,
+          "w": 12,
+          "h": 1
+        }
+      },
+      "filters": [
+        "screener_type",
+        "action",
+        "market_regime",
+        "edgeRank_min",
+        "conf_min",
+        "profit_min_pct",
+        "liq_min",
+        "ar_min",
+        "lp_max"
+      ]
+    },
+    {
+      "id": "screeners_table",
+      "type": "TABLE_SCREENERS_PRO",
+      "title": "Скринеры (PRO)",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 3,
+          "w": 12,
+          "h": 8
+        }
+      },
+      "data_source": "/v1/screeners/feed",
+      "realtime": "screener.row",
+      "columns": [
+        "age",
+        "screener_type",
+        "variant_label",
+        "price_ton",
+        "floor_ton",
+        "fair_ton",
+        "undervalue_pct",
+        "expected_profit_pct",
+        "edgeRank100",
+        "score100",
+        "conf_pct",
+        "liquidity_score",
+        "absorption_30m",
+        "listing_pressure",
+        "depth_score",
+        "market_regime",
+        "action"
+      ],
+      "default_sort": [
+        "edgeRank100 desc",
+        "expected_profit_pct desc",
+        "age asc"
+      ],
+      "row_expand": {
+        "sections": [
+          {
+            "title": "Причины",
+            "field": "reasons"
+          },
+          {
+            "title": "Риски",
+            "field": "risk_flags"
+          },
+          {
+            "title": "Decision Trace",
+            "field": "decision_trace"
+          }
+        ]
+      }
+    },
+    {
+      "id": "screeners_explain",
+      "type": "DOC_CARD",
+      "title": "Как читать скринеры",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 11,
+          "w": 12,
+          "h": 2
+        }
+      },
+      "markdown": [
+        "• **EdgeRank** — фиксированный скор силы идеи.",
+        "• Режим рынка влияет на **пороги BUY/SELL/WATCH/SKIP** и **ранжирование/boost**.",
+        "• Дефолт: EdgeRank ≥ 55, Conf ≥ 35, Профит ≥ 8%.",
+        "• Раскрывай строку: **Причины / Риски / Decision Trace**."
+      ]
+    }
+  ]
+}

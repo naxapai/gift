@@ -1,0 +1,123 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-03-03",
+  "ui_language": "ru",
+  "page": "signals",
+  "route": "/#signals",
+  "title": "Лента сигналов (PRO)",
+  "blocks": [
+    {
+      "id": "s_market_header",
+      "type": "HEADER_MARKET_CONTEXT",
+      "title": "Контекст рынка",
+      "subtitle": "Режим, качество данных, тактика",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 0,
+          "w": 12,
+          "h": 2
+        },
+        "lg": {
+          "x": 0,
+          "y": 0,
+          "w": 12,
+          "h": 2
+        },
+        "md": {
+          "x": 0,
+          "y": 0,
+          "w": 8,
+          "h": 2
+        },
+        "sm": {
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 3
+        }
+      },
+      "sources": {
+        "http": [
+          "/v1/market/status?window=30m"
+        ],
+        "realtime": [
+          "market.status"
+        ]
+      }
+    },
+    {
+      "id": "s_filters",
+      "type": "FILTER_BAR",
+      "title": "Фильтры",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 2,
+          "w": 12,
+          "h": 1
+        },
+        "lg": {
+          "x": 0,
+          "y": 2,
+          "w": 12,
+          "h": 1
+        },
+        "md": {
+          "x": 0,
+          "y": 2,
+          "w": 8,
+          "h": 1
+        },
+        "sm": {
+          "x": 0,
+          "y": 3,
+          "w": 4,
+          "h": 2
+        }
+      },
+      "configRef": "signals_page_pro_ui_mapping.json#filters"
+    },
+    {
+      "id": "s_table",
+      "type": "TABLE_SIGNALS_PRO",
+      "title": "Сигналы",
+      "subtitle": "Сортировка по EdgeRank (динамический)",
+      "grid": {
+        "xl": {
+          "x": 0,
+          "y": 3,
+          "w": 12,
+          "h": 8
+        },
+        "lg": {
+          "x": 0,
+          "y": 3,
+          "w": 12,
+          "h": 8
+        },
+        "md": {
+          "x": 0,
+          "y": 3,
+          "w": 8,
+          "h": 10
+        },
+        "sm": {
+          "x": 0,
+          "y": 5,
+          "w": 4,
+          "h": 12
+        }
+      },
+      "configRef": "signals_page_pro_ui_mapping.json",
+      "sources": {
+        "http": [
+          "/v1/signals"
+        ],
+        "realtime": [
+          "signal.created"
+        ]
+      }
+    }
+  ]
+}
