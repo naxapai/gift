@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROFILE_PATH = ROOT / "config" / "telegram" / "telegram_message_profile_PRO_v1.json"
 RULES_PATH = ROOT / "config" / "telegram" / "telegram_message_templater_rules_PRO_v1.txt"
 SIGNAL_PROFILES_PATH = ROOT / "config" / "signals" / "signal_profiles_by_regime.json"
+EDGE_WEIGHTS_PATH = ROOT / "config" / "signals" / "edgerank_weights_by_regime.json"
 
 
 class TestTelegramDelivery(unittest.TestCase):
@@ -33,6 +34,7 @@ class TestTelegramDelivery(unittest.TestCase):
             profile=__import__("json").loads(PROFILE_PATH.read_text(encoding="utf-8")),
             rules_text=RULES_PATH.read_text(encoding="utf-8"),
             signal_profiles=__import__("json").loads(SIGNAL_PROFILES_PATH.read_text(encoding="utf-8")),
+            edgerank_weights=__import__("json").loads(EDGE_WEIGHTS_PATH.read_text(encoding="utf-8")),
         )
         market = renderer.render_market_status({
             "updated_at": "2026-03-05T12:00:00Z",
@@ -80,6 +82,7 @@ class TestTelegramDelivery(unittest.TestCase):
         self.assertIn("🎯 План:", signal)
         self.assertIn("🧠 Почему:", signal)
         self.assertIn("🆕", market)
+        self.assertIn("BUY-триггер", signal)
 
     def test_notifier_settings_are_sanitized_and_test_preview_works(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -88,6 +91,7 @@ class TestTelegramDelivery(unittest.TestCase):
                 profile_path=PROFILE_PATH,
                 rules_path=RULES_PATH,
                 signal_profiles_path=SIGNAL_PROFILES_PATH,
+                edgerank_weights_path=EDGE_WEIGHTS_PATH,
                 settings_path=tmp / "telegram_delivery_settings.json",
                 journal_path=tmp / "telegram_delivery_journal.json",
                 bot_token="token",
@@ -137,6 +141,7 @@ class TestTelegramDelivery(unittest.TestCase):
                 profile_path=PROFILE_PATH,
                 rules_path=RULES_PATH,
                 signal_profiles_path=SIGNAL_PROFILES_PATH,
+                edgerank_weights_path=EDGE_WEIGHTS_PATH,
                 settings_path=tmp / "telegram_delivery_settings.json",
                 journal_path=tmp / "telegram_delivery_journal.json",
                 bot_token="token",
@@ -196,6 +201,7 @@ class TestTelegramDelivery(unittest.TestCase):
                 profile_path=PROFILE_PATH,
                 rules_path=RULES_PATH,
                 signal_profiles_path=SIGNAL_PROFILES_PATH,
+                edgerank_weights_path=EDGE_WEIGHTS_PATH,
                 settings_path=tmp / "telegram_delivery_settings.json",
                 journal_path=tmp / "telegram_delivery_journal.json",
                 bot_token="token",
@@ -226,6 +232,54 @@ class TestTelegramDelivery(unittest.TestCase):
             self.assertTrue(journal.get("failed"))
             self.assertIn("boom", str((journal.get("failed") or [])[0].get("error") or ""))
             notifier.close()
+
+    def test_gate_engine_allows_strong_sell_override_from_tz(self) -> None:
+        gate = GateEngine(
+            {"gift_signal_channel": {"all": [{"metric": "edgeRank100", "op": ">=", "value": 55}, {"metric": "conf_pct", "op": ">=", "value": 35}, {"metric": "expected_profit_pct", "op": ">=", "value": 8}]}},
+            __import__("json").loads(SIGNAL_PROFILES_PATH.read_text(encoding="utf-8")),
+        )
+        result = gate.evaluate("gift_signal_channel", {
+            "action": "SELL",
+            "strength_tag": "STRONG_SELL",
+            "edgeRank100": 18,
+            "conf_pct": 44,
+            "expected_profit_pct": 0,
+            "listing_pressure": 6.2,
+            "absorption_30m": 0.55,
+        })
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("exception"), "strong_sell_override")
+
+    def test_renderer_computes_dynamic_edgerank_when_missing(self) -> None:
+        renderer = MessageRenderer(
+            profile=__import__("json").loads(PROFILE_PATH.read_text(encoding="utf-8")),
+            rules_text=RULES_PATH.read_text(encoding="utf-8"),
+            signal_profiles=__import__("json").loads(SIGNAL_PROFILES_PATH.read_text(encoding="utf-8")),
+            edgerank_weights=__import__("json").loads(EDGE_WEIGHTS_PATH.read_text(encoding="utf-8")),
+        )
+        text = renderer.render_gift_signal({
+            "ts": "2026-03-05T12:00:00Z",
+            "action": "BUY",
+            "market_regime": "PANIC",
+            "score100": 81,
+            "conf_pct": 54,
+            "expected_profit_pct": 14,
+            "collection": "snakebox",
+            "model": "Bluebell",
+            "background": "Cobalt Blue",
+            "pattern": "Hourglass",
+            "price_ton": 8.0,
+            "floor_ton": 8.0,
+            "fair_ton": 9.4,
+            "liquidity_score": 52,
+            "absorption_30m": 1.2,
+            "listing_pressure": 1.8,
+            "volume_velocity": 1.6,
+            "depth_score": 0.6,
+            "depth_5pct_count": 6,
+            "depth_5pct_ton": 33,
+        })
+        self.assertIn("Edge 30", text)
 
 
 if __name__ == "__main__":

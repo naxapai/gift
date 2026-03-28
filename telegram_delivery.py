@@ -67,8 +67,9 @@ def _deep_merge(base, patch):
 
 
 class GateEngine:
-    def __init__(self, gates: dict | None) -> None:
+    def __init__(self, gates: dict | None, signal_profiles: dict | None = None) -> None:
         self.gates = gates if isinstance(gates, dict) else {}
+        self.signal_profiles = signal_profiles if isinstance(signal_profiles, dict) else {}
 
     def evaluate(self, gate_name: str, payload: dict | None) -> dict:
         gate = self.gates.get(gate_name) if isinstance(self.gates.get(gate_name), dict) else {}
@@ -98,14 +99,27 @@ class GateEngine:
             checks.append({"metric": metric, "op": op, "value": target, "current": current, "ok": ok})
             if not ok:
                 passed = False
-        return {"ok": passed, "checks": checks}
+        row = payload if isinstance(payload, dict) else {}
+        exception = None
+        if gate_name == "gift_signal_channel":
+            action = str(row.get("action") or row.get("type") or "").upper()
+            conf = _safe_float(row.get("conf_pct"), 0.0)
+            pressure = _safe_float(row.get("listing_pressure"), 0.0)
+            absorption = _safe_float(row.get("absorption_30m"), 0.0)
+            strength_tag = str(row.get("strength_tag") or "").upper()
+            strong_sell = action == "SELL" and conf >= 40.0 and (pressure >= 6.0 or absorption <= 0.6)
+            if strong_sell or strength_tag == "STRONG_SELL":
+                passed = True
+                exception = "strong_sell_override"
+        return {"ok": passed, "checks": checks, "exception": exception}
 
 
 class MessageRenderer:
-    def __init__(self, profile: dict, rules_text: str, signal_profiles: dict | None = None) -> None:
+    def __init__(self, profile: dict, rules_text: str, signal_profiles: dict | None = None, edgerank_weights: dict | None = None) -> None:
         self.profile = profile if isinstance(profile, dict) else {}
         self.rules_text = str(rules_text or "")
         self.signal_profiles = signal_profiles if isinstance(signal_profiles, dict) else {}
+        self.edgerank_weights = edgerank_weights if isinstance(edgerank_weights, dict) else {}
         rendering = self.profile.get("rendering") if isinstance(self.profile.get("rendering"), dict) else {}
         self.line_break = str(rendering.get("line_break") or "\n")
         self.bullet = str(rendering.get("bullet") or "• ")
@@ -205,6 +219,7 @@ class MessageRenderer:
 
     def _signal_context(self, payload: dict) -> dict[str, str]:
         regime = str(payload.get("market_regime") or "MEAN_REVERT").upper()
+        edge = self._resolved_edge(payload, regime)
         reasons = self._reasons(payload, regime)
         risks = self._risks(payload)
         plan_entry, plan_exit = self._plan_lines(payload, regime)
@@ -216,10 +231,10 @@ class MessageRenderer:
         action = str(payload.get("action") or payload.get("type") or "WATCH").upper()
         return {
             "action": action,
-            "edgeRank100": self._fmt_num(payload.get("edgeRank100"), 0),
+            "edgeRank100": self._fmt_num(edge.get("edgeRank100"), 0),
             "score100": self._fmt_num(payload.get("score100"), 0),
             "conf_pct": self._fmt_num(payload.get("conf_pct"), 0),
-            "horizon": "30m",
+            "horizon": str(payload.get("horizon") or "30m"),
             "market_regime": regime,
             "collection": str(payload.get("collection") or "Unknown"),
             "model": str(payload.get("model") or "Unknown"),
@@ -247,7 +262,7 @@ class MessageRenderer:
         }
 
     def _reasons(self, payload: dict, regime: str) -> list[str]:
-        raw = [str(x).strip() for x in (payload.get("reasons") or []) if str(x).strip()]
+        raw = [self._render_reason_token(str(x).strip(), payload) for x in (payload.get("reasons") or []) if str(x).strip()]
         if raw:
             return raw[: self.max_reasons]
         out: list[str] = []
@@ -268,7 +283,7 @@ class MessageRenderer:
         return out[: self.max_reasons]
 
     def _risks(self, payload: dict) -> list[str]:
-        raw = [str(x).strip() for x in (payload.get("risk_flags") or []) if str(x).strip()]
+        raw = [self._render_risk_token(str(x).strip(), payload) for x in (payload.get("risk_flags") or []) if str(x).strip()]
         if raw:
             return raw[: self.max_risks]
         out: list[str] = []
@@ -285,6 +300,66 @@ class MessageRenderer:
         if data_health != "OK" and "DATA_DEGRADED" in self.risk_dict:
             out.append(self._fmt(str(self.risk_dict.get("DATA_DEGRADED") or ""), {"data_health_note": str(payload.get("data_health_note") or data_health)}))
         return out[: self.max_risks]
+
+    def _render_reason_token(self, token: str, payload: dict) -> str:
+        key = str(token or "").strip().upper()
+        if key in self.reason_dict:
+            price = _safe_float(payload.get("price_ton"), 0.0)
+            fair = _safe_float(payload.get("fair_ton"), 0.0)
+            delta = ((price - fair) / fair) * 100.0 if fair > 0 else 0.0
+            return self._fmt(
+                str(self.reason_dict.get(key) or token),
+                {
+                    "score100": self._fmt_num(payload.get("score100"), 0),
+                    "missing_metric": "недооценки",
+                    "absorption_rate_30m": self._fmt_num(payload.get("absorption_30m"), 2),
+                    "liquidity_score": self._fmt_num(payload.get("liquidity_score"), 0),
+                    "undervalue_pct": self._fmt_num(payload.get("undervalue_pct"), 2),
+                    "delta_fair_pct": self._fmt_num(abs(delta), 2),
+                },
+            )
+        return token
+
+    def _render_risk_token(self, token: str, payload: dict) -> str:
+        key = str(token or "").strip().upper()
+        if key in self.risk_dict:
+            return self._fmt(
+                str(self.risk_dict.get(key) or token),
+                {
+                    "depth_5pct_lots": str(_safe_int(payload.get("depth_5pct_count"), 0)),
+                    "listing_pressure": self._fmt_num(payload.get("listing_pressure"), 2),
+                    "conf_pct": self._fmt_num(payload.get("conf_pct"), 0),
+                    "data_health_note": str(payload.get("data_health_note") or payload.get("data_health") or "DEGRADED"),
+                },
+            )
+        return token
+
+    def _resolved_edge(self, payload: dict, regime: str) -> dict[str, float]:
+        edge100 = _safe_float(payload.get("edgeRank100"), -1.0)
+        edge_raw = _safe_float(payload.get("edgeRank_raw"), -1.0)
+        if edge100 >= 0.0 and edge_raw >= 0.0:
+            return {"edgeRank100": edge100, "edgeRank_raw": edge_raw}
+        profiles = self.edgerank_weights.get("profiles") if isinstance(self.edgerank_weights.get("profiles"), dict) else {}
+        weights = profiles.get(regime) if isinstance(profiles.get(regime), dict) else profiles.get("MEAN_REVERT", {})
+        s = _clamp(_safe_float(payload.get("score100"), 0.0) / 100.0, 0.0, 1.0)
+        c = _clamp(_safe_float(payload.get("conf_pct"), 0.0) / 100.0, 0.0, 1.0)
+        ep = _clamp(_safe_float(payload.get("expected_profit_pct"), 0.0) / 30.0, 0.0, 1.0)
+        l = _clamp(_safe_float(payload.get("liquidity_score"), 0.0) / 100.0, 0.0, 1.0)
+        ar = _clamp(_safe_float(payload.get("absorption_30m"), 0.0) / 2.0, 0.0, 1.0)
+        d = _clamp(_safe_float(payload.get("depth_score"), _safe_float(payload.get("depth_5pct_count"), 0.0) / 25.0), 0.0, 1.0)
+        lp = _clamp(_safe_float(payload.get("listing_pressure"), 0.0) / 6.0, 0.0, 1.0)
+        vv_norm = _clamp((_safe_float(payload.get("volume_velocity"), 0.0) - 0.8) / 1.0, 0.0, 1.0)
+        raw = (
+            _safe_float(weights.get("EP"), 0.35) * ep
+            + _safe_float(weights.get("S"), 0.25) * s
+            + _safe_float(weights.get("L"), 0.15) * l
+            + _safe_float(weights.get("AR"), 0.10) * ar
+            + _safe_float(weights.get("D"), 0.10) * d
+            + _safe_float(weights.get("LP"), -0.15) * lp
+            + (_safe_float(weights.get("VV_bonus"), 0.0) * vv_norm if regime == "PANIC" else 0.0)
+        )
+        edge = _clamp(raw, 0.0, 1.0) * c
+        return {"edgeRank100": round(edge * 100.0), "edgeRank_raw": round(raw, 6)}
 
     def _plan_lines(self, payload: dict, regime: str) -> tuple[str, str]:
         profiles = self.signal_profiles.get("profiles") if isinstance(self.signal_profiles.get("profiles"), dict) else {}
@@ -357,6 +432,7 @@ class TelegramNotifier:
         profile_path: Path,
         rules_path: Path,
         signal_profiles_path: Path,
+        edgerank_weights_path: Path,
         settings_path: Path,
         journal_path: Path,
         bot_token: str,
@@ -365,8 +441,9 @@ class TelegramNotifier:
         self.profile = _load_json(profile_path, {})
         self.rules_text = rules_path.read_text(encoding="utf-8") if rules_path.exists() else ""
         self.signal_profiles = _load_json(signal_profiles_path, {})
-        self.renderer = MessageRenderer(self.profile, self.rules_text, self.signal_profiles)
-        self.gates = GateEngine((self.profile.get("publish_gates") if isinstance(self.profile.get("publish_gates"), dict) else {}))
+        self.edgerank_weights = _load_json(edgerank_weights_path, {})
+        self.renderer = MessageRenderer(self.profile, self.rules_text, self.signal_profiles, self.edgerank_weights)
+        self.gates = GateEngine((self.profile.get("publish_gates") if isinstance(self.profile.get("publish_gates"), dict) else {}), self.signal_profiles)
         self.settings_path = settings_path
         self.journal_path = journal_path
         self.bot_token = str(bot_token or "").strip()

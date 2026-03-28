@@ -812,6 +812,7 @@ class GiftAnalyticsService:
             profile_path=self.telegram_config_dir / "telegram_message_profile_PRO_v1.json",
             rules_path=self.telegram_config_dir / "telegram_message_templater_rules_PRO_v1.txt",
             signal_profiles_path=self.listing_config_dir / "signal_profiles_by_regime.json",
+            edgerank_weights_path=self.listing_config_dir / "edgerank_weights_by_regime.json",
             settings_path=TELEGRAM_DELIVERY_SETTINGS_FILE,
             journal_path=TELEGRAM_DELIVERY_JOURNAL_FILE,
             bot_token=(os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or os.getenv("TG_BOT_TOKEN", "").strip()),
