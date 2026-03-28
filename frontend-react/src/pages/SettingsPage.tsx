@@ -4,10 +4,10 @@ import { BentoGrid } from '../components/BentoGrid'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
 import {
-  getAdminAccess,
   getAdminTelegramDeliveryConfig,
   getAdminTelegramDeliveryJournal,
   getAdminTelegramDeliveryStatus,
+  getTelegramAuthMe,
   getAlertsV1,
   getOverview,
   postAdminTelegramDeliveryTest,
@@ -98,7 +98,7 @@ export function SettingsPage() {
 }`)
   const [alertSaving, setAlertSaving] = useState(false)
 
-  const [isAdmin, setIsAdmin] = useState(false)
+  const [telegramAuthed, setTelegramAuthed] = useState(false)
   const [tgLoading, setTgLoading] = useState(false)
   const [tgSaving, setTgSaving] = useState(false)
   const [tgError, setTgError] = useState('')
@@ -157,17 +157,17 @@ export function SettingsPage() {
   useEffect(() => {
     void (async () => {
       try {
-        const [ov, access] = await Promise.all([
+        const [ov, auth] = await Promise.all([
           getOverview(),
-          getAdminAccess().catch(() => ({ is_admin: false })),
+          getTelegramAuthMe().catch(() => ({ authenticated: false })),
         ])
         setEngineMode(String(ov.engine_mode || 'н/д'))
         setMarketState(String(ov.market_state || 'н/д'))
         setGifts(Number(ov.counts?.gifts || 0))
         setCollections(Number(ov.counts?.collections || 0))
-        const nextAdmin = Boolean(access?.is_admin)
-        setIsAdmin(nextAdmin)
-        if (nextAdmin) {
+        const nextTelegramAuthed = Boolean(auth?.authenticated)
+        setTelegramAuthed(nextTelegramAuthed)
+        if (nextTelegramAuthed) {
           await loadTelegramSettings()
         }
       } catch {
@@ -326,9 +326,9 @@ export function SettingsPage() {
         </BentoCard>
 
         <BentoCard title="Telegram delivery" className="xl:col-span-6">
-          {!isAdmin ? (
+          {!telegramAuthed ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
-              Управление отправкой сигналов в Telegram доступно только администратору.
+              Войдите через Telegram, чтобы управлять отправкой сигналов и тестировать delivery.
             </div>
           ) : (
             <div className="space-y-4">

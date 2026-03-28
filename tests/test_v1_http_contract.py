@@ -212,7 +212,7 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertEqual(calls["n"], 1)
 
     def test_admin_telegram_delivery_config_roundtrip(self) -> None:
-        with patch("server._is_admin_user", return_value=True):
+        with patch.object(server, "_auth_user_from_request", return_value={"id": 42, "username": "alice"}):
             status_get, payload_get = self._get_json("/api/admin/telegram-delivery/config")
             self.assertEqual(status_get, 200)
             self.assertTrue(payload_get.get("ok"))
@@ -241,7 +241,7 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertTrue(payload_reset.get("ok"))
 
     def test_admin_telegram_delivery_status_and_test_preview(self) -> None:
-        with patch("server._is_admin_user", return_value=True), patch.object(server._STATE.telegram_notifier, "send_test", return_value={"ok": True, "kind": "gift_signal", "preview": "GiftMarketZone • BUY", "sent": True}):
+        with patch.object(server, "_auth_user_from_request", return_value={"id": 42, "username": "alice"}), patch.object(server._STATE.telegram_notifier, "send_test", return_value={"ok": True, "kind": "gift_signal", "preview": "GiftMarketZone • BUY", "sent": True}):
             status_s, payload_s = self._get_json("/api/admin/telegram-delivery/status")
             self.assertEqual(status_s, 200)
             self.assertTrue(payload_s.get("ok"))
@@ -259,6 +259,17 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertTrue(payload_t.get("ok"))
             self.assertEqual(str(payload_t.get("kind") or ""), "gift_signal")
             self.assertIn("GiftMarketZone", str(payload_t.get("preview") or ""))
+
+    def test_telegram_delivery_endpoints_require_authenticated_telegram_user_but_not_admin(self) -> None:
+        with patch.object(server, "_auth_user_from_request", return_value=None):
+            with self.assertRaises(HTTPError) as cm_anon:
+                urlopen(f"http://127.0.0.1:{self.port}/api/admin/telegram-delivery/status", timeout=10)
+        self.assertEqual(cm_anon.exception.code, 401)
+
+        with patch.object(server, "_auth_user_from_request", return_value={"id": 77, "username": "operator"}):
+            status_ok, payload_ok = self._get_json("/api/admin/telegram-delivery/status")
+        self.assertEqual(status_ok, 200)
+        self.assertTrue(payload_ok.get("ok"))
 
     def test_telegram_auth_session_is_non_blocking_and_owned_gifts_endpoint_uses_session(self) -> None:
         opener = self._cookie_opener()

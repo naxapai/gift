@@ -126,6 +126,7 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('getAdminTelegramDeliveryConfig', page)
         self.assertIn('getAdminTelegramDeliveryStatus', page)
         self.assertIn('getAdminTelegramDeliveryJournal', page)
+        self.assertIn('getTelegramAuthMe', page)
         self.assertIn('saveAdminTelegramDeliveryConfig', page)
         self.assertIn('resetAdminTelegramDeliveryConfig', page)
         self.assertIn('postAdminTelegramDeliveryTest', page)
