@@ -3735,6 +3735,9 @@ class GiftAnalyticsService:
         items = self.trade_runtime.stream_events(wallet_address, kinds=kinds, limit=limit)
         return {"items": items}
 
+    def trades_retry_chain_list_v1(self, parent_intent_id: str) -> dict:
+        return self.trade_runtime.retry_chain_list_intent(parent_intent_id)
+
     def favorites_list(self, user_key: str = "default") -> List[dict]:
         data = _load_json(FAVORITES_FILE, {})
         rows = data.get(user_key) or []

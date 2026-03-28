@@ -4,7 +4,7 @@ import { BentoGrid } from '../components/BentoGrid'
 import { LoadingBlock } from '../components/LoadingBlock'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
-import { getAutoSellRules, getBuyQuote, getTelegramAuthMe, getTonAuthMe, getTradeHoldings, getTradeIntents, getTradePnl, getTradePositions, getTradingAccess, getWalletActivity, postFastBuyConfirm, postTradeIntent, postTradeIntentConfirm, subscribePnlStream, subscribeTradesStream } from '../lib/api'
+import { getAutoSellRules, getBuyQuote, getTelegramAuthMe, getTonAuthMe, getTradeHoldings, getTradeIntents, getTradePnl, getTradePositions, getTradingAccess, getWalletActivity, postFastBuyConfirm, postRetryListIntent, postTradeIntent, postTradeIntentConfirm, subscribePnlStream, subscribeTradesStream } from '../lib/api'
 import type { AutoSellRule, HoldingPro, PositionPro, PnlSummaryPro, TradeIntent, WalletActivityItem } from '../types/api'
 
 function ton(v?: number | null): string {
@@ -29,6 +29,7 @@ export function TradesPage() {
   const [maxPriceTon, setMaxPriceTon] = useState('')
   const [creating, setCreating] = useState(false)
   const [actionBusyId, setActionBusyId] = useState('')
+  const [optimisticHistory, setOptimisticHistory] = useState<TradeIntent[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -141,6 +142,8 @@ export function TradesPage() {
     setCreating(true)
     setError('')
     try {
+      const optimisticId = `optimistic_${Date.now()}`
+      setOptimisticHistory((prev) => [{ intent_id: optimisticId, intent_type: intentType === 'FAST_BUY' ? 'BUY' : intentType, variant_id: variantId.trim(), wallet_address: walletAddress, status: 'PENDING_SIGNATURE', created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 600000).toISOString(), source: intentType === 'FAST_BUY' ? 'FAST_BUY' : 'STANDARD' }, ...prev].slice(0, 30))
       if (intentType === 'FAST_BUY') {
         const quote = await getBuyQuote({ variantId: variantId.trim(), maxPriceTon: Number(maxPriceTon || 0), walletAddress })
         await postFastBuyConfirm({ buy_quote_token: quote.buy_quote_token, tx_hash: `fast_${Date.now()}`, wallet_address: walletAddress })
@@ -164,6 +167,7 @@ export function TradesPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'trade_create_failed')
     } finally {
+      setOptimisticHistory([])
       setCreating(false)
     }
   }, [walletAddress, variantId, maxPriceTon, load])
@@ -196,7 +200,30 @@ export function TradesPage() {
     }
   }, [walletAddress, load])
 
+  const retryChildList = useCallback(async (parentIntentId: string) => {
+    setActionBusyId(`retry:${parentIntentId}`)
+    setError('')
+    try {
+      await postRetryListIntent(parentIntentId)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'retry_list_failed')
+    } finally {
+      setActionBusyId('')
+    }
+  }, [load])
+
   const policyText = useMemo(() => 'Variant A only: BUY -> CONFIRMED -> LIST. FAST BUY enabled. Backend never stores private keys.', [])
+  const mergedHistory = useMemo(() => {
+    const items = [...optimisticHistory, ...history]
+    const seen = new Set<string>()
+    return items.filter((row) => {
+      const key = String(row.intent_id || '')
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }, [history, optimisticHistory])
 
   return (
     <section>
@@ -243,7 +270,7 @@ export function TradesPage() {
             <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Gift</th><th>Variant</th><th>Status</th><th>Acquired</th><th>Listed</th><th>Actions</th></tr></thead><tbody>{holdings.map((row) => <tr key={row.holding_id} className="border-t border-slate-100"><td className="py-2">{row.gift_unique_id}</td><td>{row.variant_id}</td><td>{row.status}</td><td>{ton(row.acquired_price_ton)}</td><td>{ton(row.listed_price_ton)}</td><td><div className="flex flex-wrap gap-2 py-2">{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:LIST`} onClick={() => { void runHoldingAction(row, 'LIST') }}>LIST</button> : null}{row.status === 'LISTED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:CANCEL_LISTING`} onClick={() => { void runHoldingAction(row, 'CANCEL_LISTING') }}>CANCEL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:SELL`} onClick={() => { void runHoldingAction(row, 'SELL') }}>SELL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:TRANSFER`} onClick={() => { void runHoldingAction(row, 'TRANSFER') }}>TRANSFER</button> : null}</div></td></tr>)}</tbody></table></div>
           </BentoCard>
           <BentoCard title="History" className="xl:col-span-12">
-            <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Intent</th><th>Type</th><th>Status</th><th>Variant</th><th>Created</th></tr></thead><tbody>{history.map((row) => <tr key={row.intent_id} className="border-t border-slate-100"><td className="py-2">{row.intent_id}</td><td>{row.intent_type}</td><td>{row.status}</td><td>{row.variant_id}</td><td>{new Date(row.created_at).toLocaleString('ru-RU')}</td></tr>)}</tbody></table></div>
+            <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Intent</th><th>Type</th><th>Status</th><th>Variant</th><th>Created</th><th>Chain</th><th>Actions</th></tr></thead><tbody>{mergedHistory.map((row) => <tr key={row.intent_id} className="border-t border-slate-100 align-top"><td className="py-2">{row.intent_id}</td><td>{row.intent_type}</td><td>{row.status}</td><td>{row.variant_id}</td><td>{new Date(row.created_at).toLocaleString('ru-RU')}</td><td>{row.chain_id || '—'}{row.parent_intent_id ? <div className="text-xs text-slate-500">parent: {row.parent_intent_id}</div> : null}</td><td>{row.intent_type === 'BUY_AND_LIST' || (row.chain_policy === 'BUY_THEN_LIST' && !row.parent_intent_id) ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `retry:${row.intent_id}`} onClick={() => { void retryChildList(row.intent_id) }}>Повторить выставление</button> : null}<div className="mt-1 text-xs text-slate-500">{Array.isArray((row as { status_timeline?: unknown }).status_timeline) ? `${((row as { status_timeline?: Array<unknown> }).status_timeline || []).length} steps` : 'timeline pending'}</div></td></tr>)}</tbody></table></div>
           </BentoCard>
           <BentoCard title="Wallet activity" className="xl:col-span-12">
             <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Time</th><th>Direction</th><th>Amount</th><th>Tx</th></tr></thead><tbody>{activity.map((row) => <tr key={`${row.tx_hash}-${row.ts}`} className="border-t border-slate-100"><td className="py-2">{new Date(row.ts).toLocaleString('ru-RU')}</td><td>{row.direction}</td><td>{ton(row.amount_ton)}</td><td>{row.tx_hash}</td></tr>)}</tbody></table></div>

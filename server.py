@@ -5014,6 +5014,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 _json_response(self, {"code": "bad_request", "message": f"confirm_signature_failed:{exc.__class__.__name__}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             return
+        if parsed.path.endswith("/retry_list") and parsed.path.startswith("/v1/trades/intents/"):
+            user, _wallet = _require_trading_user(self)
+            if user is None:
+                return
+            parent_intent_id = parsed.path.split("/")[-2]
+            try:
+                _json_response(self, _state().trades_retry_chain_list_v1(parent_intent_id), cache_control="no-store")
+            except KeyError:
+                _json_response(self, {"code": "not_found", "message": "parent_intent_not_found"}, status=HTTPStatus.NOT_FOUND, cache_control="no-store")
+            except Exception as exc:
+                _json_response(self, {"code": "bad_request", "message": f"retry_list_failed:{exc.__class__.__name__}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            return
         if parsed.path == "/v1/trades/autosell/rules":
             user, wallet = _require_trading_user(self)
             if user is None:

@@ -1314,6 +1314,10 @@ export async function postTradeIntentConfirm(intentId: string, payload: Record<s
   return apiGet(`/v1/trades/intents/${encodeURIComponent(intentId)}/confirm_signature`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) })
 }
 
+export async function postRetryListIntent(parentIntentId: string): Promise<TradeIntent> {
+  return apiGet(`/v1/trades/intents/${encodeURIComponent(parentIntentId)}/retry_list`, { method: 'POST' })
+}
+
 export async function getTradePositions(walletAddress: string): Promise<{ items: PositionPro[] }> {
   return apiGet(`/v1/trades/positions?wallet_address=${encodeURIComponent(walletAddress)}`)
 }

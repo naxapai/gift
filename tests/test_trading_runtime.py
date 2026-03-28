@@ -74,6 +74,42 @@ class TestTradingRuntime(unittest.TestCase):
             events = rt2.stream_events('EQSQL', kinds={'trade.intent.confirmed'}, limit=20)
             self.assertTrue(events)
 
+    def test_quote_nonce_lifecycle_persists_used_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            quote = rt.issue_buy_quote(variant_id='v5', max_price_ton=3.5, slippage_bps=100, wallet_address='EQTEST', variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.8})
+            raw = rt._decode_quote(quote['buy_quote_token'])
+            nonce = raw['quote']['nonce']
+            state_before = rt._get_quote_state(nonce)
+            self.assertEqual(state_before.get('state'), 'ISSUED')
+            rt.confirm_fast_buy({'buy_quote_token': quote['buy_quote_token'], 'tx_hash': 'tx5', 'wallet_address': 'EQTEST'}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.8})
+            state_after = rt._get_quote_state(nonce)
+            self.assertEqual(state_after.get('state'), 'USED')
+            with self.assertRaises(RuntimeError):
+                rt.confirm_fast_buy({'buy_quote_token': quote['buy_quote_token'], 'tx_hash': 'tx5b', 'wallet_address': 'EQTEST'}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.8})
+
+    def test_retry_chain_list_intent_creates_new_child_when_previous_not_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            created = rt.create_trade_intent({
+                'intent_type': 'BUY_AND_LIST',
+                'variant_id': 'v6',
+                'wallet_address': 'EQTEST',
+                'max_spend_ton': 8.0,
+                'chain_policy': 'BUY_THEN_LIST',
+                'post_action': {'type': 'LIST', 'listing_params': {'list_price_ton': 9.1, 'duration_sec': 86400, 'marketplace': 'fragment'}},
+            }, market_regime='MEAN_REVERT', variant_snapshot={'variant_label': 'Variant 6', 'floor_ton': 8.0, 'fair_ton': 8.8})
+            parent = created['intent']
+            rt.confirm_intent_signature(parent['intent_id'], {'tx_hash': 'tx6'}, market_regime='MEAN_REVERT', variant_snapshot={'variant_label': 'Variant 6', 'floor_ton': 8.0, 'fair_ton': 8.8})
+            items = rt.list_trade_intents('EQTEST')['items']
+            child = next((x for x in items if x.get('parent_intent_id') == parent['intent_id']), None)
+            self.assertTrue(isinstance(child, dict))
+            child['status'] = 'FAILED'
+            rt._write_list(rt.intents_file, items)
+            retry = rt.retry_chain_list_intent(parent['intent_id'])
+            self.assertEqual(retry.get('intent_type'), 'LIST')
+            self.assertNotEqual(retry.get('intent_id'), child.get('intent_id'))
+
 
 if __name__ == '__main__':
     unittest.main()

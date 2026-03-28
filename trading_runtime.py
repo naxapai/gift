@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import closing
 import hashlib
 import hmac
 import json
@@ -64,12 +65,14 @@ class TradeRuntime:
         self.autosell_state_file = data_dir / "trade_autosell_state_store.json"
         self.wallet_activity_file = data_dir / "trade_wallet_activity_store.json"
         self.events_file = data_dir / "trade_events_store.json"
+        self.quotes_file = data_dir / "trade_quotes_store.json"
         self.used_quotes: dict[str, float] = {}
         if self.db_path:
             self._init_db()
 
     def list_trade_intents(self, wallet_address: str, status: str | None = None, limit: int = 100, cursor: str | None = None) -> dict:
         items = [x for x in self._read_list(self.intents_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
+        self._expire_stale_intents(items)
         if status:
             items = [x for x in items if str(x.get("status") or "") == str(status)]
         items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
@@ -79,7 +82,9 @@ class TradeRuntime:
         return {"items": items[start:end], "next_cursor": next_cursor}
 
     def get_trade_intent(self, intent_id: str) -> dict | None:
-        for row in self._read_list(self.intents_file):
+        rows = self._read_list(self.intents_file)
+        self._expire_stale_intents(rows)
+        for row in rows:
             if str(row.get("intent_id") or "") == str(intent_id or ""):
                 return row
         return None
@@ -177,6 +182,15 @@ class TradeRuntime:
         sig = hmac.new(self.quote_secret, body, hashlib.sha256).hexdigest()
         token = base64.urlsafe_b64encode(json.dumps({"quote": quote, "sig": sig}).encode("utf-8")).decode("utf-8")
         payload = {"buy_quote_token": token, "expires_at": _iso(now + timedelta(seconds=self.quote_ttl_sec)), "quote": {k: v for k, v in quote.items() if k != "issued_at"}}
+        self._upsert_quote_state(nonce, {
+            "nonce": nonce,
+            "state": "ISSUED",
+            "variant_id": variant_id,
+            "wallet_address_hash": quote.get("wallet_address_hash"),
+            "issued_at": _iso(now),
+            "expires_at": payload["expires_at"],
+            "buy_quote_token": token,
+        })
         self._append_event("trade.quote.issued", payload)
         return payload
 
@@ -190,14 +204,19 @@ class TradeRuntime:
         nonce = str(((quote or {}).get("quote") or {}).get("nonce") or "")
         if not nonce:
             raise ValueError("invalid_quote")
+        quote_state = self._get_quote_state(nonce)
+        if isinstance(quote_state, dict) and str(quote_state.get("state") or "") in {"LOCKED", "USED"}:
+            raise RuntimeError("quote_nonce_already_used")
         if nonce in self.used_quotes and self.used_quotes[nonce] > time.time():
             raise RuntimeError("quote_nonce_already_used")
         issued_at = _as_int(((quote or {}).get("quote") or {}).get("issued_at"), 0)
         if issued_at <= 0 or (time.time() - issued_at) > self.quote_ttl_sec:
+            self._upsert_quote_state(nonce, {"state": "EXPIRED", "last_checked_at": _iso()})
             raise TimeoutError("quote_expired")
         wallet_hash = ((quote or {}).get("quote") or {}).get("wallet_address_hash")
         if wallet_hash and wallet_hash != hashlib.sha256(wallet_address.encode("utf-8")).hexdigest():
             raise ValueError("wallet_address_mismatch")
+        self._upsert_quote_state(nonce, {"state": "LOCKED", "locked_at": _iso(), "wallet_address": wallet_address, "tx_hash": tx_hash})
         self.used_quotes[nonce] = time.time() + 30.0
         quote_payload = (quote or {}).get("quote") or {}
         item = self.create_trade_intent(
@@ -223,6 +242,7 @@ class TradeRuntime:
                 break
         self._write_list(self.intents_file, intents)
         self._append_event("trade.quote.used", {"nonce": nonce, "wallet_address": wallet_address, "tx_hash": tx_hash})
+        self._upsert_quote_state(nonce, {"state": "USED", "used_at": _iso(), "intent_id": item.get("intent_id")})
         self._append_event("trade.intent.broadcast", item)
         item["status"] = "CONFIRMED"
         item.setdefault("status_timeline", []).append({"status": "CONFIRMED", "ts": _iso()})
@@ -324,6 +344,49 @@ class TradeRuntime:
                 continue
             out.append(row)
         return out
+
+    def retry_chain_list_intent(self, parent_intent_id: str) -> dict:
+        intents = self._read_list(self.intents_file)
+        parent = next((x for x in intents if str(x.get("intent_id") or "") == str(parent_intent_id or "")), None)
+        if not isinstance(parent, dict):
+            raise KeyError("parent_intent_not_found")
+        if str(parent.get("chain_policy") or "") != "BUY_THEN_LIST":
+            raise ValueError("retry_not_allowed")
+        current_children = [x for x in intents if str(x.get("parent_intent_id") or "") == str(parent_intent_id)]
+        active_child = next((x for x in current_children if str(x.get("status") or "") in {"PENDING_SIGNATURE", "SIGNED", "BROADCAST"}), None)
+        if isinstance(active_child, dict):
+            return active_child
+        post_action = parent.get("post_action") if isinstance(parent.get("post_action"), dict) else {}
+        listing_params = post_action.get("listing_params") if isinstance(post_action.get("listing_params"), dict) else {"list_price_ton": parent.get("price_ton"), "duration_sec": 86400, "marketplace": "fragment"}
+        child = {
+            "intent_id": f"ti_{secrets.token_hex(8)}",
+            "intent_type": "LIST",
+            "variant_id": parent.get("variant_id"),
+            "wallet_address": parent.get("wallet_address"),
+            "listing_id": None,
+            "gift_unique_id": None,
+            "price_ton": listing_params.get("list_price_ton"),
+            "max_spend_ton": None,
+            "fee_budget_ton": None,
+            "status": "PENDING_SIGNATURE",
+            "source": "STANDARD",
+            "created_at": _iso(),
+            "expires_at": _iso(_now_utc() + timedelta(minutes=10)),
+            "tx_hash": None,
+            "chain_id": parent.get("chain_id"),
+            "parent_intent_id": parent.get("intent_id"),
+            "step_index": 2,
+            "chain_policy": "BUY_THEN_LIST",
+            "post_action": {"type": "LIST", "listing_params": listing_params},
+            "reasons": parent.get("reasons") or [],
+            "risk_flags": parent.get("risk_flags") or [],
+            "decision_trace": {"retry_from_parent": True},
+            "idempotency_key": f"chain:{parent.get('chain_id')}:retry:{secrets.token_hex(4)}",
+        }
+        intents.append(child)
+        self._write_list(self.intents_file, intents)
+        self._append_event("trade.intent.created", child)
+        return child
 
     def _decode_quote(self, token: str) -> dict:
         try:
@@ -627,6 +690,28 @@ class TradeRuntime:
             return (matched, {"signal_action": signal_action, "edgeRank100": snap.get("edgeRank100"), "conf_pct": snap.get("conf_pct")})
         return False, {"trailing_peak": trailing_peak}
 
+    def _expire_stale_intents(self, intents: list[dict]) -> None:
+        changed = False
+        now_ts = time.time()
+        for row in intents:
+            if not isinstance(row, dict):
+                continue
+            status = str(row.get("status") or "")
+            if status not in {"PENDING_SIGNATURE", "SIGNED", "BROADCAST"}:
+                continue
+            expires_at = str(row.get("expires_at") or "")
+            try:
+                exp_ts = datetime.fromisoformat(expires_at.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                continue
+            if exp_ts <= now_ts:
+                row["status"] = "EXPIRED"
+                row.setdefault("status_timeline", []).append({"status": "EXPIRED", "ts": _iso()})
+                self._append_event("trade.intent.failed", row)
+                changed = True
+        if changed:
+            self._write_list(self.intents_file, intents)
+
     def _pending_intent_exists(self, wallet_address: str, variant_id: str, *, kinds: set[str]) -> bool:
         for row in self._read_list(self.intents_file):
             if str(row.get("wallet_address") or "") != wallet_address:
@@ -666,7 +751,7 @@ class TradeRuntime:
     def _init_db(self) -> None:
         assert self.db_path is not None
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS trade_runtime_snapshots (store_name TEXT PRIMARY KEY, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL)"
             )
@@ -677,7 +762,7 @@ class TradeRuntime:
 
     def _db_read_snapshot(self, store_name: str) -> list[dict]:
         assert self.db_path is not None
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             row = conn.execute(
                 "SELECT payload_json FROM trade_runtime_snapshots WHERE store_name = ?",
                 (str(store_name),),
@@ -694,7 +779,7 @@ class TradeRuntime:
         assert self.db_path is not None
         payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
         ts = _iso()
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
                 "INSERT INTO trade_runtime_snapshots(store_name, payload_json, updated_at) VALUES(?,?,?) ON CONFLICT(store_name) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at",
                 (str(store_name), payload, ts),
@@ -704,7 +789,7 @@ class TradeRuntime:
     def _db_append_event(self, event: str, payload: dict) -> None:
         assert self.db_path is not None
         ts = _iso()
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
                 "INSERT INTO trade_runtime_events(event, ts, payload_json) VALUES(?,?,?)",
                 (str(event), ts, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
@@ -717,7 +802,7 @@ class TradeRuntime:
     def _db_stream_events(self, wallet_address: str, kinds: set[str] | None = None, limit: int = 100) -> list[dict]:
         assert self.db_path is not None
         wanted = kinds or set()
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
                 "SELECT event, ts, payload_json FROM trade_runtime_events ORDER BY id DESC LIMIT ?",
                 (max(1, min(int(limit), 500)),),
@@ -736,3 +821,27 @@ class TradeRuntime:
             out.append({"event": str(event or ""), "ts": str(ts or ""), "payload": payload})
         out.reverse()
         return out
+
+    def _get_quote_state(self, nonce: str) -> dict | None:
+        if not nonce:
+            return None
+        for row in self._read_list(self.quotes_file):
+            if str(row.get("nonce") or "") == str(nonce):
+                return row
+        return None
+
+    def _upsert_quote_state(self, nonce: str, patch: dict) -> None:
+        if not nonce:
+            return
+        rows = self._read_list(self.quotes_file)
+        target = None
+        for row in rows:
+            if str(row.get("nonce") or "") == str(nonce):
+                target = row
+                break
+        if target is None:
+            target = {"nonce": nonce}
+            rows.append(target)
+        for key, value in (patch or {}).items():
+            target[key] = value
+        self._write_list(self.quotes_file, rows)
