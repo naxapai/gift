@@ -4861,9 +4861,6 @@ def run() -> None:
 
 
 def _start_signal_bot_loop(port: int) -> None:
-    if not BOT_AUTORUN:
-        _BOT_STATUS["enabled"] = False
-        return
     if not signal_bot.BOT_TOKEN or not signal_bot.CHAT_ID:
         _BOT_STATUS["enabled"] = False
         _BOT_STATUS["last_error"] = "TG_BOT_TOKEN/TG_CHAT_ID not configured"
@@ -4871,6 +4868,7 @@ def _start_signal_bot_loop(port: int) -> None:
 
     signal_bot.API_BASE_URL = BOT_API_BASE_URL or f"http://127.0.0.1:{port}"
     signal_bot.API_AUTH_TOKEN = BOT_API_AUTH_TOKEN
+    signal_bot.set_recent_signal_fetcher(lambda limit=20: _state().telegram_delivery_journal_v1(limit=limit))
     _BOT_STATUS["enabled"] = True
 
     def _loop() -> None:
@@ -4895,7 +4893,10 @@ def _start_signal_bot_loop(port: int) -> None:
                 continue
             _BOT_STATUS["last_run_at"] = now_ts
             try:
-                signal_bot.cycle(cache)
+                if BOT_AUTORUN:
+                    signal_bot.cycle(cache)
+                else:
+                    signal_bot.command_cycle(cache)
                 signal_bot._save_cache(cache)
                 _BOT_STATUS["last_ok_at"] = int(time.time())
                 _BOT_STATUS["last_error"] = ""

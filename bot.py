@@ -11,7 +11,10 @@ import fcntl
 from datetime import datetime
 from datetime import timezone
 from datetime import timedelta
+from pathlib import Path
 from typing import Dict
+
+from telegram_delivery import MessageRenderer, _load_json
 
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TG_CHAT_ID", "").strip()
@@ -38,6 +41,26 @@ UPDATES_TIMEOUT_SEC = int(os.getenv("BOT_UPDATES_TIMEOUT_SEC", "1"))
 SIGNAL_COMMAND_WINDOW_SEC = int(os.getenv("BOT_SIGNAL_COMMAND_WINDOW_SEC", "3600"))
 SIGNAL_COMMAND_COOLDOWN_SEC = int(os.getenv("BOT_SIGNAL_COMMAND_COOLDOWN_SEC", "3600"))
 MSK_TZ = timezone(timedelta(hours=3))
+ROOT = Path(__file__).resolve().parent
+_RECENT_SIGNAL_FETCHER = None
+_RENDERER: MessageRenderer | None = None
+
+
+def _renderer() -> MessageRenderer:
+    global _RENDERER
+    if _RENDERER is not None:
+        return _RENDERER
+    profile = _load_json(ROOT / "config" / "telegram" / "telegram_message_profile_PRO_v1.json", {})
+    rules_text = (ROOT / "config" / "telegram" / "telegram_message_templater_rules_PRO_v1.txt").read_text(encoding="utf-8")
+    signal_profiles = _load_json(ROOT / "config" / "signals" / "signal_profiles_by_regime.json", {})
+    edge_weights = _load_json(ROOT / "config" / "signals" / "edgerank_weights_by_regime.json", {})
+    _RENDERER = MessageRenderer(profile=profile, rules_text=rules_text, signal_profiles=signal_profiles, edgerank_weights=edge_weights)
+    return _RENDERER
+
+
+def set_recent_signal_fetcher(func) -> None:
+    global _RECENT_SIGNAL_FETCHER
+    _RECENT_SIGNAL_FETCHER = func
 
 
 def _to_msk_text(ts_iso: str | None) -> str:
@@ -193,6 +216,26 @@ def _http_get(url: str) -> Dict:
     raise last_error
 
 
+def _http_get_text(url: str) -> str:
+    last_error = None
+    for attempt in range(1, max(1, HTTP_RETRIES) + 1):
+        try:
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("Accept", "application/json")
+            if API_AUTH_TOKEN:
+                req.add_header("Authorization", f"Bearer {API_AUTH_TOKEN}")
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as response:
+                return response.read().decode("utf-8")
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            if isinstance(e, urllib.error.HTTPError) and e.code in {400, 401, 403, 404}:
+                break
+            if attempt >= max(1, HTTP_RETRIES):
+                break
+            time.sleep(HTTP_BACKOFF_SEC * attempt)
+    raise last_error
+
+
 def _http_post(url: str, data: Dict[str, str]) -> Dict:
     last_error = None
     for attempt in range(1, max(1, HTTP_RETRIES) + 1):
@@ -280,6 +323,101 @@ def _collect_recent_channel_signals(cache: Dict, window_sec: int) -> list[Dict]:
     return out
 
 
+def _collect_recent_delivery_signals(cache: Dict) -> list[Dict]:
+    fetcher = _RECENT_SIGNAL_FETCHER
+    if callable(fetcher):
+        try:
+            payload = fetcher(limit=20)
+            sent = payload.get("sent") if isinstance(payload, dict) else []
+            out = []
+            now_ts = int(time.time())
+            for row in sent if isinstance(sent, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("kind") or "") != "gift_signal":
+                    continue
+                sent_at = str(row.get("sent_at") or "")
+                try:
+                    sent_ts = int(datetime.fromisoformat(sent_at.replace("Z", "+00:00")).timestamp())
+                except Exception:
+                    sent_ts = 0
+                if sent_ts and (now_ts - sent_ts) > SIGNAL_COMMAND_WINDOW_SEC:
+                    continue
+                payload_row = row.get("payload") if isinstance(row.get("payload"), dict) else None
+                if isinstance(payload_row, dict):
+                    out.append(payload_row)
+            if out:
+                return out
+        except Exception:
+            pass
+    return _collect_recent_channel_signals(cache, SIGNAL_COMMAND_WINDOW_SEC)
+
+
+def _gift_signal_payload_from_input(raw_text: str) -> Dict | None:
+    parts = [p.strip() for p in str(raw_text or "").split("/")]
+    while parts and not parts[-1]:
+        parts.pop()
+    if len(parts) < 2:
+        return None
+    collection = parts[0]
+    model = parts[1]
+    background = parts[2] if len(parts) >= 3 else ""
+    pattern = parts[3] if len(parts) >= 4 else ""
+    if not collection or not model:
+        return None
+    params = {
+        "collection": collection,
+        "model": model,
+        "active_only": "true",
+        "mode": "tz",
+    }
+    if background:
+        params["background"] = background
+    if pattern:
+        params["pattern"] = pattern
+    resolve_url = f"{API_BASE_URL}/v1/variants/resolve?{urllib.parse.urlencode(params)}"
+    resolved = _http_get(resolve_url)
+    variant_id = str(resolved.get("variant_id") or "").strip()
+    if not variant_id:
+        return None
+    details = _http_get(f"{API_BASE_URL}/v1/catalog/variant/{urllib.parse.quote(variant_id, safe='')}")
+    if not isinstance(details, dict):
+        return None
+    details.setdefault("collection", resolved.get("collection") or collection)
+    details.setdefault("model", resolved.get("model") or model)
+    details.setdefault("background", resolved.get("background") or background)
+    details.setdefault("pattern", resolved.get("pattern") or pattern)
+    details.setdefault("preview_url", resolved.get("preview_url") or "")
+    details.setdefault("type", details.get("action") or "WATCH")
+    details.setdefault("ts", details.get("updated_at") or _utcnow_text_iso())
+    details.setdefault("depth_5pct_count", int(details.get("active_lots") or 0))
+    details.setdefault("depth_5pct_ton", float(details.get("floor_ton") or 0.0) * min(int(details.get("active_lots") or 0), 5))
+    details.setdefault("volume_velocity", 1.0)
+    details.setdefault("depth_score", float(details.get("depth_score") or 0.0))
+    details.setdefault("score100", float(details.get("score100") or 0.0))
+    return details
+
+
+def _utcnow_text_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _send_gift_signal_payload_to(chat_id: str | int, payload: Dict) -> None:
+    renderer = _renderer()
+    text = renderer.render_gift_signal(payload)
+    preview = str(payload.get("preview_url") or "").strip()
+    if preview.startswith("http://") or preview.startswith("https://"):
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        _http_post(url, {"chat_id": str(chat_id), "photo": preview, "caption": text[:1024]})
+        return
+    send_message_to(chat_id, text)
+
+
+def _send_market_status_payload_to(chat_id: str | int, payload: Dict) -> None:
+    renderer = _renderer()
+    send_message_to(chat_id, renderer.render_market_status(payload))
+
+
 def _handle_commands(cache: Dict) -> None:
     if not COMMANDS_ENABLED or not BOT_TOKEN:
         return
@@ -300,8 +438,8 @@ def _handle_commands(cache: Dict) -> None:
             gift_waiting = bool(gift_state.get(str(chat_id), {}).get("awaiting"))
             if gift_waiting and text and not text.startswith("/"):
                 try:
-                    variant = _find_variant_by_gift_input(text)
-                    if not variant:
+                    signal_payload = _gift_signal_payload_from_input(text)
+                    if not signal_payload:
                         send_message_to(
                             chat_id,
                             "Мы не смогли собрать аналитику по введенным вами данным. Проверьте корректность ввода. "
@@ -310,7 +448,7 @@ def _handle_commands(cache: Dict) -> None:
                             "Благодарим за понимание",
                         )
                     else:
-                        _send_signal_to(chat_id, _signal_item_from_variant(variant))
+                        _send_gift_signal_payload_to(chat_id, signal_payload)
                 except Exception:
                     send_message_to(
                         chat_id,
@@ -327,8 +465,8 @@ def _handle_commands(cache: Dict) -> None:
             cmd = text.split()[0].split("@")[0].lower()
             if cmd == "/status":
                 try:
-                    ov = _http_get(f"{API_BASE_URL}/api/market/overview")
-                    send_message_to(chat_id, _format_market_status(ov), parse_mode="HTML")
+                    payload = _http_get(f"{API_BASE_URL}/v1/market/status?window=30m")
+                    _send_market_status_payload_to(chat_id, payload)
                 except Exception as e:  # noqa: BLE001
                     send_message_to(chat_id, f"Ошибка получения статуса: {e}")
             elif cmd == "/signal":
@@ -340,7 +478,7 @@ def _handle_commands(cache: Dict) -> None:
                     send_message_to(chat_id, "Доступные сигналы были отправлены, вернитесь через 1 час")
                     continue
 
-                recent = _collect_recent_channel_signals(cache, SIGNAL_COMMAND_WINDOW_SEC)
+                recent = _collect_recent_delivery_signals(cache)
                 if not recent:
                     send_message_to(chat_id, "За последний час сигналы в канал не отправлялись")
                     continue
@@ -350,7 +488,7 @@ def _handle_commands(cache: Dict) -> None:
                     f"Сигналы за последний час: {len(recent)}",
                 )
                 for item in recent:
-                    _send_signal_to(chat_id, item)
+                    _send_gift_signal_payload_to(chat_id, item)
                 cmd_state[key] = now_ts
             elif cmd == "/signal_gift":
                 gift_state[str(chat_id)] = {"awaiting": True, "started_ts": int(time.time())}
@@ -594,6 +732,11 @@ def cycle(cache: Dict) -> None:
             f"[bot] total={stat_total} pass_conf={stat_conf} pass_action={stat_action} "
             f"skip_cooldown={stat_cooldown} skip_fp={stat_fp} skip_not_dynamic={stat_dyn} sent={sent_count}"
         )
+
+
+def command_cycle(cache: Dict) -> None:
+    _wait_api_ready()
+    _handle_commands(cache)
 
 
 def main() -> None:

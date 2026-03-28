@@ -696,7 +696,7 @@ class TelegramNotifier:
             include_image = bool(item.get("include_image", True))
             preview_url = str(payload.get("preview_url") or "") if include_image else ""
         self._deliver_message(channel_id=channel_id, text=text, preview_url=preview_url, include_image=include_image, settings=effective)
-        self._mark_sent(dedupe_key, kind, channel_id)
+        self._mark_sent(dedupe_key, kind, channel_id, preview_text=text, payload=payload if kind == "gift_signal" else None)
 
     def _deliver_message(self, *, channel_id: str, text: str, preview_url: str, include_image: bool, settings: dict) -> None:
         if not self.bot_token:
@@ -762,13 +762,23 @@ class TelegramNotifier:
         ts = _safe_float(entry.get("mono_ts"), 0.0)
         return (time.monotonic() - ts) <= ttl
 
-    def _mark_sent(self, dedupe_key: str, kind: str, channel_id: str) -> None:
+    def _mark_sent(self, dedupe_key: str, kind: str, channel_id: str, *, preview_text: str = "", payload: dict | None = None) -> None:
         with self._lock:
             sent = self._journal.setdefault("sent", {})
             if not isinstance(sent, dict):
                 sent = {}
                 self._journal["sent"] = sent
-            sent[dedupe_key] = {"kind": kind, "channel_id": channel_id, "sent_at": _utcnow_iso(), "mono_ts": time.monotonic()}
+            entry = {
+                "kind": kind,
+                "channel_id": channel_id,
+                "sent_at": _utcnow_iso(),
+                "mono_ts": time.monotonic(),
+            }
+            if preview_text:
+                entry["preview_text"] = str(preview_text)
+            if isinstance(payload, dict) and kind == "gift_signal":
+                entry["payload"] = payload
+            sent[dedupe_key] = entry
             if len(sent) > 4000:
                 items = sorted(sent.items(), key=lambda kv: _safe_float(((kv[1] or {}).get("mono_ts")), 0.0), reverse=True)[:3000]
                 self._journal["sent"] = dict(items)
