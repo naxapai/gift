@@ -1807,6 +1807,43 @@ def _serve_file(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
         return
 
 
+def _serve_file_head(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
+    rel = rel_path.lstrip("/")
+    target = (STATIC_DIR / rel).resolve()
+    if not str(target).startswith(str(STATIC_DIR.resolve())):
+        _safe_send_error(handler, HTTPStatus.FORBIDDEN)
+        return
+    if not target.exists() or not target.is_file():
+        _safe_send_error(handler, HTTPStatus.NOT_FOUND)
+        return
+    mime = "text/plain"
+    if target.suffix == ".html":
+        mime = "text/html; charset=utf-8"
+    elif target.suffix == ".css":
+        mime = "text/css; charset=utf-8"
+    elif target.suffix == ".js":
+        mime = "application/javascript; charset=utf-8"
+    elif target.suffix == ".json":
+        mime = "application/json; charset=utf-8"
+    elif target.suffix == ".svg":
+        mime = "image/svg+xml"
+    elif target.suffix == ".png":
+        mime = "image/png"
+    elif target.suffix == ".jpg" or target.suffix == ".jpeg":
+        mime = "image/jpeg"
+    elif target.suffix == ".webp":
+        mime = "image/webp"
+    elif target.suffix == ".ico":
+        mime = "image/x-icon"
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", mime)
+    handler.send_header("Content-Length", str(target.stat().st_size))
+    if target.suffix in {".html"}:
+        handler.send_header("Cache-Control", "no-store")
+    _add_security_headers(handler)
+    handler.end_headers()
+
+
 def _request_origin(handler: BaseHTTPRequestHandler) -> str:
     forwarded_host = (handler.headers.get("X-Forwarded-Host", "") or "").strip()
     host = forwarded_host or (handler.headers.get("Host", "") or PUBLIC_BASE_HOST)
@@ -1854,6 +1891,30 @@ class RequestHandler(BaseHTTPRequestHandler):
         _add_security_headers(self)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/" or path == "/index.html":
+            _serve_file_head(self, "index.html")
+            return
+        if path.startswith("/assets/"):
+            _serve_file_head(self, path.lstrip("/"))
+            return
+        if path in {"/favicon.png", "/logo.png", "/vite.svg"}:
+            _serve_file_head(self, path.lstrip("/"))
+            return
+        if path in SPA_FRONTEND_ROUTES or path.startswith("/variant/"):
+            _serve_file_head(self, "index.html")
+            return
+        if path == "/healthz":
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", "0")
+            _add_security_headers(self)
+            self.end_headers()
+            return
+        _safe_send_error(self, HTTPStatus.NOT_FOUND)
 
     def handle(self) -> None:
         try:

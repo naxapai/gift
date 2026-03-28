@@ -508,6 +508,20 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertEqual(resp_asset.status, 200)
             self.assertTrue(len(body) > 100)
 
+    def test_static_assets_support_head_requests(self) -> None:
+        with urlopen(f"http://127.0.0.1:{self.port}/", timeout=10) as resp:
+            html = resp.read().decode("utf-8")
+        marker = 'src="/assets/'
+        start = html.find(marker)
+        self.assertGreaterEqual(start, 0)
+        start += len('src="')
+        end = html.find('"', start)
+        asset_path = html[start:end]
+        req = Request(f"http://127.0.0.1:{self.port}{asset_path}", method="HEAD")
+        with urlopen(req, timeout=10) as resp_head:
+            self.assertEqual(resp_head.status, 200)
+            self.assertIn('application/javascript', str(resp_head.headers.get('Content-Type') or ''))
+
     def test_legacy_signal_bot_is_not_enabled_by_default(self) -> None:
         self.assertFalse(server.BOT_AUTORUN)
 
