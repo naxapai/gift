@@ -4,7 +4,7 @@ import { BentoGrid } from '../components/BentoGrid'
 import { LoadingBlock } from '../components/LoadingBlock'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
-import { getAutoSellRules, getBuyQuote, getTelegramAuthMe, getTonAuthMe, getTradeHoldings, getTradeIntents, getTradePnl, getTradePositions, getTradingAccess, getWalletActivity, postFastBuyConfirm, postTradeIntent, postTradeIntentConfirm } from '../lib/api'
+import { getAutoSellRules, getBuyQuote, getTelegramAuthMe, getTonAuthMe, getTradeHoldings, getTradeIntents, getTradePnl, getTradePositions, getTradingAccess, getWalletActivity, postFastBuyConfirm, postTradeIntent, postTradeIntentConfirm, subscribePnlStream, subscribeTradesStream } from '../lib/api'
 import type { AutoSellRule, HoldingPro, PositionPro, PnlSummaryPro, TradeIntent, WalletActivityItem } from '../types/api'
 
 function ton(v?: number | null): string {
@@ -77,6 +77,64 @@ export function TradesPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!allowed || !walletAddress) return
+    let stopped = false
+    let retryTimer: number | null = null
+    let tradesEs: EventSource | null = null
+    let pnlEs: EventSource | null = null
+    const reconnectSteps = [1000, 2000, 5000, 10000, 30000]
+    let retryIndex = 0
+    let disconnectedAt = 0
+    const closeAll = () => {
+      tradesEs?.close()
+      pnlEs?.close()
+      tradesEs = null
+      pnlEs = null
+    }
+    const connect = () => {
+      closeAll()
+      tradesEs = subscribeTradesStream(walletAddress, () => {
+        retryIndex = 0
+        disconnectedAt = 0
+        void load()
+      }, () => {
+        closeAll()
+        if (stopped) return
+        if (!disconnectedAt) disconnectedAt = Date.now()
+        const delay = reconnectSteps[Math.min(retryIndex, reconnectSteps.length - 1)]
+        retryIndex += 1
+        if (retryTimer) window.clearTimeout(retryTimer)
+        retryTimer = window.setTimeout(() => {
+          if ((Date.now() - disconnectedAt) > 60000) void load()
+          connect()
+        }, delay)
+      })
+      pnlEs = subscribePnlStream(walletAddress, () => {
+        retryIndex = 0
+        disconnectedAt = 0
+        void load()
+      }, () => {
+        closeAll()
+        if (stopped) return
+        if (!disconnectedAt) disconnectedAt = Date.now()
+        const delay = reconnectSteps[Math.min(retryIndex, reconnectSteps.length - 1)]
+        retryIndex += 1
+        if (retryTimer) window.clearTimeout(retryTimer)
+        retryTimer = window.setTimeout(() => {
+          if ((Date.now() - disconnectedAt) > 60000) void load()
+          connect()
+        }, delay)
+      })
+    }
+    connect()
+    return () => {
+      stopped = true
+      closeAll()
+      if (retryTimer) window.clearTimeout(retryTimer)
+    }
+  }, [allowed, walletAddress, load])
 
   const createBuy = useCallback(async (intentType: 'BUY' | 'BUY_AND_LIST' | 'FAST_BUY') => {
     if (!walletAddress || !variantId.trim()) return

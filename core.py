@@ -3728,7 +3728,7 @@ class GiftAnalyticsService:
         return self.trade_runtime.wallet_activity(wallet_address, limit=limit, cursor=cursor)
 
     def trades_stream_events_v1(self, wallet_address: str, stream: str = "trades", limit: int = 100) -> dict:
-        kinds = {"trade.intent.created", "trade.intent.confirmed", "trade.intent.failed", "position.updated", "holding.updated", "wallet.activity.updated"}
+        kinds = {"trade.intent.created", "trade.intent.signed", "trade.intent.broadcast", "trade.intent.confirmed", "trade.intent.failed", "position.updated", "holding.updated", "wallet.activity.updated", "autosell.triggered"}
         if stream == "pnl":
             kinds = {"pnl.updated"}
         items = self.trade_runtime.stream_events(wallet_address, kinds=kinds, limit=limit)

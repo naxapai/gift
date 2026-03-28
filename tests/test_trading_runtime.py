@@ -1,0 +1,66 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from trading_runtime import TradeRuntime
+
+
+class TestTradingRuntime(unittest.TestCase):
+    def test_variant_a_buy_then_list_creates_child_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            created = rt.create_trade_intent({
+                'intent_type': 'BUY_AND_LIST',
+                'variant_id': 'v1',
+                'wallet_address': 'EQTEST',
+                'max_spend_ton': 8.0,
+                'chain_policy': 'BUY_THEN_LIST',
+                'post_action': {'type': 'LIST', 'listing_params': {'list_price_ton': 9.1, 'duration_sec': 86400, 'marketplace': 'fragment'}},
+            }, market_regime='MEAN_REVERT', variant_snapshot={'variant_label': 'Variant 1', 'floor_ton': 8.0, 'fair_ton': 8.8})
+            parent = created['intent']
+            confirmed = rt.confirm_intent_signature(parent['intent_id'], {'tx_hash': 'tx1'}, market_regime='MEAN_REVERT', variant_snapshot={'variant_label': 'Variant 1', 'floor_ton': 8.0, 'fair_ton': 8.8})
+            self.assertEqual(confirmed['status'], 'CONFIRMED')
+            all_items = rt.list_trade_intents('EQTEST')['items']
+            child = next((x for x in all_items if x.get('parent_intent_id') == parent['intent_id']), None)
+            self.assertTrue(isinstance(child, dict))
+            self.assertEqual(child.get('intent_type'), 'LIST')
+            self.assertEqual(child.get('step_index'), 2)
+
+    def test_autosell_take_profit_auto_list_creates_pending_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            rt.upsert_autosell_rule({
+                'rule_id': 'tp-list',
+                'wallet_address': 'EQTEST',
+                'enabled': True,
+                'scope': '*',
+                'trigger_type': 'TAKE_PROFIT',
+                'params': {'tp_pct': 0.0},
+                'mode': 'AUTO_LIST',
+                'cooldown_sec': 0,
+                'priority': 1,
+            })
+            created = rt.create_trade_intent({'intent_type': 'BUY', 'variant_id': 'v2', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0}, market_regime='RISK_ON', variant_snapshot={'variant_label': 'Variant 2', 'floor_ton': 5.0, 'fair_ton': 6.0})
+            rt.confirm_intent_signature(created['intent']['intent_id'], {'tx_hash': 'tx2'}, market_regime='RISK_ON', variant_snapshot={'variant_label': 'Variant 2', 'floor_ton': 5.0, 'fair_ton': 6.0})
+            intents = rt.list_trade_intents('EQTEST')['items']
+            auto_list = next((x for x in intents if x.get('intent_type') == 'LIST'), None)
+            self.assertTrue(isinstance(auto_list, dict))
+            self.assertEqual(auto_list.get('status'), 'PENDING_SIGNATURE')
+            events = rt.stream_events('EQTEST', kinds={'autosell.triggered'}, limit=20)
+            self.assertTrue(events)
+
+    def test_fast_confirm_emits_quote_used_and_confirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            quote = rt.issue_buy_quote(variant_id='v3', max_price_ton=4.5, slippage_bps=100, wallet_address='EQTEST', variant_snapshot={'floor_ton': 4.0, 'fair_ton': 4.6})
+            item = rt.confirm_fast_buy({'buy_quote_token': quote['buy_quote_token'], 'tx_hash': 'tx3', 'wallet_address': 'EQTEST'}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 4.0, 'fair_ton': 4.6})
+            self.assertEqual(item['status'], 'CONFIRMED')
+            events = rt.stream_events('EQTEST', kinds={'trade.quote.used', 'trade.intent.broadcast', 'trade.intent.confirmed'}, limit=20)
+            names = [x.get('event') for x in events]
+            self.assertIn('trade.quote.used', names)
+            self.assertIn('trade.intent.broadcast', names)
+            self.assertIn('trade.intent.confirmed', names)
+
+
+if __name__ == '__main__':
+    unittest.main()

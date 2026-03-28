@@ -1338,6 +1338,55 @@ export async function getWalletActivity(address: string): Promise<{ items: Walle
   return apiGet(`/v1/wallet/activity?address=${encodeURIComponent(address)}`)
 }
 
+export function subscribeTradesStream(
+  walletAddress: string,
+  onEvent: (event: { event?: string; ts?: string; payload?: Record<string, unknown> }) => void,
+  onError?: (error: Event) => void,
+  params?: { heartbeatMs?: number; limit?: number },
+): EventSource {
+  const q = new URLSearchParams({
+    wallet_address: walletAddress,
+    heartbeat: String(params?.heartbeatMs || 15000),
+    limit: String(params?.limit || 100),
+  })
+  const es = new EventSource(withBase(`/v1/stream/trades?${q.toString()}`), { withCredentials: true })
+  const handler = (ev: MessageEvent<string>) => {
+    try {
+      onEvent(JSON.parse(ev.data || '{}') as { event?: string; ts?: string; payload?: Record<string, unknown> })
+    } catch {
+      // noop
+    }
+  }
+  ;['trade.intent.created', 'trade.intent.signed', 'trade.intent.broadcast', 'trade.intent.confirmed', 'position.updated', 'holding.updated', 'wallet.activity.updated', 'autosell.triggered', 'message']
+    .forEach((name) => es.addEventListener(name, handler as EventListener))
+  if (onError) es.onerror = onError
+  return es
+}
+
+export function subscribePnlStream(
+  walletAddress: string,
+  onEvent: (event: { event?: string; ts?: string; payload?: Record<string, unknown> }) => void,
+  onError?: (error: Event) => void,
+  params?: { heartbeatMs?: number; limit?: number },
+): EventSource {
+  const q = new URLSearchParams({
+    wallet_address: walletAddress,
+    heartbeat: String(params?.heartbeatMs || 15000),
+    limit: String(params?.limit || 100),
+  })
+  const es = new EventSource(withBase(`/v1/stream/pnl?${q.toString()}`), { withCredentials: true })
+  const handler = (ev: MessageEvent<string>) => {
+    try {
+      onEvent(JSON.parse(ev.data || '{}') as { event?: string; ts?: string; payload?: Record<string, unknown> })
+    } catch {
+      // noop
+    }
+  }
+  ;['pnl.updated', 'message'].forEach((name) => es.addEventListener(name, handler as EventListener))
+  if (onError) es.onerror = onError
+  return es
+}
+
 export async function getAlertsV1(): Promise<{ items?: Array<{ rule_id?: string; name?: string; enabled?: boolean }> }> {
   return apiGet('/v1/alerts')
 }

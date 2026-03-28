@@ -383,7 +383,8 @@ class TestV1HttpContract(unittest.TestCase):
 
             status_rules_after, payload_rules_after = self._get_json(f"/v1/trades/autosell/rules?wallet_address={ton_wallet['address']}")
             self.assertEqual(status_rules_after, 200)
-            self.assertGreaterEqual(len(payload_rules_after.get("items") or []), initial_rules + 1)
+            self.assertGreaterEqual(len(payload_rules_after.get("items") or []), initial_rules)
+            self.assertTrue(any(str((x or {}).get("rule_id") or "") == "rule-test-signal-exit" for x in (payload_rules_after.get("items") or [])))
 
             status_activity, payload_activity = self._get_json(f"/v1/wallet/activity?address={ton_wallet['address']}")
             self.assertEqual(status_activity, 200)

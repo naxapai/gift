@@ -59,6 +59,7 @@ class TradeRuntime:
         self.positions_file = data_dir / "trade_positions_store.json"
         self.holdings_file = data_dir / "trade_holdings_store.json"
         self.autosell_file = data_dir / "trade_autosell_rules_store.json"
+        self.autosell_state_file = data_dir / "trade_autosell_state_store.json"
         self.wallet_activity_file = data_dir / "trade_wallet_activity_store.json"
         self.events_file = data_dir / "trade_events_store.json"
         self.used_quotes: dict[str, float] = {}
@@ -140,7 +141,14 @@ class TradeRuntime:
         if str(target.get("status") or "") in {"CONFIRMED", "BROADCAST", "SIGNED"} and str(target.get("tx_hash") or "") == str(payload.get("tx_hash") or ""):
             return target
         target["tx_hash"] = str(payload.get("tx_hash") or "").strip() or target.get("tx_hash")
+        target["status"] = "SIGNED"
+        target.setdefault("status_timeline", []).append({"status": "SIGNED", "ts": _iso()})
+        self._append_event("trade.intent.signed", target)
+        target["status"] = "BROADCAST"
+        target.setdefault("status_timeline", []).append({"status": "BROADCAST", "ts": _iso()})
+        self._append_event("trade.intent.broadcast", target)
         target["status"] = "CONFIRMED"
+        target.setdefault("status_timeline", []).append({"status": "CONFIRMED", "ts": _iso()})
         self._write_list(self.intents_file, intents)
         self._apply_confirmed_intent(target, market_regime=market_regime, variant_snapshot=variant_snapshot)
         self._append_event("trade.intent.confirmed", target)
@@ -201,8 +209,9 @@ class TradeRuntime:
             variant_snapshot=variant_snapshot,
         )["intent"]
         item["source"] = "FAST_BUY"
-        item["status"] = "CONFIRMED"
+        item["status"] = "BROADCAST"
         item["tx_hash"] = tx_hash
+        item.setdefault("status_timeline", []).append({"status": "BROADCAST", "ts": _iso()})
         intents = self._read_list(self.intents_file)
         for idx, row in enumerate(intents):
             if str(row.get("intent_id") or "") == str(item.get("intent_id") or ""):
@@ -210,6 +219,15 @@ class TradeRuntime:
                 break
         self._write_list(self.intents_file, intents)
         self._append_event("trade.quote.used", {"nonce": nonce, "wallet_address": wallet_address, "tx_hash": tx_hash})
+        self._append_event("trade.intent.broadcast", item)
+        item["status"] = "CONFIRMED"
+        item.setdefault("status_timeline", []).append({"status": "CONFIRMED", "ts": _iso()})
+        intents = self._read_list(self.intents_file)
+        for idx, row in enumerate(intents):
+            if str(row.get("intent_id") or "") == str(item.get("intent_id") or ""):
+                intents[idx] = item
+                break
+        self._write_list(self.intents_file, intents)
         self._apply_confirmed_intent(item, market_regime=market_regime, variant_snapshot=variant_snapshot)
         self._append_event("trade.intent.confirmed", item)
         return item
@@ -374,6 +392,7 @@ class TradeRuntime:
         self._append_event("position.updated", {**self._latest_position_for_wallet(positions, wallet_address, variant_id), "wallet_address": wallet_address})
         self._append_event("holding.updated", {**self._latest_holding_for_wallet(holdings, wallet_address, variant_id), "wallet_address": wallet_address})
         self._append_event("pnl.updated", {**pnl, "wallet_address": wallet_address})
+        self._evaluate_autosell(wallet_address=wallet_address, variant_id=variant_id, market_regime=market_regime, positions=positions, holdings=holdings, variant_snapshot=variant_snapshot)
 
     def _create_followup_list_intent(self, *, parent_intent: dict, listing_params: dict) -> None:
         intents = self._read_list(self.intents_file)
@@ -494,6 +513,122 @@ class TradeRuntime:
         items = self._read_list(self.events_file)
         items.append({"event": event, "ts": _iso(), "payload": payload})
         self._write_list(self.events_file, items[-2000:])
+
+    def _evaluate_autosell(self, *, wallet_address: str, variant_id: str, market_regime: str, positions: list[dict], holdings: list[dict], variant_snapshot: dict | None) -> None:
+        rules = [x for x in self._read_list(self.autosell_file) if str(x.get("wallet_address") or "") == wallet_address and bool(x.get("enabled", True))]
+        if not rules:
+            return
+        rules.sort(key=lambda x: (int(x.get("priority") or 0), str(x.get("updated_at") or "")))
+        pos = self._latest_position_for_wallet(positions, wallet_address, variant_id)
+        hold = self._latest_holding_for_wallet(holdings, wallet_address, variant_id)
+        if not pos or not hold:
+            return
+        state = _load_json(self.autosell_state_file, {})
+        if not isinstance(state, dict):
+            state = {}
+        now_ts = time.time()
+        for rule in rules:
+            scope = str(rule.get("scope") or "*")
+            if scope not in {"*", variant_id}:
+                continue
+            rule_key = f"{wallet_address}:{scope}:{rule.get('rule_id')}"
+            row_state = state.get(rule_key) if isinstance(state.get(rule_key), dict) else {}
+            last_trigger_ts = _as_float(row_state.get("last_trigger_ts"), 0.0)
+            cooldown = max(0, _as_int(rule.get("cooldown_sec"), 0))
+            if last_trigger_ts and (now_ts - last_trigger_ts) < cooldown:
+                continue
+            if self._pending_intent_exists(wallet_address, variant_id, kinds={"SELL", "LIST"}):
+                continue
+            matched, details = self._autosell_matches(rule, pos, hold, market_regime=market_regime, variant_snapshot=variant_snapshot, state=row_state)
+            if not matched:
+                if details.get("trailing_peak") is not None:
+                    row_state["trailing_peak"] = details.get("trailing_peak")
+                    state[rule_key] = row_state
+                    _save_json(self.autosell_state_file, state)
+                continue
+            row_state["last_trigger_ts"] = now_ts
+            if details.get("trailing_peak") is not None:
+                row_state["trailing_peak"] = details.get("trailing_peak")
+            state[rule_key] = row_state
+            _save_json(self.autosell_state_file, state)
+            payload = {
+                "wallet_address": wallet_address,
+                "variant_id": variant_id,
+                "rule_id": rule.get("rule_id"),
+                "trigger_type": rule.get("trigger_type"),
+                "mode": rule.get("mode"),
+                "details": details,
+            }
+            self._append_event("autosell.triggered", payload)
+            mode = str(rule.get("mode") or "NOTIFY_ONLY")
+            if mode == "AUTO_LIST":
+                self.create_trade_intent({
+                    "intent_type": "LIST",
+                    "variant_id": variant_id,
+                    "wallet_address": wallet_address,
+                    "gift_unique_id": hold.get("gift_unique_id"),
+                    "post_action": {"type": "LIST", "listing_params": {"list_price_ton": _as_float(pos.get("mark_price_ton"), 0.0), "duration_sec": 86400, "marketplace": "fragment"}},
+                    "idempotency_key": f"autosell:list:{rule.get('rule_id')}:{variant_id}",
+                }, market_regime=market_regime, variant_snapshot=variant_snapshot)
+            elif mode == "AUTO_SELL_NOW":
+                self.create_trade_intent({
+                    "intent_type": "SELL",
+                    "variant_id": variant_id,
+                    "wallet_address": wallet_address,
+                    "gift_unique_id": hold.get("gift_unique_id"),
+                    "price_ton": _as_float(pos.get("mark_price_ton"), 0.0),
+                    "idempotency_key": f"autosell:sell:{rule.get('rule_id')}:{variant_id}",
+                }, market_regime=market_regime, variant_snapshot=variant_snapshot)
+            break
+
+    def _autosell_matches(self, rule: dict, pos: dict, hold: dict, *, market_regime: str, variant_snapshot: dict | None, state: dict) -> tuple[bool, dict]:
+        trigger = str(rule.get("trigger_type") or "")
+        params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
+        avg_buy = _as_float(pos.get("avg_buy_price_ton"), 0.0)
+        mark = _as_float(pos.get("mark_price_ton"), 0.0)
+        now = _now_utc()
+        opened_at = str(pos.get("opened_at") or hold.get("acquired_at") or "")
+        trailing_peak = max(_as_float(state.get("trailing_peak"), 0.0), mark)
+        if trigger == "TAKE_PROFIT":
+            tp_pct = _as_float(params.get("tp_pct"), 0.10)
+            return (mark >= avg_buy * (1 + tp_pct), {"threshold": avg_buy * (1 + tp_pct)})
+        if trigger == "STOP_LOSS":
+            sl_pct = _as_float(params.get("sl_pct"), 0.05)
+            return (mark <= avg_buy * (1 - sl_pct), {"threshold": avg_buy * (1 - sl_pct)})
+        if trigger == "TRAILING_STOP":
+            trailing_pct = _as_float(params.get("trailing_pct"), 0.05)
+            return (mark <= trailing_peak * (1 - trailing_pct), {"trailing_peak": trailing_peak, "threshold": trailing_peak * (1 - trailing_pct)})
+        if trigger == "TIME_EXIT":
+            try:
+                opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+            except Exception:
+                opened_dt = now
+            max_hold_minutes = _as_float(params.get("max_hold_minutes"), 60.0)
+            return (((now - opened_dt).total_seconds() / 60.0) >= max_hold_minutes, {"held_minutes": (now - opened_dt).total_seconds() / 60.0})
+        if trigger == "REGIME_EXIT":
+            regimes = {str(x) for x in (params.get("regimes") or [])} if isinstance(params.get("regimes"), list) else set()
+            return (market_regime in regimes, {"market_regime": market_regime})
+        if trigger == "SIGNAL_EXIT":
+            snap = variant_snapshot or {}
+            edge_min = _as_float(params.get("edgeRank100_min"), 55.0)
+            conf_min = _as_float(params.get("conf_pct_min"), 35.0)
+            profit_min = _as_float(params.get("expected_profit_pct_min"), 8.0)
+            signal_action = str(snap.get("action") or "")
+            matched = signal_action == "SELL" or _as_float(snap.get("edgeRank100"), 0.0) < edge_min or _as_float(snap.get("conf_pct"), 0.0) < conf_min or _as_float(snap.get("expected_profit_pct"), 0.0) < profit_min
+            return (matched, {"signal_action": signal_action, "edgeRank100": snap.get("edgeRank100"), "conf_pct": snap.get("conf_pct")})
+        return False, {"trailing_peak": trailing_peak}
+
+    def _pending_intent_exists(self, wallet_address: str, variant_id: str, *, kinds: set[str]) -> bool:
+        for row in self._read_list(self.intents_file):
+            if str(row.get("wallet_address") or "") != wallet_address:
+                continue
+            if str(row.get("variant_id") or "") != variant_id:
+                continue
+            if str(row.get("intent_type") or "") not in kinds:
+                continue
+            if str(row.get("status") or "") in {"PENDING_SIGNATURE", "SIGNED", "BROADCAST"}:
+                return True
+        return False
 
     def _latest_position_for_wallet(self, positions: list[dict], wallet_address: str, variant_id: str) -> dict:
         for row in reversed(positions):
