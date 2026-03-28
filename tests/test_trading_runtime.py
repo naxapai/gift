@@ -5,6 +5,7 @@ import json
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from trading_runtime import TradeRuntime
@@ -126,6 +127,21 @@ class TestTradingRuntime(unittest.TestCase):
                 rt.confirm_fast_buy({'buy_quote_token': tampered, 'tx_hash': 'tx7', 'wallet_address': 'EQTEST'}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 2.0, 'fair_ton': 2.7})
             state = rt._get_quote_state(raw['quote']['nonce'])
             self.assertEqual(state.get('state'), 'EXPIRED')
+
+    def test_provider_pending_keeps_intent_in_broadcast(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, tx_verify_url='https://provider/tx')
+            created = rt.create_trade_intent({'intent_type': 'BUY', 'variant_id': 'v8', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            with patch.object(rt, '_verify_tx_state', return_value={'status': 'PENDING', 'source': 'provider'}):
+                item = rt.confirm_intent_signature(created['intent']['intent_id'], {'tx_hash': 'tx8'}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            self.assertEqual(item.get('status'), 'BROADCAST')
+
+    def test_signature_payload_hash_validation_rejects_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            created = rt.create_trade_intent({'intent_type': 'BUY', 'variant_id': 'v9', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            with self.assertRaises(ValueError):
+                rt.confirm_intent_signature(created['intent']['intent_id'], {'tx_hash': 'tx9', 'signature_meta': {'payload_hash': 'bad_hash'}}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
 
 
 if __name__ == '__main__':

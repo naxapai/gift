@@ -185,10 +185,13 @@ class TradeRuntime:
             },
             "idempotency_key": idem or None,
         }
+        wallet_tx = self._wallet_tx_for_intent(item)
+        item["wallet_tx_hash"] = self._wallet_tx_hash(wallet_tx)
         intents.append(item)
         self._write_list(self.intents_file, intents)
+        self._append_audit_log("trade_intent", str(item.get("intent_id") or ""), "created", item)
         self._append_event("trade.intent.created", item)
-        return {"intent": item, "wallet_tx": self._wallet_tx_for_intent(item)}
+        return {"intent": item, "wallet_tx": wallet_tx}
 
     def confirm_intent_signature(self, intent_id: str, payload: dict, *, market_regime: str, variant_snapshot: dict | None) -> dict:
         intents = self._read_list(self.intents_file)
@@ -201,6 +204,10 @@ class TradeRuntime:
             raise KeyError("intent_not_found")
         if str(target.get("status") or "") in {"CONFIRMED", "BROADCAST", "SIGNED"} and str(target.get("tx_hash") or "") == str(payload.get("tx_hash") or ""):
             return target
+        sig_meta = payload.get("signature_meta") if isinstance(payload.get("signature_meta"), dict) else {}
+        provided_payload_hash = str(sig_meta.get("payload_hash") or "").strip()
+        if provided_payload_hash and provided_payload_hash != str(target.get("wallet_tx_hash") or ""):
+            raise ValueError("wallet_tx_payload_mismatch")
         target["tx_hash"] = str(payload.get("tx_hash") or "").strip() or target.get("tx_hash")
         target["status"] = "SIGNED"
         target.setdefault("status_timeline", []).append({"status": "SIGNED", "ts": _iso()})
@@ -208,11 +215,8 @@ class TradeRuntime:
         target["status"] = "BROADCAST"
         target.setdefault("status_timeline", []).append({"status": "BROADCAST", "ts": _iso()})
         self._append_event("trade.intent.broadcast", target)
-        target["status"] = "CONFIRMED"
-        target.setdefault("status_timeline", []).append({"status": "CONFIRMED", "ts": _iso()})
         self._write_list(self.intents_file, intents)
-        self._apply_confirmed_intent(target, market_regime=market_regime, variant_snapshot=variant_snapshot)
-        self._append_event("trade.intent.confirmed", target)
+        self._finalize_broadcast_intent(target, market_regime=market_regime, variant_snapshot=variant_snapshot)
         return target
 
     def issue_buy_quote(self, *, variant_id: str, max_price_ton: float, slippage_bps: int, wallet_address: str | None, variant_snapshot: dict | None) -> dict:
@@ -234,6 +238,8 @@ class TradeRuntime:
         sig = hmac.new(self.quote_secret, body, hashlib.sha256).hexdigest()
         token = base64.urlsafe_b64encode(json.dumps({"quote": quote, "sig": sig}).encode("utf-8")).decode("utf-8")
         payload = {"buy_quote_token": token, "expires_at": _iso(now + timedelta(seconds=self.quote_ttl_sec)), "quote": {k: v for k, v in quote.items() if k != "issued_at"}}
+        payload["wallet_tx"] = self._wallet_tx_for_quote(quote)
+        payload["wallet_tx_hash"] = self._wallet_tx_hash(payload["wallet_tx"])
         self._upsert_quote_state(nonce, {
             "nonce": nonce,
             "state": "ISSUED",
@@ -242,6 +248,7 @@ class TradeRuntime:
             "issued_at": _iso(now),
             "expires_at": payload["expires_at"],
             "buy_quote_token": token,
+            "wallet_tx_hash": payload["wallet_tx_hash"],
         })
         self._append_event("trade.quote.issued", payload)
         return payload
@@ -276,6 +283,11 @@ class TradeRuntime:
         wallet_hash = ((quote or {}).get("quote") or {}).get("wallet_address_hash")
         if wallet_hash and wallet_hash != hashlib.sha256(wallet_address.encode("utf-8")).hexdigest():
             raise ValueError("wallet_address_mismatch")
+        sig_meta = payload.get("client_meta") if isinstance(payload.get("client_meta"), dict) else {}
+        provided_payload_hash = str(sig_meta.get("payload_hash") or "").strip()
+        stored_payload_hash = str((quote_state or {}).get("wallet_tx_hash") or "")
+        if provided_payload_hash and stored_payload_hash and provided_payload_hash != stored_payload_hash:
+            raise ValueError("wallet_tx_payload_mismatch")
         self._upsert_quote_state(nonce, {"state": "LOCKED", "locked_at": _iso(), "wallet_address": wallet_address, "tx_hash": tx_hash})
         self.used_quotes[nonce] = time.time() + 30.0
         if self._redis is not None:
@@ -309,16 +321,13 @@ class TradeRuntime:
         self._append_event("trade.quote.used", {"nonce": nonce, "wallet_address": wallet_address, "tx_hash": tx_hash})
         self._upsert_quote_state(nonce, {"state": "USED", "used_at": _iso(), "intent_id": item.get("intent_id")})
         self._append_event("trade.intent.broadcast", item)
-        item["status"] = "CONFIRMED"
-        item.setdefault("status_timeline", []).append({"status": "CONFIRMED", "ts": _iso()})
         intents = self._read_list(self.intents_file)
         for idx, row in enumerate(intents):
             if str(row.get("intent_id") or "") == str(item.get("intent_id") or ""):
                 intents[idx] = item
                 break
         self._write_list(self.intents_file, intents)
-        self._apply_confirmed_intent(item, market_regime=market_regime, variant_snapshot=variant_snapshot)
-        self._append_event("trade.intent.confirmed", item)
+        self._finalize_broadcast_intent(item, market_regime=market_regime, variant_snapshot=variant_snapshot, fast=True)
         return item
 
     def list_positions(self, wallet_address: str) -> dict:
@@ -382,6 +391,7 @@ class TradeRuntime:
         if not updated:
             rules.append(item)
         self._write_list(self.autosell_file, rules)
+        self._append_audit_log("autosell_rule", str(rule_id), "upserted", item)
         return item
 
     def wallet_activity(self, wallet_address: str, limit: int = 50, cursor: str | None = None) -> dict:
@@ -450,8 +460,42 @@ class TradeRuntime:
         }
         intents.append(child)
         self._write_list(self.intents_file, intents)
+        self._append_audit_log("trade_intent", str(child.get("intent_id") or ""), "retry_list_created", child)
         self._append_event("trade.intent.created", child)
         return child
+
+    def _finalize_broadcast_intent(self, intent: dict, *, market_regime: str, variant_snapshot: dict | None, fast: bool = False) -> None:
+        verdict = self._verify_tx_state(str(intent.get("tx_hash") or ""), str(intent.get("wallet_address") or ""), str(intent.get("intent_id") or ""))
+        state = str(verdict.get("status") or "").upper()
+        intents = self._read_list(self.intents_file)
+        if state == "CONFIRMED" or (state not in {"FAILED", "PENDING"} and not self.tx_verify_url):
+            intent["status"] = "CONFIRMED"
+            intent.setdefault("status_timeline", []).append({"status": "CONFIRMED", "ts": _iso(), "source": verdict.get("source") or ("provider" if self.tx_verify_url else "runtime")})
+            for idx, row in enumerate(intents):
+                if str(row.get("intent_id") or "") == str(intent.get("intent_id") or ""):
+                    intents[idx] = intent
+                    break
+            self._write_list(self.intents_file, intents)
+            self._apply_confirmed_intent(intent, market_regime=str(verdict.get("market_regime") or market_regime), variant_snapshot=variant_snapshot if isinstance(variant_snapshot, dict) else verdict.get("variant_snapshot") if isinstance(verdict.get("variant_snapshot"), dict) else None)
+            self._append_audit_log("trade_intent", str(intent.get("intent_id") or ""), "fast_confirmed" if fast else "confirmed", intent)
+            self._append_event("trade.intent.confirmed", intent)
+            return
+        if state == "FAILED":
+            intent["status"] = "FAILED"
+            intent.setdefault("status_timeline", []).append({"status": "FAILED", "ts": _iso(), "reason": verdict.get("reason")})
+            for idx, row in enumerate(intents):
+                if str(row.get("intent_id") or "") == str(intent.get("intent_id") or ""):
+                    intents[idx] = intent
+                    break
+            self._write_list(self.intents_file, intents)
+            self._append_audit_log("trade_intent", str(intent.get("intent_id") or ""), "failed", intent)
+            self._append_event("trade.intent.failed", intent)
+            return
+        for idx, row in enumerate(intents):
+            if str(row.get("intent_id") or "") == str(intent.get("intent_id") or ""):
+                intents[idx] = intent
+                break
+        self._write_list(self.intents_file, intents)
 
     def reconcile_broadcast_intents(self, wallet_address: str | None = None) -> None:
         intents = self._read_list(self.intents_file)
@@ -575,6 +619,7 @@ class TradeRuntime:
         self._write_list(self.holdings_file, holdings)
         self._write_list(self.positions_file, positions)
         pnl = self.get_pnl_summary(wallet_address, market_regime=market_regime)
+        self._record_pnl_snapshot(wallet_address, pnl)
         self._append_event("position.updated", {**self._latest_position_for_wallet(positions, wallet_address, variant_id), "wallet_address": wallet_address})
         self._append_event("holding.updated", {**self._latest_holding_for_wallet(holdings, wallet_address, variant_id), "wallet_address": wallet_address})
         self._append_event("pnl.updated", {**pnl, "wallet_address": wallet_address})
@@ -681,6 +726,22 @@ class TradeRuntime:
                 }
             ],
         }
+
+    def _wallet_tx_for_quote(self, quote: dict) -> dict:
+        amount = _as_float(quote.get("max_price_ton"), 0.0)
+        return {
+            "validUntil": int(time.time()) + self.quote_ttl_sec,
+            "messages": [
+                {
+                    "address": "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c",
+                    "amount": str(int(max(amount, 0.01) * 1_000_000_000)),
+                    "payload": f"gmz:FAST_BUY:{quote.get('variant_id')}:{quote.get('nonce')}",
+                }
+            ],
+        }
+
+    def _wallet_tx_hash(self, wallet_tx: dict) -> str:
+        return hashlib.sha256(json.dumps(wallet_tx, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     def _append_wallet_activity(self, wallet_address: str, *, amount_ton: float, tx_hash: str, direction: str) -> None:
         items = self._read_list(self.wallet_activity_file)
@@ -990,6 +1051,34 @@ class TradeRuntime:
             "stream:wallet_activity": 3000,
         }
         return mapping.get(stream, 2000)
+
+    def _record_pnl_snapshot(self, wallet_address: str, payload: dict) -> None:
+        if not self._pg_enabled:
+            return
+        try:
+            with closing(psycopg.connect(self.postgres_dsn)) as conn:  # type: ignore[arg-type]
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO pnl_snapshots(wallet_address, ts, payload_json) VALUES(%s, now(), %s::jsonb)",
+                        (wallet_address, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
+                    )
+                conn.commit()
+        except Exception:
+            return
+
+    def _append_audit_log(self, entity: str, entity_id: str, action: str, payload: dict) -> None:
+        if not self._pg_enabled:
+            return
+        try:
+            with closing(psycopg.connect(self.postgres_dsn)) as conn:  # type: ignore[arg-type]
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO audit_log(entity, entity_id, action, payload) VALUES(%s,%s,%s,%s::jsonb)",
+                        (entity, entity_id, action, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
+                    )
+                conn.commit()
+        except Exception:
+            return
 
     def _init_postgres(self) -> None:
         if not self._pg_enabled:
