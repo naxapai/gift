@@ -114,6 +114,11 @@ export function SettingsPage() {
   const [autosellMode, setAutosellMode] = useState<AutoSellRule['mode']>('NOTIFY_ONLY')
   const [autosellCooldownSec, setAutosellCooldownSec] = useState(300)
   const [autosellPriority, setAutosellPriority] = useState(10)
+  const [autosellTakeProfitPct, setAutosellTakeProfitPct] = useState(10)
+  const [autosellStopLossPct, setAutosellStopLossPct] = useState(5)
+  const [autosellTrailingPct, setAutosellTrailingPct] = useState(5)
+  const [autosellMaxHoldMinutes, setAutosellMaxHoldMinutes] = useState(60)
+  const [autosellRegimes, setAutosellRegimes] = useState('RISK_OFF,PANIC')
   const [tgLoading, setTgLoading] = useState(false)
   const [tgSaving, setTgSaving] = useState(false)
   const [tgError, setTgError] = useState('')
@@ -305,7 +310,17 @@ export function SettingsPage() {
         enabled: true,
         scope: '*',
         trigger_type: autosellTriggerType,
-        params: { edgeRank100_min: 55, conf_pct_min: 35, expected_profit_pct_min: 8 },
+        params: autosellTriggerType === 'TAKE_PROFIT'
+          ? { tp_pct: autosellTakeProfitPct / 100 }
+          : autosellTriggerType === 'STOP_LOSS'
+            ? { sl_pct: autosellStopLossPct / 100 }
+            : autosellTriggerType === 'TRAILING_STOP'
+              ? { trailing_pct: autosellTrailingPct / 100 }
+              : autosellTriggerType === 'TIME_EXIT'
+                ? { max_hold_minutes: autosellMaxHoldMinutes }
+                : autosellTriggerType === 'REGIME_EXIT'
+                  ? { regimes: autosellRegimes.split(',').map((x) => x.trim()).filter(Boolean) }
+                  : { edgeRank100_min: 55, conf_pct_min: 35, expected_profit_pct_min: 8 },
         mode: autosellMode,
         cooldown_sec: autosellCooldownSec,
         priority: autosellPriority,
@@ -321,7 +336,7 @@ export function SettingsPage() {
     } finally {
       setAutosellSaving(false)
     }
-  }, [tradeWalletAddress, autosellTriggerType, autosellMode, autosellCooldownSec, autosellPriority])
+  }, [tradeWalletAddress, autosellTriggerType, autosellMode, autosellCooldownSec, autosellPriority, autosellTakeProfitPct, autosellStopLossPct, autosellTrailingPct, autosellMaxHoldMinutes, autosellRegimes])
 
   return (
     <section>
@@ -528,6 +543,13 @@ export function SettingsPage() {
                 <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Cooldown sec</span><input type="number" min={0} value={autosellCooldownSec} onChange={(e) => setAutosellCooldownSec(Number(e.target.value || 0))} className="gmz-input" /></label>
                 <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Priority</span><input type="number" min={0} value={autosellPriority} onChange={(e) => setAutosellPriority(Number(e.target.value || 0))} className="gmz-input" /></label>
               </div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Take Profit %</span><input type="number" min={0} step={0.5} value={autosellTakeProfitPct} onChange={(e) => setAutosellTakeProfitPct(Number(e.target.value || 0))} className="gmz-input" /></label>
+                <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Stop Loss %</span><input type="number" min={0} step={0.5} value={autosellStopLossPct} onChange={(e) => setAutosellStopLossPct(Number(e.target.value || 0))} className="gmz-input" /></label>
+                <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Trailing %</span><input type="number" min={0} step={0.5} value={autosellTrailingPct} onChange={(e) => setAutosellTrailingPct(Number(e.target.value || 0))} className="gmz-input" /></label>
+                <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Max hold minutes</span><input type="number" min={1} value={autosellMaxHoldMinutes} onChange={(e) => setAutosellMaxHoldMinutes(Number(e.target.value || 1))} className="gmz-input" /></label>
+              </div>
+              <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Regime list (CSV)</span><input value={autosellRegimes} onChange={(e) => setAutosellRegimes(e.target.value)} className="gmz-input" /></label>
               <button type="button" className="gmz-btn gmz-btn-primary px-4 py-2 text-sm" disabled={autosellSaving} onClick={() => { void saveDefaultAutoSellRule() }}>
                 {autosellSaving ? 'Сохранение…' : 'Сохранить AutoSell rule'}
               </button>

@@ -107,6 +107,18 @@ class TradeRuntime:
             except Exception:
                 self._redis = None
 
+    @property
+    def _pg_store_map(self) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+        return {
+            self.intents_file.name: ("trade_intents", "intent_id", ("wallet_address", "variant_id", "status", "created_at", "expires_at", "source", "intent_type")),
+            self.positions_file.name: ("positions", "position_id", ("wallet_address", "variant_id", "updated_at")),
+            self.holdings_file.name: ("holdings", "holding_id", ("wallet_address", "variant_id", "status", "updated_at")),
+            self.autosell_file.name: ("autosell_rules", "rule_id", ("wallet_address", "enabled", "scope", "trigger_type", "mode", "priority", "updated_at")),
+            self.wallet_activity_file.name: ("wallet_activity_runtime", "activity_id", ("wallet_address", "ts")),
+            self.quotes_file.name: ("trade_quote_state", "nonce", ("state", "expires_at")),
+            self.autosell_state_file.name: ("trade_autosell_state", "state_key", ("updated_at",)),
+        }
+
     def list_trade_intents(self, wallet_address: str, status: str | None = None, limit: int = 100, cursor: str | None = None) -> dict:
         items = [x for x in self._read_list(self.intents_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
         self._expire_stale_intents(items)
@@ -704,6 +716,9 @@ class TradeRuntime:
         state = _load_json(self.autosell_state_file, {})
         if not isinstance(state, dict):
             state = {}
+        state_rows = self._read_list(self.autosell_state_file)
+        if isinstance(state_rows, list) and state_rows:
+            state = {str((x or {}).get("state_key") or ""): x for x in state_rows if isinstance(x, dict) and str((x or {}).get("state_key") or "")}
         now_ts = time.time()
         for rule in rules:
             scope = str(rule.get("scope") or "*")
@@ -721,14 +736,18 @@ class TradeRuntime:
             if not matched:
                 if details.get("trailing_peak") is not None:
                     row_state["trailing_peak"] = details.get("trailing_peak")
+                    row_state["state_key"] = rule_key
+                    row_state["updated_at"] = _iso()
                     state[rule_key] = row_state
-                    _save_json(self.autosell_state_file, state)
+                    self._write_list(self.autosell_state_file, list(state.values()))
                 continue
             row_state["last_trigger_ts"] = now_ts
             if details.get("trailing_peak") is not None:
                 row_state["trailing_peak"] = details.get("trailing_peak")
+            row_state["state_key"] = rule_key
+            row_state["updated_at"] = _iso()
             state[rule_key] = row_state
-            _save_json(self.autosell_state_file, state)
+            self._write_list(self.autosell_state_file, list(state.values()))
             payload = {
                 "wallet_address": wallet_address,
                 "variant_id": variant_id,
@@ -979,11 +998,88 @@ class TradeRuntime:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS trade_runtime_snapshots (
-                        store_name TEXT PRIMARY KEY,
-                        payload_json JSONB NOT NULL,
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    CREATE TABLE IF NOT EXISTS trade_intents (
+                        intent_id TEXT PRIMARY KEY,
+                        wallet_address TEXT NOT NULL,
+                        variant_id TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        source TEXT NOT NULL,
+                        intent_type TEXT NOT NULL,
+                        payload_json JSONB NOT NULL
                     );
+                    CREATE INDEX IF NOT EXISTS idx_trade_intents_wallet ON trade_intents(wallet_address, created_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS positions (
+                        position_id TEXT PRIMARY KEY,
+                        wallet_address TEXT NOT NULL,
+                        variant_id TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        payload_json JSONB NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_positions_wallet ON positions(wallet_address, updated_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS holdings (
+                        holding_id TEXT PRIMARY KEY,
+                        wallet_address TEXT NOT NULL,
+                        variant_id TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ,
+                        payload_json JSONB NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_holdings_wallet ON holdings(wallet_address, updated_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS autosell_rules (
+                        rule_id TEXT PRIMARY KEY,
+                        wallet_address TEXT NOT NULL,
+                        enabled BOOLEAN NOT NULL,
+                        scope TEXT NOT NULL,
+                        trigger_type TEXT NOT NULL,
+                        mode TEXT NOT NULL,
+                        priority INT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        payload_json JSONB NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_autosell_rules_wallet ON autosell_rules(wallet_address, updated_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS wallet_activity_runtime (
+                        activity_id TEXT PRIMARY KEY,
+                        wallet_address TEXT NOT NULL,
+                        ts TIMESTAMPTZ NOT NULL,
+                        payload_json JSONB NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_wallet_activity_runtime_wallet ON wallet_activity_runtime(wallet_address, ts DESC);
+
+                    CREATE TABLE IF NOT EXISTS trade_quote_state (
+                        nonce TEXT PRIMARY KEY,
+                        state TEXT NOT NULL,
+                        expires_at TIMESTAMPTZ,
+                        payload_json JSONB NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS trade_autosell_state (
+                        state_key TEXT PRIMARY KEY,
+                        updated_at TIMESTAMPTZ NOT NULL,
+                        payload_json JSONB NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS pnl_snapshots (
+                        wallet_address TEXT NOT NULL,
+                        ts TIMESTAMPTZ NOT NULL,
+                        payload_json JSONB NOT NULL,
+                        PRIMARY KEY(wallet_address, ts)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS audit_log (
+                        id BIGSERIAL PRIMARY KEY,
+                        entity TEXT NOT NULL,
+                        entity_id TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        payload JSONB,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+
                     CREATE TABLE IF NOT EXISTS trade_runtime_events_pg (
                         id BIGSERIAL PRIMARY KEY,
                         event TEXT NOT NULL,
@@ -997,26 +1093,59 @@ class TradeRuntime:
     def _pg_read_snapshot(self, store_name: str) -> list[dict]:
         if not self._pg_enabled:
             return []
+        meta = self._pg_store_map.get(str(store_name))
+        if not meta:
+            return []
+        table, _key_field, sort_fields = meta
+        order_by = sort_fields[0] if sort_fields else _key_field
         try:
             with closing(psycopg.connect(self.postgres_dsn)) as conn:  # type: ignore[arg-type]
                 with conn.cursor() as cur:
-                    cur.execute("SELECT payload_json FROM trade_runtime_snapshots WHERE store_name = %s", (str(store_name),))
-                    row = cur.fetchone()
+                    cur.execute(f"SELECT payload_json FROM {table} ORDER BY {order_by} DESC")
+                    rows = cur.fetchall()
         except Exception:
             return []
-        data = row[0] if row else []
-        return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
+        out: list[dict] = []
+        for row in rows:
+            payload = row[0] if row else None
+            if isinstance(payload, dict):
+                out.append(payload)
+            elif isinstance(payload, str):
+                try:
+                    parsed = json.loads(payload)
+                    if isinstance(parsed, dict):
+                        out.append(parsed)
+                except Exception:
+                    continue
+        return out
 
     def _pg_write_snapshot(self, store_name: str, rows: list[dict]) -> None:
         if not self._pg_enabled:
             return
+        meta = self._pg_store_map.get(str(store_name))
+        if not meta:
+            return
+        table, key_field, field_order = meta
         try:
             with closing(psycopg.connect(self.postgres_dsn)) as conn:  # type: ignore[arg-type]
                 with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO trade_runtime_snapshots(store_name, payload_json, updated_at) VALUES(%s,%s::jsonb,now()) ON CONFLICT(store_name) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at",
-                        (str(store_name), json.dumps(rows, ensure_ascii=False, separators=(",", ":"))),
-                    )
+                    cur.execute(f"DELETE FROM {table}")
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        key_val = row.get(key_field)
+                        if key_val is None:
+                            continue
+                        cols = [key_field] + list(field_order) + ["payload_json"]
+                        values = [key_val]
+                        for field in field_order:
+                            values.append(row.get(field))
+                        values.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+                        placeholders = ", ".join(["%s"] * len(values))
+                        cur.execute(
+                            f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})",
+                            tuple(values),
+                        )
                 conn.commit()
         except Exception:
             return
@@ -1043,4 +1172,5 @@ class TradeRuntime:
             rows.append(target)
         for key, value in (patch or {}).items():
             target[key] = value
+        target.setdefault("updated_at", _iso())
         self._write_list(self.quotes_file, rows)

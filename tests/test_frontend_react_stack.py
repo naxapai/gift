@@ -133,12 +133,12 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('postAdminTelegramDeliveryTest', page)
         for token in ['EdgeRank ≥', 'Conf ≥', 'Profit % ≥', 'Изображение подарка в сигнале', 'Тест gift_signal', 'Тест market_status', 'Журнал отправок', 'Ошибки доставки']:
             self.assertIn(token, page)
-        for token in ['AutoSell PRO', 'Сохранить AutoSell rule', 'Trading / AutoSell сейчас открыт только для тестовой Telegram учетной записи `144832201`', 'SIGNAL_EXIT', 'AUTO_LIST', 'AUTO_SELL_NOW']:
+        for token in ['AutoSell PRO', 'Сохранить AutoSell rule', 'Trading / AutoSell сейчас открыт только для тестовой Telegram учетной записи `144832201`', 'SIGNAL_EXIT', 'AUTO_LIST', 'AUTO_SELL_NOW', 'Take Profit %', 'Stop Loss %', 'Trailing %', 'Regime list (CSV)']:
             self.assertIn(token, page)
 
     def test_trades_page_contains_trading_workspace_blocks(self):
         page = (FRONT / 'src' / 'pages' / 'TradesPage.tsx').read_text(encoding='utf-8')
-        for token in ['FAST BUY', 'BUY+LIST', 'PnL PRO', 'Positions', 'Holdings', 'History', 'Wallet activity', 'AutoSell rules', 'LIST', 'CANCEL', 'SELL', 'TRANSFER', 'Повторить выставление', 'optimisticHistory', 'subscribeTradesStream', 'subscribePnlStream']:
+        for token in ['FAST BUY', 'BUY+LIST', 'PnL PRO', 'Positions', 'Holdings', 'History', 'Wallet activity', 'AutoSell rules', 'LIST', 'CANCEL', 'SELL', 'TRANSFER', 'Повторить выставление', 'optimisticHistory', 'subscribeTradesStream', 'subscribePnlStream', 'decision_trace', 'reasons:', 'risk_flags:']:
             self.assertIn(token, page)
 
     def test_favorites_page_uses_non_blocking_refresh(self):

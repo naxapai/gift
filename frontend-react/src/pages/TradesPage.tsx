@@ -30,6 +30,7 @@ export function TradesPage() {
   const [creating, setCreating] = useState(false)
   const [actionBusyId, setActionBusyId] = useState('')
   const [optimisticHistory, setOptimisticHistory] = useState<TradeIntent[]>([])
+  const [expandedIntentId, setExpandedIntentId] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -264,13 +265,39 @@ export function TradesPage() {
             </div>
           </BentoCard>
           <BentoCard title="Positions" className="xl:col-span-12">
+            <div className="grid gap-3 md:hidden">
+              {positions.map((row) => (
+                <article key={row.position_id} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
+                  <div className="flex items-center justify-between"><strong>{row.variant_id}</strong><span>{row.action || '—'}</span></div>
+                  <div className="mt-2 grid gap-2 text-xs text-slate-600"><div>Qty: {row.qty}</div><div>Avg buy: {ton(row.avg_buy_price_ton)}</div><div>Mark: {ton(row.mark_price_ton)}</div><div>UPnL: {ton(row.unrealized_pnl_ton)}</div></div>
+                </article>
+              ))}
+            </div>
             <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Variant</th><th>Qty</th><th>Avg buy</th><th>Mark</th><th>UPnL</th><th>Action</th></tr></thead><tbody>{positions.map((row) => <tr key={row.position_id} className="border-t border-slate-100"><td className="py-2">{row.variant_id}</td><td>{row.qty}</td><td>{ton(row.avg_buy_price_ton)}</td><td>{ton(row.mark_price_ton)}</td><td>{ton(row.unrealized_pnl_ton)}</td><td>{row.action || '—'}</td></tr>)}</tbody></table></div>
           </BentoCard>
           <BentoCard title="Holdings" className="xl:col-span-12">
+            <div className="grid gap-3 md:hidden">
+              {holdings.map((row) => (
+                <article key={row.holding_id} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
+                  <div className="flex items-center justify-between"><strong>{row.variant_id}</strong><span>{row.status}</span></div>
+                  <div className="mt-2 grid gap-2 text-xs text-slate-600"><div>Gift: {row.gift_unique_id}</div><div>Acquired: {ton(row.acquired_price_ton)}</div><div>Listed: {ton(row.listed_price_ton)}</div></div>
+                </article>
+              ))}
+            </div>
             <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Gift</th><th>Variant</th><th>Status</th><th>Acquired</th><th>Listed</th><th>Actions</th></tr></thead><tbody>{holdings.map((row) => <tr key={row.holding_id} className="border-t border-slate-100"><td className="py-2">{row.gift_unique_id}</td><td>{row.variant_id}</td><td>{row.status}</td><td>{ton(row.acquired_price_ton)}</td><td>{ton(row.listed_price_ton)}</td><td><div className="flex flex-wrap gap-2 py-2">{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:LIST`} onClick={() => { void runHoldingAction(row, 'LIST') }}>LIST</button> : null}{row.status === 'LISTED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:CANCEL_LISTING`} onClick={() => { void runHoldingAction(row, 'CANCEL_LISTING') }}>CANCEL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:SELL`} onClick={() => { void runHoldingAction(row, 'SELL') }}>SELL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:TRANSFER`} onClick={() => { void runHoldingAction(row, 'TRANSFER') }}>TRANSFER</button> : null}</div></td></tr>)}</tbody></table></div>
           </BentoCard>
           <BentoCard title="History" className="xl:col-span-12">
-            <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Intent</th><th>Type</th><th>Status</th><th>Variant</th><th>Created</th><th>Chain</th><th>Actions</th></tr></thead><tbody>{mergedHistory.map((row) => <tr key={row.intent_id} className="border-t border-slate-100 align-top"><td className="py-2">{row.intent_id}</td><td>{row.intent_type}</td><td>{row.status}</td><td>{row.variant_id}</td><td>{new Date(row.created_at).toLocaleString('ru-RU')}</td><td>{row.chain_id || '—'}{row.parent_intent_id ? <div className="text-xs text-slate-500">parent: {row.parent_intent_id}</div> : null}</td><td>{row.intent_type === 'BUY_AND_LIST' || (row.chain_policy === 'BUY_THEN_LIST' && !row.parent_intent_id) ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `retry:${row.intent_id}`} onClick={() => { void retryChildList(row.intent_id) }}>Повторить выставление</button> : null}<div className="mt-1 text-xs text-slate-500">{Array.isArray((row as { status_timeline?: unknown }).status_timeline) ? `${((row as { status_timeline?: Array<unknown> }).status_timeline || []).length} steps` : 'timeline pending'}</div></td></tr>)}</tbody></table></div>
+            <div className="grid gap-3 md:hidden">
+              {mergedHistory.map((row) => (
+                <article key={row.intent_id} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
+                  <div className="flex items-center justify-between"><strong>{row.intent_type}</strong><span>{row.status}</span></div>
+                  <div className="mt-2 text-xs text-slate-600">{row.variant_id}</div>
+                  <div className="mt-1 text-xs text-slate-500">{new Date(row.created_at).toLocaleString('ru-RU')}</div>
+                  {(row.intent_type === 'BUY_AND_LIST' || (row.chain_policy === 'BUY_THEN_LIST' && !row.parent_intent_id)) ? <button type="button" className="gmz-btn mt-3 px-3 py-1 text-xs" disabled={actionBusyId === `retry:${row.intent_id}`} onClick={() => { void retryChildList(row.intent_id) }}>Повторить выставление</button> : null}
+                </article>
+              ))}
+            </div>
+            <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Intent</th><th>Type</th><th>Status</th><th>Variant</th><th>Created</th><th>Chain</th><th>Actions</th></tr></thead><tbody>{mergedHistory.map((row) => <><tr key={row.intent_id} className="border-t border-slate-100 align-top"><td className="py-2">{row.intent_id}</td><td>{row.intent_type}</td><td>{row.status}</td><td>{row.variant_id}</td><td>{new Date(row.created_at).toLocaleString('ru-RU')}</td><td>{row.chain_id || '—'}{row.parent_intent_id ? <div className="text-xs text-slate-500">parent: {row.parent_intent_id}</div> : null}</td><td><button type="button" className="gmz-btn px-3 py-1 text-xs" onClick={() => setExpandedIntentId((prev) => prev === row.intent_id ? '' : row.intent_id)}>{expandedIntentId === row.intent_id ? 'Скрыть' : 'Детали'}</button>{row.intent_type === 'BUY_AND_LIST' || (row.chain_policy === 'BUY_THEN_LIST' && !row.parent_intent_id) ? <button type="button" className="gmz-btn ml-2 px-3 py-1 text-xs" disabled={actionBusyId === `retry:${row.intent_id}`} onClick={() => { void retryChildList(row.intent_id) }}>Повторить выставление</button> : null}<div className="mt-1 text-xs text-slate-500">{Array.isArray((row as { status_timeline?: unknown }).status_timeline) ? `${((row as { status_timeline?: Array<unknown> }).status_timeline || []).length} steps` : 'timeline pending'}</div></td></tr>{expandedIntentId === row.intent_id ? <tr className="bg-slate-50"><td colSpan={7} className="px-3 py-3 text-xs text-slate-700"><div><strong>reasons:</strong> {Array.isArray(row.reasons) && row.reasons.length ? row.reasons.join(' | ') : '—'}</div><div className="mt-1"><strong>risk_flags:</strong> {Array.isArray(row.risk_flags) && row.risk_flags.length ? row.risk_flags.join(' | ') : '—'}</div><div className="mt-1"><strong>decision_trace:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.decision_trace || {}, null, 2)}</pre></div></td></tr> : null}</>)}</tbody></table></div>
           </BentoCard>
           <BentoCard title="Wallet activity" className="xl:col-span-12">
             <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Time</th><th>Direction</th><th>Amount</th><th>Tx</th></tr></thead><tbody>{activity.map((row) => <tr key={`${row.tx_hash}-${row.ts}`} className="border-t border-slate-100"><td className="py-2">{new Date(row.ts).toLocaleString('ru-RU')}</td><td>{row.direction}</td><td>{ton(row.amount_ton)}</td><td>{row.tx_hash}</td></tr>)}</tbody></table></div>
