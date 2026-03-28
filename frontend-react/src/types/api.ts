@@ -205,6 +205,113 @@ export interface OwnedGiftItem {
   meta?: Record<string, unknown>
 }
 
+export type TradeStatus = 'PENDING_SIGNATURE' | 'SIGNED' | 'BROADCAST' | 'CONFIRMED' | 'FAILED' | 'EXPIRED' | 'REPLACED'
+export type TradeIntentType = 'BUY' | 'BUY_AND_LIST' | 'SELL' | 'LIST' | 'CANCEL_LISTING' | 'TRANSFER'
+
+export interface BuyQuoteResponse {
+  buy_quote_token: string
+  expires_at: string
+  quote: {
+    variant_id: string
+    listing_id?: string | null
+    max_price_ton: number
+    slippage_bps: number
+    fee_budget_ton: number
+    wallet_address_hash?: string | null
+    nonce: string
+  }
+}
+
+export interface TradeIntent {
+  intent_id: string
+  intent_type: TradeIntentType | string
+  variant_id: string
+  wallet_address: string
+  listing_id?: string | null
+  gift_unique_id?: string | null
+  status: TradeStatus | string
+  created_at: string
+  expires_at: string
+  tx_hash?: string | null
+  source?: 'STANDARD' | 'FAST_BUY' | string
+  chain_id?: string | null
+  parent_intent_id?: string | null
+  step_index?: number | null
+  chain_policy?: 'MANUAL' | 'BUY_THEN_LIST' | string | null
+  post_action?: Record<string, unknown> | null
+  reasons?: string[] | null
+  risk_flags?: string[] | null
+  decision_trace?: Record<string, unknown> | null
+}
+
+export interface PositionPro {
+  position_id: string
+  wallet_address: string
+  variant_id: string
+  qty: number
+  avg_buy_price_ton: number
+  mark_price_ton: number
+  fees_paid_ton: number
+  realized_pnl_ton: number
+  realized_pnl_pct: number
+  unrealized_pnl_ton: number
+  unrealized_pnl_pct: number
+  edgeRank100?: number | null
+  conf_pct?: number | null
+  action?: string | null
+  risk_flags?: string[]
+  opened_at?: string | null
+  updated_at: string
+}
+
+export interface HoldingPro {
+  holding_id: string
+  wallet_address: string
+  gift_unique_id: string
+  variant_id: string
+  acquired_price_ton: number
+  acquired_at: string
+  status: 'OWNED' | 'LISTED' | 'TRANSFER_PENDING' | 'SOLD' | string
+  marketplace_listing_id?: string | null
+  listed_price_ton?: number | null
+  updated_at?: string | null
+}
+
+export interface PnlSummaryPro {
+  pnl_today_ton: number
+  pnl_today_pct: number
+  pnl_7d_ton: number
+  pnl_30d_ton: number
+  win_rate: number
+  avg_hold_min: number
+  best_trade_ton: number
+  worst_trade_ton: number
+  exposure_ton: number
+  market_regime: 'RISK_ON' | 'MEAN_REVERT' | 'RISK_OFF' | 'PANIC' | string
+}
+
+export interface AutoSellRule {
+  rule_id: string
+  wallet_address: string
+  enabled: boolean
+  scope: string
+  trigger_type: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'TIME_EXIT' | 'REGIME_EXIT' | 'SIGNAL_EXIT' | string
+  params: Record<string, unknown>
+  mode: 'NOTIFY_ONLY' | 'AUTO_LIST' | 'AUTO_SELL_NOW' | string
+  list_price_strategy?: 'FAIR_PLUS_X' | 'FLOOR_MINUS_X' | 'FIXED' | string | null
+  cooldown_sec: number
+  priority: number
+  updated_at?: string
+}
+
+export interface WalletActivityItem {
+  ts: string
+  direction: 'IN' | 'OUT' | string
+  amount_ton: number
+  counterparty?: string | null
+  tx_hash: string
+}
+
 export interface CollectionsResponse {
   items: CollectionItem[]
   next_cursor?: string | null

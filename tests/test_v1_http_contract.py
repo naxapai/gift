@@ -304,6 +304,91 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertFalse(payload.get("authenticated"))
         self.assertEqual(payload.get("items"), [])
 
+    def test_trades_endpoints_roundtrip_for_allowed_test_user(self) -> None:
+        allowed_user = {"id": 144832201, "username": "tester"}
+        ton_wallet = {"address": "EQTESTWALLET000000000000000000000000000000000"}
+        variant_id = str(next(iter((server._STATE.variants or {}).keys()), ""))
+        self.assertTrue(variant_id)
+        with patch.object(server, "_auth_user_from_request", return_value=allowed_user), patch.object(server, "_ton_wallet_from_request", return_value=ton_wallet):
+            status_access, payload_access = self._get_json("/api/trades/access")
+            self.assertEqual(status_access, 200)
+            self.assertTrue(payload_access.get("allowed"))
+
+            status_quote, payload_quote = self._get_json(f"/v1/trades/quotes/buy?variant_id={quote(variant_id)}&max_price_ton=8.5&wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_quote, 200)
+            self.assertTrue(str(payload_quote.get("buy_quote_token") or ""))
+
+            status_create, payload_create = self._post_json("/v1/trades/intents", {
+                "intent_type": "BUY",
+                "variant_id": variant_id,
+                "wallet_address": ton_wallet["address"],
+                "max_spend_ton": 8.5,
+            })
+            self.assertEqual(status_create, 200)
+            intent_id = str(((payload_create.get("intent") or {}).get("intent_id")) or "")
+            self.assertTrue(intent_id)
+
+            status_confirm, payload_confirm = self._post_json(f"/v1/trades/intents/{intent_id}/confirm_signature", {"tx_hash": "tx_test_1", "wallet_address": ton_wallet["address"]})
+            self.assertEqual(status_confirm, 200)
+            self.assertEqual(str(payload_confirm.get("status") or ""), "CONFIRMED")
+
+            status_positions, payload_positions = self._get_json(f"/v1/trades/positions?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_positions, 200)
+            self.assertTrue(isinstance(payload_positions.get("items"), list))
+
+            status_holdings, payload_holdings = self._get_json(f"/v1/trades/holdings?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_holdings, 200)
+            self.assertTrue(isinstance(payload_holdings.get("items"), list))
+
+            status_chain_create, payload_chain_create = self._post_json("/v1/trades/intents", {
+                "intent_type": "BUY_AND_LIST",
+                "variant_id": variant_id,
+                "wallet_address": ton_wallet["address"],
+                "max_spend_ton": 9.1,
+                "chain_policy": "BUY_THEN_LIST",
+                "post_action": {"type": "LIST", "listing_params": {"list_price_ton": 10.2, "duration_sec": 86400, "marketplace": "fragment"}},
+            })
+            self.assertEqual(status_chain_create, 200)
+            chain_intent_id = str(((payload_chain_create.get("intent") or {}).get("intent_id")) or "")
+            self.assertTrue(chain_intent_id)
+
+            status_chain_confirm, payload_chain_confirm = self._post_json(f"/v1/trades/intents/{chain_intent_id}/confirm_signature", {"tx_hash": "tx_test_chain", "wallet_address": ton_wallet["address"]})
+            self.assertEqual(status_chain_confirm, 200)
+            self.assertEqual(str(payload_chain_confirm.get("status") or ""), "CONFIRMED")
+
+            status_history, payload_history = self._get_json(f"/v1/trades/intents?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_history, 200)
+            rows = payload_history.get("items") or []
+            child = next((x for x in rows if str((x or {}).get("parent_intent_id") or "") == chain_intent_id), None)
+            self.assertTrue(isinstance(child, dict))
+            self.assertEqual(str((child or {}).get("intent_type") or ""), "LIST")
+
+            status_rules_before, payload_rules_before = self._get_json(f"/v1/trades/autosell/rules?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_rules_before, 200)
+            initial_rules = len(payload_rules_before.get("items") or [])
+
+            status_rule_upsert, payload_rule_upsert = self._post_json("/v1/trades/autosell/rules", {
+                "rule_id": "rule-test-signal-exit",
+                "wallet_address": ton_wallet["address"],
+                "enabled": True,
+                "scope": "*",
+                "trigger_type": "SIGNAL_EXIT",
+                "params": {"edgeRank100_min": 55, "conf_pct_min": 35},
+                "mode": "NOTIFY_ONLY",
+                "cooldown_sec": 120,
+                "priority": 5,
+            })
+            self.assertEqual(status_rule_upsert, 200)
+            self.assertEqual(str(payload_rule_upsert.get("rule_id") or ""), "rule-test-signal-exit")
+
+            status_rules_after, payload_rules_after = self._get_json(f"/v1/trades/autosell/rules?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_rules_after, 200)
+            self.assertGreaterEqual(len(payload_rules_after.get("items") or []), initial_rules + 1)
+
+            status_activity, payload_activity = self._get_json(f"/v1/wallet/activity?address={ton_wallet['address']}")
+            self.assertEqual(status_activity, 200)
+            self.assertTrue(isinstance(payload_activity.get("items"), list))
+
     def test_bridge_owned_gifts_endpoint_returns_user_inventory_payload(self) -> None:
         old_token = server.BRIDGE_API_TOKEN
         try:

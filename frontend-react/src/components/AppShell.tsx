@@ -10,6 +10,7 @@ const navItems = [
   { to: '/screeners', label: 'Скринеры' },
   { to: '/signals', label: 'Сигналы' },
   { to: '/listing', label: 'Листинг' },
+  { to: '/trades', label: 'Сделки' },
   { to: '/favorites', label: 'Избранное' },
   { to: '/cabinet', label: 'Кабинет' },
   { to: '/admin', label: 'Админ', adminOnly: true },

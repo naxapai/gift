@@ -18,6 +18,13 @@ import type {
   OverviewResponse,
   FavoritesResponse,
   SignalItem,
+  TradeIntent,
+  PositionPro,
+  HoldingPro,
+  PnlSummaryPro,
+  AutoSellRule,
+  WalletActivityItem,
+  BuyQuoteResponse,
   ScreenerRowPro,
   ScreenersFeedResponse,
   SignalsResponse,
@@ -1273,6 +1280,62 @@ export async function postTonLogout(): Promise<{ ok?: boolean; connected?: boole
 
 export async function getTonBalance(): Promise<{ ok?: boolean; ton_balance?: number | null; reason?: string; address?: string }> {
   return apiGet('/api/auth/ton/balance')
+}
+
+export async function getTradingAccess(): Promise<{ ok?: boolean; allowed?: boolean; telegram_user_id?: string | null; wallet_address?: string | null; reason?: string | null }> {
+  return apiGet('/api/trades/access')
+}
+
+export async function getBuyQuote(params: { variantId: string; maxPriceTon: number; slippageBps?: number; walletAddress?: string }): Promise<BuyQuoteResponse> {
+  const q = new URLSearchParams({
+    variant_id: params.variantId,
+    max_price_ton: String(params.maxPriceTon),
+    slippage_bps: String(params.slippageBps ?? 100),
+  })
+  if (params.walletAddress) q.set('wallet_address', params.walletAddress)
+  return apiGet(`/v1/trades/quotes/buy?${q.toString()}`)
+}
+
+export async function postFastBuyConfirm(payload: { buy_quote_token: string; tx_hash: string; wallet_address: string; client_meta?: Record<string, unknown> }): Promise<TradeIntent> {
+  return apiGet('/v1/trades/fast/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+}
+
+export async function getTradeIntents(walletAddress: string, status?: string): Promise<{ items: TradeIntent[]; next_cursor?: string | null }> {
+  const q = new URLSearchParams({ wallet_address: walletAddress })
+  if (status) q.set('status', status)
+  return apiGet(`/v1/trades/intents?${q.toString()}`)
+}
+
+export async function postTradeIntent(payload: Record<string, unknown>): Promise<{ intent: TradeIntent; wallet_tx: Record<string, unknown> }> {
+  return apiGet('/v1/trades/intents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) })
+}
+
+export async function postTradeIntentConfirm(intentId: string, payload: Record<string, unknown>): Promise<TradeIntent> {
+  return apiGet(`/v1/trades/intents/${encodeURIComponent(intentId)}/confirm_signature`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) })
+}
+
+export async function getTradePositions(walletAddress: string): Promise<{ items: PositionPro[] }> {
+  return apiGet(`/v1/trades/positions?wallet_address=${encodeURIComponent(walletAddress)}`)
+}
+
+export async function getTradeHoldings(walletAddress: string): Promise<{ items: HoldingPro[] }> {
+  return apiGet(`/v1/trades/holdings?wallet_address=${encodeURIComponent(walletAddress)}`)
+}
+
+export async function getTradePnl(walletAddress: string): Promise<PnlSummaryPro> {
+  return apiGet(`/v1/trades/pnl?wallet_address=${encodeURIComponent(walletAddress)}`)
+}
+
+export async function getAutoSellRules(walletAddress: string): Promise<{ items: AutoSellRule[] }> {
+  return apiGet(`/v1/trades/autosell/rules?wallet_address=${encodeURIComponent(walletAddress)}`)
+}
+
+export async function upsertAutoSellRule(payload: AutoSellRule): Promise<AutoSellRule> {
+  return apiGet('/v1/trades/autosell/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+}
+
+export async function getWalletActivity(address: string): Promise<{ items: WalletActivityItem[]; next_cursor?: string | null }> {
+  return apiGet(`/v1/wallet/activity?address=${encodeURIComponent(address)}`)
 }
 
 export async function getAlertsV1(): Promise<{ items?: Array<{ rule_id?: string; name?: string; enabled?: boolean }> }> {

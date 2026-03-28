@@ -30,12 +30,12 @@ class TestFrontendReactStack(unittest.TestCase):
 
     def test_app_has_main_routes(self):
         app = (FRONT / 'src' / 'App.tsx').read_text(encoding='utf-8')
-        for route in ['catalog', 'screeners', 'signals', 'listing', 'favorites', 'cabinet', 'admin', 'settings', 'variant/:variantId']:
+        for route in ['catalog', 'screeners', 'signals', 'listing', 'trades', 'favorites', 'cabinet', 'admin', 'settings', 'variant/:variantId']:
             self.assertIn(route, app)
 
     def test_shell_has_bento_navigation_labels(self):
         shell = (FRONT / 'src' / 'components' / 'AppShell.tsx').read_text(encoding='utf-8')
-        for label in ['Обзор', 'Каталог', 'Скринеры', 'Сигналы', 'Листинг', 'Избранное', 'Кабинет', 'Админ', 'Настройки']:
+        for label in ['Обзор', 'Каталог', 'Скринеры', 'Сигналы', 'Листинг', 'Сделки', 'Избранное', 'Кабинет', 'Админ', 'Настройки']:
             self.assertIn(label, shell)
         self.assertIn('adminOnly: true', shell)
         self.assertIn('visibleNavItems', shell)
@@ -132,6 +132,13 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('resetAdminTelegramDeliveryConfig', page)
         self.assertIn('postAdminTelegramDeliveryTest', page)
         for token in ['EdgeRank ≥', 'Conf ≥', 'Profit % ≥', 'Изображение подарка в сигнале', 'Тест gift_signal', 'Тест market_status', 'Журнал отправок', 'Ошибки доставки']:
+            self.assertIn(token, page)
+        for token in ['AutoSell PRO', 'Сохранить AutoSell rule', 'Trading / AutoSell сейчас открыт только для тестовой Telegram учетной записи `144832201`', 'SIGNAL_EXIT', 'AUTO_LIST', 'AUTO_SELL_NOW']:
+            self.assertIn(token, page)
+
+    def test_trades_page_contains_trading_workspace_blocks(self):
+        page = (FRONT / 'src' / 'pages' / 'TradesPage.tsx').read_text(encoding='utf-8')
+        for token in ['FAST BUY', 'BUY+LIST', 'PnL PRO', 'Positions', 'Holdings', 'History', 'Wallet activity', 'AutoSell rules', 'LIST', 'CANCEL', 'SELL', 'TRANSFER']:
             self.assertIn(token, page)
 
     def test_favorites_page_uses_non_blocking_refresh(self):

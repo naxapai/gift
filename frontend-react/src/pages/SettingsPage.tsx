@@ -4,17 +4,22 @@ import { BentoGrid } from '../components/BentoGrid'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
 import {
+  getAutoSellRules,
   getAdminTelegramDeliveryConfig,
   getAdminTelegramDeliveryJournal,
   getAdminTelegramDeliveryStatus,
   getTelegramAuthMe,
+  getTonAuthMe,
+  getTradingAccess,
   getAlertsV1,
   getOverview,
   postAdminTelegramDeliveryTest,
   resetAdminTelegramDeliveryConfig,
   saveAdminTelegramDeliveryConfig,
+  upsertAutoSellRule,
   upsertAlertV1,
 } from '../lib/api'
+import type { AutoSellRule } from '../types/api'
 import { readUiAutoRefreshMinutes, uiAutoRefreshBounds, writeUiAutoRefreshMinutes } from '../lib/uiSettings'
 
 const LS = {
@@ -99,6 +104,16 @@ export function SettingsPage() {
   const [alertSaving, setAlertSaving] = useState(false)
 
   const [telegramAuthed, setTelegramAuthed] = useState(false)
+  const [tradingAllowed, setTradingAllowed] = useState(false)
+  const [tradeWalletAddress, setTradeWalletAddress] = useState('')
+  const [autosellRules, setAutosellRules] = useState<AutoSellRule[]>([])
+  const [autosellSaving, setAutosellSaving] = useState(false)
+  const [autosellError, setAutosellError] = useState('')
+  const [autosellToast, setAutosellToast] = useState('')
+  const [autosellTriggerType, setAutosellTriggerType] = useState<AutoSellRule['trigger_type']>('SIGNAL_EXIT')
+  const [autosellMode, setAutosellMode] = useState<AutoSellRule['mode']>('NOTIFY_ONLY')
+  const [autosellCooldownSec, setAutosellCooldownSec] = useState(300)
+  const [autosellPriority, setAutosellPriority] = useState(10)
   const [tgLoading, setTgLoading] = useState(false)
   const [tgSaving, setTgSaving] = useState(false)
   const [tgError, setTgError] = useState('')
@@ -157,9 +172,11 @@ export function SettingsPage() {
   useEffect(() => {
     void (async () => {
       try {
-        const [ov, auth] = await Promise.all([
+        const [ov, auth, tonAuth, tradeAccess] = await Promise.all([
           getOverview(),
           getTelegramAuthMe().catch(() => ({ authenticated: false })),
+          getTonAuthMe().catch(() => ({ wallet: null })),
+          getTradingAccess().catch(() => ({ allowed: false, wallet_address: null })),
         ])
         setEngineMode(String(ov.engine_mode || 'н/д'))
         setMarketState(String(ov.market_state || 'н/д'))
@@ -167,8 +184,16 @@ export function SettingsPage() {
         setCollections(Number(ov.counts?.collections || 0))
         const nextTelegramAuthed = Boolean(auth?.authenticated)
         setTelegramAuthed(nextTelegramAuthed)
+        const nextWallet = String(tonAuth?.wallet?.address || tradeAccess?.wallet_address || '')
+        setTradeWalletAddress(nextWallet)
+        const nextTradingAllowed = Boolean(tradeAccess?.allowed)
+        setTradingAllowed(nextTradingAllowed)
         if (nextTelegramAuthed) {
           await loadTelegramSettings()
+        }
+        if (nextTradingAllowed && nextWallet) {
+          const rulesPayload = await getAutoSellRules(nextWallet).catch(() => ({ items: [] }))
+          setAutosellRules(Array.isArray(rulesPayload.items) ? rulesPayload.items : [])
         }
       } catch {
         // ignore in settings
@@ -267,6 +292,36 @@ export function SettingsPage() {
       setTgError(e instanceof Error ? e.message : 'Ошибка тестовой отправки Telegram')
     }
   }, [loadTelegramSettings])
+
+  const saveDefaultAutoSellRule = useCallback(async () => {
+    if (!tradeWalletAddress) return
+    setAutosellSaving(true)
+    setAutosellError('')
+    setAutosellToast('')
+    try {
+      const rule = await upsertAutoSellRule({
+        rule_id: `gmz-${String(autosellTriggerType || 'signal_exit').toLowerCase()}`,
+        wallet_address: tradeWalletAddress,
+        enabled: true,
+        scope: '*',
+        trigger_type: autosellTriggerType,
+        params: { edgeRank100_min: 55, conf_pct_min: 35, expected_profit_pct_min: 8 },
+        mode: autosellMode,
+        cooldown_sec: autosellCooldownSec,
+        priority: autosellPriority,
+      } as AutoSellRule)
+      setAutosellRules((prev) => {
+        const next = prev.filter((x) => x.rule_id !== rule.rule_id)
+        next.push(rule)
+        return next.sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0))
+      })
+      setAutosellToast('AutoSell правило сохранено')
+    } catch (e) {
+      setAutosellError(e instanceof Error ? e.message : 'autosell_save_failed')
+    } finally {
+      setAutosellSaving(false)
+    }
+  }, [tradeWalletAddress, autosellTriggerType, autosellMode, autosellCooldownSec, autosellPriority])
 
   return (
     <section>
@@ -443,6 +498,52 @@ export function SettingsPage() {
                     </div>
                   ) : <div className="text-xs text-slate-500">Ошибок пока нет</div>}
                 </div>
+              </div>
+            </div>
+          )}
+        </BentoCard>
+
+        <BentoCard title="AutoSell PRO" className="xl:col-span-6">
+          {!tradingAllowed ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
+              Trading / AutoSell сейчас открыт только для тестовой Telegram учетной записи `144832201`.
+            </div>
+          ) : !tradeWalletAddress ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
+              Подключите TON wallet, чтобы управлять AutoSell rules.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid gap-3 md:grid-cols-3">
+                <MetricTile label="Wallet" value={tradeWalletAddress ? `${tradeWalletAddress.slice(0, 6)}...${tradeWalletAddress.slice(-6)}` : '—'} />
+                <MetricTile label="Rules" value={String(autosellRules.length)} />
+                <MetricTile label="Mode" value={autosellRules[0]?.mode || 'NOTIFY_ONLY'} />
+              </div>
+              <div className="rounded-xl border border-[var(--line)] bg-white/70 p-3 text-sm text-slate-700">
+                Trigger engine по ТЗ: TAKE_PROFIT / STOP_LOSS / TRAILING_STOP / TIME_EXIT / REGIME_EXIT / SIGNAL_EXIT. Сейчас поднят production-safe базовый rule editor для тестового wallet workflow.
+              </div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Trigger</span><select value={String(autosellTriggerType)} onChange={(e) => setAutosellTriggerType(e.target.value as AutoSellRule['trigger_type'])} className="gmz-input"><option value="SIGNAL_EXIT">SIGNAL_EXIT</option><option value="TAKE_PROFIT">TAKE_PROFIT</option><option value="STOP_LOSS">STOP_LOSS</option><option value="TRAILING_STOP">TRAILING_STOP</option><option value="TIME_EXIT">TIME_EXIT</option><option value="REGIME_EXIT">REGIME_EXIT</option></select></label>
+                <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Mode</span><select value={String(autosellMode)} onChange={(e) => setAutosellMode(e.target.value as AutoSellRule['mode'])} className="gmz-input"><option value="NOTIFY_ONLY">NOTIFY_ONLY</option><option value="AUTO_LIST">AUTO_LIST</option><option value="AUTO_SELL_NOW">AUTO_SELL_NOW</option></select></label>
+                <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Cooldown sec</span><input type="number" min={0} value={autosellCooldownSec} onChange={(e) => setAutosellCooldownSec(Number(e.target.value || 0))} className="gmz-input" /></label>
+                <label className="block text-sm"><span className="mb-1 block font-medium text-slate-700">Priority</span><input type="number" min={0} value={autosellPriority} onChange={(e) => setAutosellPriority(Number(e.target.value || 0))} className="gmz-input" /></label>
+              </div>
+              <button type="button" className="gmz-btn gmz-btn-primary px-4 py-2 text-sm" disabled={autosellSaving} onClick={() => { void saveDefaultAutoSellRule() }}>
+                {autosellSaving ? 'Сохранение…' : 'Сохранить AutoSell rule'}
+              </button>
+              {autosellToast ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{autosellToast}</div> : null}
+              {autosellError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{autosellError}</div> : null}
+              <div className="overflow-x-auto rounded-xl border border-[var(--line)] bg-white/70 p-3">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-slate-500"><th>Rule</th><th>Trigger</th><th>Mode</th><th>Cooldown</th><th>Priority</th></tr>
+                  </thead>
+                  <tbody>
+                    {autosellRules.map((rule) => (
+                      <tr key={rule.rule_id} className="border-t border-slate-100"><td className="py-2">{rule.rule_id}</td><td>{rule.trigger_type}</td><td>{rule.mode}</td><td>{rule.cooldown_sec}</td><td>{rule.priority}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}

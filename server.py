@@ -27,6 +27,7 @@ SPA_FRONTEND_ROUTES = {
     "/screeners",
     "/signals",
     "/listing",
+    "/trades",
     "/favorites",
     "/cabinet",
     "/settings",
@@ -1649,6 +1650,32 @@ def _require_authenticated_telegram_user(handler: BaseHTTPRequestHandler) -> dic
     return None
 
 
+def _require_trading_user(handler: BaseHTTPRequestHandler) -> tuple[dict | None, dict | None]:
+    user = _require_authenticated_telegram_user(handler)
+    if not user:
+        return None, None
+    wallet = _ton_wallet_from_request(handler)
+    access = _state().trading_feature_access_v1(user, wallet)
+    if not bool(access.get("allowed")):
+        _json_response(
+            handler,
+            {"ok": False, "error": "forbidden", "message": "Trading module temporarily enabled only for test account", "details": access},
+            status=HTTPStatus.FORBIDDEN,
+        )
+        return None, None
+    return user, wallet
+
+
+def _validate_wallet_match(expected_wallet: dict | None, wallet_address: str | None) -> tuple[bool, str]:
+    expected = str((expected_wallet or {}).get("address") or "").strip()
+    current = str(wallet_address or "").strip()
+    if not current:
+        return False, "wallet_address_required"
+    if expected and expected != current:
+        return False, "wallet_address_mismatch"
+    return True, "ok"
+
+
 def _user_storage_key(user: dict | None) -> str:
     if not isinstance(user, dict):
         return "default"
@@ -1965,6 +1992,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/trades/access":
+            user = _auth_user_from_request(self)
+            wallet = _ton_wallet_from_request(self)
+            _json_response(self, _state().trading_feature_access_v1(user, wallet), cache_control="no-store")
+            return
+
         if path == "/api/auth/telegram/owned-gifts":
             user = _auth_user_from_request(self)
             _json_response(self, _state().telegram_owned_gifts_v1(user), cache_control="no-store")
@@ -2189,6 +2222,130 @@ class RequestHandler(BaseHTTPRequestHandler):
                 )
                 return
             _json_response(self, data, cache_control="no-store")
+            return
+
+        if path == "/v1/trades/quotes/buy":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            params = parse_qs(parsed.query)
+            variant_id = str((params.get("variant_id") or [""])[0] or "").strip()
+            max_price_raw = (params.get("max_price_ton") or [None])[0]
+            slippage_raw = (params.get("slippage_bps") or ["100"])[0]
+            wallet_address = (params.get("wallet_address") or [None])[0]
+            try:
+                max_price_ton = float(max_price_raw)
+                slippage_bps = int(slippage_raw)
+            except Exception:
+                _json_response(self, {"code": "bad_request", "message": "invalid quote params"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            ok_wallet, reason = _validate_wallet_match(wallet, wallet_address)
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                payload = _state().trades_issue_buy_quote_v1(variant_id=variant_id, max_price_ton=max_price_ton, slippage_bps=slippage_bps, wallet_address=wallet_address)
+                _json_response(self, payload, cache_control="no-store")
+            except Exception as exc:
+                _json_response(self, {"code": "bad_request", "message": f"quote_issue_failed:{exc.__class__.__name__}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            return
+
+        if path == "/v1/trades/intents":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            params = parse_qs(parsed.query)
+            wallet_address = str((params.get("wallet_address") or [""])[0] or "").strip()
+            if not wallet_address:
+                _json_response(self, {"code": "bad_request", "message": "wallet_address_required"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            ok_wallet, reason = _validate_wallet_match(wallet, wallet_address)
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            status_filter = (params.get("status") or [None])[0]
+            limit = int((params.get("limit") or ["100"])[0]) if str((params.get("limit") or ["100"])[0]).isdigit() else 100
+            cursor = (params.get("cursor") or [None])[0]
+            _json_response(self, _state().trades_list_intents_v1(wallet_address, status=status_filter, limit=limit, cursor=cursor), cache_control="no-store")
+            return
+
+        if path == "/v1/trades/positions":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            params = parse_qs(parsed.query)
+            wallet_address = str((params.get("wallet_address") or [""])[0] or "").strip()
+            ok_wallet, reason = _validate_wallet_match(wallet, wallet_address)
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            _json_response(self, _state().trades_positions_v1(wallet_address), cache_control="no-store")
+            return
+
+        if path == "/v1/trades/holdings":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            params = parse_qs(parsed.query)
+            wallet_address = str((params.get("wallet_address") or [""])[0] or "").strip()
+            ok_wallet, reason = _validate_wallet_match(wallet, wallet_address)
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            _json_response(self, _state().trades_holdings_v1(wallet_address), cache_control="no-store")
+            return
+
+        if path == "/v1/trades/pnl":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            params = parse_qs(parsed.query)
+            wallet_address = str((params.get("wallet_address") or [""])[0] or "").strip()
+            ok_wallet, reason = _validate_wallet_match(wallet, wallet_address)
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            _json_response(self, _state().trades_pnl_v1(wallet_address), cache_control="no-store")
+            return
+
+        if path == "/v1/trades/autosell/rules":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            params = parse_qs(parsed.query)
+            wallet_address = str((params.get("wallet_address") or [""])[0] or "").strip()
+            ok_wallet, reason = _validate_wallet_match(wallet, wallet_address)
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            _json_response(self, _state().trades_autosell_rules_v1(wallet_address), cache_control="no-store")
+            return
+
+        if path == "/v1/wallet/activity":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            params = parse_qs(parsed.query)
+            wallet_address = str((params.get("address") or [""])[0] or "").strip()
+            ok_wallet, reason = _validate_wallet_match(wallet, wallet_address)
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            limit = int((params.get("limit") or ["50"])[0]) if str((params.get("limit") or ["50"])[0]).isdigit() else 50
+            cursor = (params.get("cursor") or [None])[0]
+            _json_response(self, _state().wallet_activity_v1(wallet_address, limit=limit, cursor=cursor), cache_control="no-store")
+            return
+
+        if path.startswith("/v1/trades/intents/") and not path.endswith("/confirm_signature"):
+            user, _ = _require_trading_user(self)
+            if user is None:
+                return
+            intent_id = path.split("/")[-1]
+            item = _state().trades_get_intent_v1(intent_id)
+            if not item:
+                _json_response(self, {"code": "not_found", "message": "intent_not_found"}, status=HTTPStatus.NOT_FOUND, cache_control="no-store")
+                return
+            _json_response(self, item, cache_control="no-store")
             return
 
         if path.startswith("/v1/variants/") and path.count("/") == 3:
@@ -4310,6 +4467,50 @@ class RequestHandler(BaseHTTPRequestHandler):
                 _observe_sse_close(stream_key, abrupt=abrupt_close)
             return
 
+        if path in {"/v1/stream/trades", "/v1/stream/pnl"}:
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            params = parse_qs(parsed.query)
+            wallet_address = str((params.get("wallet_address") or [""])[0] or "").strip()
+            ok_wallet, reason = _validate_wallet_match(wallet, wallet_address)
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            heartbeat_ms = int((params.get("heartbeat") or ["15000"])[0]) if str((params.get("heartbeat") or ["15000"])[0]).isdigit() else 15000
+            limit = int((params.get("limit") or ["100"])[0]) if str((params.get("limit") or ["100"])[0]).isdigit() else 100
+            sleep_sec = max(1.0, heartbeat_ms / 1000.0)
+            stream_name = "pnl" if path.endswith("/pnl") else "trades"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            abrupt_close = False
+            try:
+                last_token = ""
+                deadline = time.time() + 25
+                while time.time() < deadline:
+                    payload = _state().trades_stream_events_v1(wallet_address, stream=stream_name, limit=limit)
+                    token = hashlib.sha1(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+                    try:
+                        if token != last_token:
+                            last_token = token
+                            for ev in payload.get("items") if isinstance(payload.get("items"), list) else []:
+                                name = str((ev or {}).get("event") or "trades.keepalive")
+                                self.wfile.write(f"event: {name}\n".encode("utf-8"))
+                                self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
+                        else:
+                            self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        abrupt_close = True
+                        break
+                    time.sleep(sleep_sec)
+            finally:
+                _observe_sse_close(path, abrupt=abrupt_close)
+            return
+
         if path.startswith("/api/") and not path.startswith("/api/auth/"):
             if not _require_auth(self):
                 return
@@ -4759,6 +4960,73 @@ class RequestHandler(BaseHTTPRequestHandler):
             payload = _read_json_body(self)
             kind = str(payload.get("kind") or "gift_signal") if isinstance(payload, dict) else "gift_signal"
             _json_response(self, _state().telegram_delivery_test_v1(kind=kind), cache_control="no-store")
+            return
+        if parsed.path == "/v1/trades/fast/confirm":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            payload = _read_json_body(self)
+            ok_wallet, reason = _validate_wallet_match(wallet, payload.get("wallet_address"))
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                item = _state().trades_fast_confirm_v1(payload)
+                _json_response(self, item, cache_control="no-store")
+            except TimeoutError:
+                _json_response(self, {"code": "quote_expired", "message": "quote expired"}, status=HTTPStatus.GONE, cache_control="no-store")
+            except RuntimeError as exc:
+                _json_response(self, {"code": "conflict", "message": str(exc)}, status=HTTPStatus.CONFLICT, cache_control="no-store")
+            except Exception as exc:
+                _json_response(self, {"code": "bad_request", "message": f"fast_confirm_failed:{exc.__class__.__name__}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            return
+        if parsed.path == "/v1/trades/intents":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            payload = _read_json_body(self)
+            ok_wallet, reason = _validate_wallet_match(wallet, payload.get("wallet_address"))
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                _json_response(self, _state().trades_create_intent_v1(payload), cache_control="no-store")
+            except RuntimeError as exc:
+                _json_response(self, {"code": "conflict", "message": str(exc)}, status=HTTPStatus.CONFLICT, cache_control="no-store")
+            except Exception as exc:
+                _json_response(self, {"code": "bad_request", "message": f"create_intent_failed:{exc.__class__.__name__}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            return
+        if parsed.path.endswith("/confirm_signature") and parsed.path.startswith("/v1/trades/intents/"):
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            intent_id = parsed.path.split("/")[-2]
+            payload = _read_json_body(self)
+            if payload.get("wallet_address"):
+                ok_wallet, reason = _validate_wallet_match(wallet, payload.get("wallet_address"))
+                if not ok_wallet:
+                    _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                    return
+            try:
+                _json_response(self, _state().trades_confirm_signature_v1(intent_id, payload), cache_control="no-store")
+            except KeyError:
+                _json_response(self, {"code": "not_found", "message": "intent_not_found"}, status=HTTPStatus.NOT_FOUND, cache_control="no-store")
+            except Exception as exc:
+                _json_response(self, {"code": "bad_request", "message": f"confirm_signature_failed:{exc.__class__.__name__}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            return
+        if parsed.path == "/v1/trades/autosell/rules":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            payload = _read_json_body(self)
+            ok_wallet, reason = _validate_wallet_match(wallet, payload.get("wallet_address"))
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            try:
+                _json_response(self, _state().trades_upsert_autosell_rule_v1(payload), cache_control="no-store")
+            except Exception as exc:
+                _json_response(self, {"code": "bad_request", "message": f"autosell_rule_failed:{exc.__class__.__name__}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             return
         if parsed.path == "/api/alerts":
             rule = _read_json_body(self)

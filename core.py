@@ -23,6 +23,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from fragment import FragmentClient, ListingEvent, VariantTraits, BaseInfo
 from telegram_delivery import TelegramNotifier
+from trading_runtime import TradeRuntime
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ MT_LISTINGS_SNAPSHOT_FILE = DATA_DIR / "mt_listings_snapshot.json"
 TELEGRAM_DELIVERY_SETTINGS_FILE = DATA_DIR / "telegram_delivery_settings.json"
 TELEGRAM_DELIVERY_JOURNAL_FILE = DATA_DIR / "telegram_delivery_journal.json"
 OWNED_GIFTS_FILE = DATA_DIR / "owned_gifts_by_user.json"
+TRADE_ALLOWED_USERS = {str(x).strip() for x in os.getenv("TRADES_ALLOWED_TELEGRAM_USER_IDS", "144832201").split(",") if str(x).strip()}
 
 WINDOWS = {
     "10m": 10 * 60,
@@ -828,6 +830,11 @@ class GiftAnalyticsService:
         self.telegram_owned_gifts_cache_ttl_sec = max(5.0, float(os.getenv("TELEGRAM_OWNED_GIFTS_CACHE_TTL_SEC", "60")))
         self._telegram_owned_gifts_cache: dict[str, tuple[float, dict]] = {}
         self.owned_gifts_file = Path(os.getenv("OWNED_GIFTS_FILE", str(OWNED_GIFTS_FILE.resolve())))
+        self.trade_runtime = TradeRuntime(
+            DATA_DIR,
+            quote_secret=str(os.getenv("TRADES_QUOTE_SECRET", "giftmarketzone-trades-secret") or "giftmarketzone-trades-secret"),
+            quote_ttl_sec=int(os.getenv("TRADES_QUOTE_TTL_SEC", "5") or "5"),
+        )
         self.metrics_strict_exact_max_variants = max(50, int(os.getenv("METRICS_STRICT_EXACT_MAX_VARIANTS", "500")))
         self.redis_collections_publish_limit = max(1, min(int(os.getenv("REDIS_COLLECTIONS_PUBLISH_LIMIT", "24")), 200))
         self.redis_collection_floor_series_limit = max(1, min(int(os.getenv("REDIS_COLLECTION_FLOOR_SERIES_LIMIT", "200")), 1000))
@@ -3647,6 +3654,85 @@ class GiftAnalyticsService:
             "acquired_at": str(row.get("acquired_at") or row.get("updated_at") or row.get("ts") or ""),
             "meta": row,
         }
+
+    def trading_feature_access_v1(self, telegram_user: dict | None, ton_wallet: dict | None = None) -> dict:
+        user = telegram_user if isinstance(telegram_user, dict) else {}
+        uid = str(user.get("id") or "").strip()
+        wallet = ton_wallet if isinstance(ton_wallet, dict) else {}
+        return {
+            "ok": True,
+            "allowed": bool(uid and uid in TRADE_ALLOWED_USERS),
+            "telegram_user_id": uid or None,
+            "wallet_address": str(wallet.get("address") or "").strip() or None,
+            "reason": None if uid in TRADE_ALLOWED_USERS else "restricted_test_access",
+        }
+
+    def trade_variant_snapshot_v1(self, variant_id: str) -> dict:
+        snap = self.catalog_variant_v1(str(variant_id or "")) or {}
+        return snap if isinstance(snap, dict) else {}
+
+    def trades_issue_buy_quote_v1(self, *, variant_id: str, max_price_ton: float, slippage_bps: int = 100, wallet_address: str | None = None) -> dict:
+        return self.trade_runtime.issue_buy_quote(
+            variant_id=str(variant_id or "").strip(),
+            max_price_ton=float(max_price_ton),
+            slippage_bps=int(slippage_bps),
+            wallet_address=wallet_address,
+            variant_snapshot=self.trade_variant_snapshot_v1(variant_id),
+        )
+
+    def trades_fast_confirm_v1(self, payload: dict) -> dict:
+        market = self.market_status_v1(window="30m") if hasattr(self, "market_status_v1") else {}
+        regime = str((market or {}).get("market_regime") or "MEAN_REVERT")
+        quote = payload if isinstance(payload, dict) else {}
+        variant_id = str(((self.trade_runtime._decode_quote(str(quote.get("buy_quote_token") or "")) or {}).get("quote") or {}).get("variant_id") or "")
+        return self.trade_runtime.confirm_fast_buy(quote, market_regime=regime, variant_snapshot=self.trade_variant_snapshot_v1(variant_id))
+
+    def trades_create_intent_v1(self, payload: dict) -> dict:
+        req = payload if isinstance(payload, dict) else {}
+        market = self.market_status_v1(window="30m") if hasattr(self, "market_status_v1") else {}
+        regime = str((market or {}).get("market_regime") or "MEAN_REVERT")
+        return self.trade_runtime.create_trade_intent(req, market_regime=regime, variant_snapshot=self.trade_variant_snapshot_v1(str(req.get("variant_id") or "")))
+
+    def trades_get_intent_v1(self, intent_id: str) -> dict | None:
+        return self.trade_runtime.get_trade_intent(intent_id)
+
+    def trades_confirm_signature_v1(self, intent_id: str, payload: dict) -> dict:
+        target = self.trade_runtime.get_trade_intent(intent_id)
+        if not isinstance(target, dict):
+            raise KeyError("intent_not_found")
+        market = self.market_status_v1(window="30m") if hasattr(self, "market_status_v1") else {}
+        regime = str((market or {}).get("market_regime") or "MEAN_REVERT")
+        return self.trade_runtime.confirm_intent_signature(intent_id, payload if isinstance(payload, dict) else {}, market_regime=regime, variant_snapshot=self.trade_variant_snapshot_v1(str(target.get("variant_id") or "")))
+
+    def trades_list_intents_v1(self, wallet_address: str, status: str | None = None, limit: int = 100, cursor: str | None = None) -> dict:
+        return self.trade_runtime.list_trade_intents(wallet_address, status=status, limit=limit, cursor=cursor)
+
+    def trades_positions_v1(self, wallet_address: str) -> dict:
+        return self.trade_runtime.list_positions(wallet_address)
+
+    def trades_holdings_v1(self, wallet_address: str) -> dict:
+        return self.trade_runtime.list_holdings(wallet_address)
+
+    def trades_pnl_v1(self, wallet_address: str) -> dict:
+        market = self.market_status_v1(window="30m") if hasattr(self, "market_status_v1") else {}
+        regime = str((market or {}).get("market_regime") or "MEAN_REVERT")
+        return self.trade_runtime.get_pnl_summary(wallet_address, market_regime=regime)
+
+    def trades_autosell_rules_v1(self, wallet_address: str) -> dict:
+        return self.trade_runtime.list_autosell_rules(wallet_address)
+
+    def trades_upsert_autosell_rule_v1(self, payload: dict) -> dict:
+        return self.trade_runtime.upsert_autosell_rule(payload if isinstance(payload, dict) else {})
+
+    def wallet_activity_v1(self, wallet_address: str, limit: int = 50, cursor: str | None = None) -> dict:
+        return self.trade_runtime.wallet_activity(wallet_address, limit=limit, cursor=cursor)
+
+    def trades_stream_events_v1(self, wallet_address: str, stream: str = "trades", limit: int = 100) -> dict:
+        kinds = {"trade.intent.created", "trade.intent.confirmed", "trade.intent.failed", "position.updated", "holding.updated", "wallet.activity.updated"}
+        if stream == "pnl":
+            kinds = {"pnl.updated"}
+        items = self.trade_runtime.stream_events(wallet_address, kinds=kinds, limit=limit)
+        return {"items": items}
 
     def favorites_list(self, user_key: str = "default") -> List[dict]:
         data = _load_json(FAVORITES_FILE, {})

@@ -1,0 +1,515 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import secrets
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime | None = None) -> str:
+    target = dt or _now_utc()
+    return target.isoformat().replace("+00:00", "Z")
+
+
+def _load_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _save_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{int(time.time() * 1000)}")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+class TradeRuntime:
+    def __init__(self, data_dir: Path, *, quote_secret: str, quote_ttl_sec: int = 5) -> None:
+        self.data_dir = data_dir
+        self.quote_secret = str(quote_secret or "gmz-trade-quote-secret").encode("utf-8")
+        self.quote_ttl_sec = max(3, min(int(quote_ttl_sec or 5), 10))
+        self.intents_file = data_dir / "trade_intents_store.json"
+        self.positions_file = data_dir / "trade_positions_store.json"
+        self.holdings_file = data_dir / "trade_holdings_store.json"
+        self.autosell_file = data_dir / "trade_autosell_rules_store.json"
+        self.wallet_activity_file = data_dir / "trade_wallet_activity_store.json"
+        self.events_file = data_dir / "trade_events_store.json"
+        self.used_quotes: dict[str, float] = {}
+
+    def list_trade_intents(self, wallet_address: str, status: str | None = None, limit: int = 100, cursor: str | None = None) -> dict:
+        items = [x for x in self._read_list(self.intents_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
+        if status:
+            items = [x for x in items if str(x.get("status") or "") == str(status)]
+        items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+        start = int(cursor or 0) if str(cursor or "").isdigit() else 0
+        end = start + max(1, min(int(limit or 100), 500))
+        next_cursor = str(end) if end < len(items) else None
+        return {"items": items[start:end], "next_cursor": next_cursor}
+
+    def get_trade_intent(self, intent_id: str) -> dict | None:
+        for row in self._read_list(self.intents_file):
+            if str(row.get("intent_id") or "") == str(intent_id or ""):
+                return row
+        return None
+
+    def create_trade_intent(self, payload: dict, *, market_regime: str, variant_snapshot: dict | None) -> dict:
+        intent_type = str(payload.get("intent_type") or "").upper()
+        wallet_address = str(payload.get("wallet_address") or "").strip()
+        variant_id = str(payload.get("variant_id") or "").strip()
+        if intent_type not in {"BUY", "BUY_AND_LIST", "SELL", "LIST", "CANCEL_LISTING", "TRANSFER"}:
+            raise ValueError("unsupported_intent_type")
+        if not wallet_address or not variant_id:
+            raise ValueError("missing_required_fields")
+        idem = str(payload.get("idempotency_key") or "").strip()
+        intents = self._read_list(self.intents_file)
+        if idem:
+            for row in intents:
+                if str(row.get("idempotency_key") or "") == idem:
+                    return {"intent": row, "wallet_tx": self._wallet_tx_for_intent(row)}
+        now = _now_utc()
+        item = {
+            "intent_id": f"ti_{secrets.token_hex(8)}",
+            "intent_type": intent_type,
+            "variant_id": variant_id,
+            "wallet_address": wallet_address,
+            "listing_id": payload.get("listing_id"),
+            "gift_unique_id": payload.get("gift_unique_id"),
+            "price_ton": payload.get("price_ton"),
+            "max_spend_ton": payload.get("max_spend_ton"),
+            "fee_budget_ton": payload.get("fee_budget_ton"),
+            "status": "PENDING_SIGNATURE",
+            "source": "STANDARD",
+            "created_at": _iso(now),
+            "expires_at": _iso(now + timedelta(minutes=10)),
+            "tx_hash": None,
+            "chain_id": payload.get("chain_id") or (f"chain_{secrets.token_hex(6)}" if intent_type == "BUY_AND_LIST" else None),
+            "parent_intent_id": payload.get("parent_intent_id"),
+            "step_index": payload.get("step_index"),
+            "chain_policy": payload.get("chain_policy"),
+            "post_action": payload.get("post_action"),
+            "reasons": list((variant_snapshot or {}).get("reasons") or []),
+            "risk_flags": list((variant_snapshot or {}).get("risk_flags") or []),
+            "decision_trace": {
+                "market_regime": market_regime,
+                "variant_label": (variant_snapshot or {}).get("variant_label"),
+                "requested_intent_type": intent_type,
+            },
+            "idempotency_key": idem or None,
+        }
+        intents.append(item)
+        self._write_list(self.intents_file, intents)
+        self._append_event("trade.intent.created", item)
+        return {"intent": item, "wallet_tx": self._wallet_tx_for_intent(item)}
+
+    def confirm_intent_signature(self, intent_id: str, payload: dict, *, market_regime: str, variant_snapshot: dict | None) -> dict:
+        intents = self._read_list(self.intents_file)
+        target = None
+        for row in intents:
+            if str(row.get("intent_id") or "") == str(intent_id or ""):
+                target = row
+                break
+        if not isinstance(target, dict):
+            raise KeyError("intent_not_found")
+        if str(target.get("status") or "") in {"CONFIRMED", "BROADCAST", "SIGNED"} and str(target.get("tx_hash") or "") == str(payload.get("tx_hash") or ""):
+            return target
+        target["tx_hash"] = str(payload.get("tx_hash") or "").strip() or target.get("tx_hash")
+        target["status"] = "CONFIRMED"
+        self._write_list(self.intents_file, intents)
+        self._apply_confirmed_intent(target, market_regime=market_regime, variant_snapshot=variant_snapshot)
+        self._append_event("trade.intent.confirmed", target)
+        return target
+
+    def issue_buy_quote(self, *, variant_id: str, max_price_ton: float, slippage_bps: int, wallet_address: str | None, variant_snapshot: dict | None) -> dict:
+        snapshot = variant_snapshot or {}
+        nonce = secrets.token_hex(10)
+        now = _now_utc()
+        fee_budget = max(0.03, round(max_price_ton * 0.01, 4))
+        quote = {
+            "variant_id": variant_id,
+            "listing_id": snapshot.get("listing_id"),
+            "max_price_ton": round(float(max_price_ton), 6),
+            "slippage_bps": int(slippage_bps),
+            "fee_budget_ton": fee_budget,
+            "wallet_address_hash": hashlib.sha256(str(wallet_address or "").encode("utf-8")).hexdigest() if wallet_address else None,
+            "nonce": nonce,
+            "issued_at": int(now.timestamp()),
+        }
+        body = json.dumps(quote, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        sig = hmac.new(self.quote_secret, body, hashlib.sha256).hexdigest()
+        token = base64.urlsafe_b64encode(json.dumps({"quote": quote, "sig": sig}).encode("utf-8")).decode("utf-8")
+        payload = {"buy_quote_token": token, "expires_at": _iso(now + timedelta(seconds=self.quote_ttl_sec)), "quote": {k: v for k, v in quote.items() if k != "issued_at"}}
+        self._append_event("trade.quote.issued", payload)
+        return payload
+
+    def confirm_fast_buy(self, payload: dict, *, market_regime: str, variant_snapshot: dict | None) -> dict:
+        token = str(payload.get("buy_quote_token") or "").strip()
+        tx_hash = str(payload.get("tx_hash") or "").strip()
+        wallet_address = str(payload.get("wallet_address") or "").strip()
+        if not token or not tx_hash or not wallet_address:
+            raise ValueError("missing_fast_confirm_fields")
+        quote = self._decode_quote(token)
+        nonce = str(((quote or {}).get("quote") or {}).get("nonce") or "")
+        if not nonce:
+            raise ValueError("invalid_quote")
+        if nonce in self.used_quotes and self.used_quotes[nonce] > time.time():
+            raise RuntimeError("quote_nonce_already_used")
+        issued_at = _as_int(((quote or {}).get("quote") or {}).get("issued_at"), 0)
+        if issued_at <= 0 or (time.time() - issued_at) > self.quote_ttl_sec:
+            raise TimeoutError("quote_expired")
+        wallet_hash = ((quote or {}).get("quote") or {}).get("wallet_address_hash")
+        if wallet_hash and wallet_hash != hashlib.sha256(wallet_address.encode("utf-8")).hexdigest():
+            raise ValueError("wallet_address_mismatch")
+        self.used_quotes[nonce] = time.time() + 30.0
+        quote_payload = (quote or {}).get("quote") or {}
+        item = self.create_trade_intent(
+            {
+                "intent_type": "BUY",
+                "variant_id": quote_payload.get("variant_id"),
+                "wallet_address": wallet_address,
+                "max_spend_ton": quote_payload.get("max_price_ton"),
+                "fee_budget_ton": quote_payload.get("fee_budget_ton"),
+                "idempotency_key": f"fast:{nonce}",
+            },
+            market_regime=market_regime,
+            variant_snapshot=variant_snapshot,
+        )["intent"]
+        item["source"] = "FAST_BUY"
+        item["status"] = "CONFIRMED"
+        item["tx_hash"] = tx_hash
+        intents = self._read_list(self.intents_file)
+        for idx, row in enumerate(intents):
+            if str(row.get("intent_id") or "") == str(item.get("intent_id") or ""):
+                intents[idx] = item
+                break
+        self._write_list(self.intents_file, intents)
+        self._append_event("trade.quote.used", {"nonce": nonce, "wallet_address": wallet_address, "tx_hash": tx_hash})
+        self._apply_confirmed_intent(item, market_regime=market_regime, variant_snapshot=variant_snapshot)
+        self._append_event("trade.intent.confirmed", item)
+        return item
+
+    def list_positions(self, wallet_address: str) -> dict:
+        items = [x for x in self._read_list(self.positions_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
+        items.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
+        return {"items": items}
+
+    def list_holdings(self, wallet_address: str) -> dict:
+        items = [x for x in self._read_list(self.holdings_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
+        items.sort(key=lambda x: str(x.get("updated_at") or x.get("acquired_at") or ""), reverse=True)
+        return {"items": items}
+
+    def get_pnl_summary(self, wallet_address: str, *, market_regime: str) -> dict:
+        positions = self.list_positions(wallet_address).get("items") or []
+        realized_ton = sum(_as_float(x.get("realized_pnl_ton"), 0.0) for x in positions)
+        unrealized_ton = sum(_as_float(x.get("unrealized_pnl_ton"), 0.0) for x in positions)
+        exposure_ton = sum(_as_float(x.get("mark_price_ton"), 0.0) * _as_float(x.get("qty"), 0.0) for x in positions)
+        return {
+            "pnl_today_ton": round(realized_ton + unrealized_ton, 6),
+            "pnl_today_pct": round(((realized_ton + unrealized_ton) / exposure_ton) * 100.0, 2) if exposure_ton > 0 else 0.0,
+            "pnl_7d_ton": round(realized_ton, 6),
+            "pnl_30d_ton": round(realized_ton, 6),
+            "win_rate": 100.0 if realized_ton >= 0 and positions else 0.0,
+            "avg_hold_min": 0.0,
+            "best_trade_ton": max([0.0] + [_as_float(x.get("realized_pnl_ton"), 0.0) for x in positions]),
+            "worst_trade_ton": min([0.0] + [_as_float(x.get("realized_pnl_ton"), 0.0) for x in positions]),
+            "exposure_ton": round(exposure_ton, 6),
+            "market_regime": market_regime,
+        }
+
+    def list_autosell_rules(self, wallet_address: str) -> dict:
+        items = [x for x in self._read_list(self.autosell_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
+        items.sort(key=lambda x: (int(x.get("priority") or 0), str(x.get("updated_at") or "")))
+        return {"items": items}
+
+    def upsert_autosell_rule(self, payload: dict) -> dict:
+        wallet_address = str(payload.get("wallet_address") or "").strip()
+        if not wallet_address:
+            raise ValueError("wallet_address_required")
+        rules = self._read_list(self.autosell_file)
+        rule_id = str(payload.get("rule_id") or "").strip() or f"asr_{secrets.token_hex(6)}"
+        item = {
+            "rule_id": rule_id,
+            "wallet_address": wallet_address,
+            "enabled": bool(payload.get("enabled", True)),
+            "scope": str(payload.get("scope") or "*"),
+            "trigger_type": str(payload.get("trigger_type") or "TAKE_PROFIT"),
+            "params": payload.get("params") if isinstance(payload.get("params"), dict) else {},
+            "mode": str(payload.get("mode") or "NOTIFY_ONLY"),
+            "list_price_strategy": payload.get("list_price_strategy"),
+            "cooldown_sec": max(0, _as_int(payload.get("cooldown_sec"), 0)),
+            "priority": max(0, _as_int(payload.get("priority"), 100)),
+            "updated_at": _iso(),
+        }
+        updated = False
+        for idx, row in enumerate(rules):
+            if str(row.get("rule_id") or "") == rule_id:
+                rules[idx] = item
+                updated = True
+                break
+        if not updated:
+            rules.append(item)
+        self._write_list(self.autosell_file, rules)
+        return item
+
+    def wallet_activity(self, wallet_address: str, limit: int = 50, cursor: str | None = None) -> dict:
+        items = [x for x in self._read_list(self.wallet_activity_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
+        items.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
+        start = int(cursor or 0) if str(cursor or "").isdigit() else 0
+        end = start + max(1, min(int(limit or 50), 200))
+        return {"items": items[start:end], "next_cursor": str(end) if end < len(items) else None}
+
+    def stream_events(self, wallet_address: str, kinds: set[str] | None = None, limit: int = 100) -> list[dict]:
+        rows = self._read_list(self.events_file)
+        out = []
+        wanted = kinds or set()
+        for row in reversed(rows[-max(1, min(limit, 500)):]):
+            if not isinstance(row, dict):
+                continue
+            ev = str(row.get("event") or "")
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            candidate_wallet = str(payload.get("wallet_address") or "")
+            if wallet_address and candidate_wallet and candidate_wallet != wallet_address:
+                continue
+            if wanted and ev not in wanted:
+                continue
+            out.append(row)
+        return out
+
+    def _decode_quote(self, token: str) -> dict:
+        try:
+            raw = json.loads(base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8"))
+        except Exception as exc:
+            raise ValueError("invalid_quote_token") from exc
+        quote = raw.get("quote") if isinstance(raw.get("quote"), dict) else {}
+        sig = str(raw.get("sig") or "")
+        body = json.dumps(quote, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        expected = hmac.new(self.quote_secret, body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            raise ValueError("invalid_quote_signature")
+        return raw
+
+    def _apply_confirmed_intent(self, intent: dict, *, market_regime: str, variant_snapshot: dict | None) -> None:
+        intent_type = str(intent.get("intent_type") or "")
+        wallet_address = str(intent.get("wallet_address") or "")
+        variant_id = str(intent.get("variant_id") or "")
+        holdings = self._read_list(self.holdings_file)
+        positions = self._read_list(self.positions_file)
+        now_iso = _iso()
+        price_ton = _as_float(intent.get("price_ton"), _as_float(intent.get("max_spend_ton"), _as_float((variant_snapshot or {}).get("price_ton"), _as_float((variant_snapshot or {}).get("floor_ton"), 0.0))))
+        fair_ton = _as_float((variant_snapshot or {}).get("fair_ton"), _as_float((variant_snapshot or {}).get("floor_ton"), price_ton))
+        if intent_type in {"BUY", "BUY_AND_LIST"}:
+            holding_id = f"hld_{secrets.token_hex(6)}"
+            gift_unique_id = str(intent.get("gift_unique_id") or f"{variant_id}:{holding_id}")
+            holdings.append({
+                "holding_id": holding_id,
+                "wallet_address": wallet_address,
+                "gift_unique_id": gift_unique_id,
+                "variant_id": variant_id,
+                "acquired_price_ton": price_ton,
+                "acquired_at": now_iso,
+                "status": "OWNED",
+                "marketplace_listing_id": None,
+                "listed_price_ton": None,
+                "updated_at": now_iso,
+            })
+            self._touch_position(positions, wallet_address, variant_id, qty_delta=1.0, buy_price=price_ton, mark_price=fair_ton, variant_snapshot=variant_snapshot)
+            self._append_wallet_activity(wallet_address, amount_ton=-price_ton, tx_hash=str(intent.get("tx_hash") or ""), direction="OUT")
+            if str(intent.get("chain_policy") or "") == "BUY_THEN_LIST":
+                post_action = intent.get("post_action") if isinstance(intent.get("post_action"), dict) else {}
+                if str(post_action.get("type") or "") == "LIST":
+                    self._create_followup_list_intent(parent_intent=intent, listing_params=post_action.get("listing_params") if isinstance(post_action.get("listing_params"), dict) else {})
+        elif intent_type == "LIST":
+            for row in holdings:
+                if str(row.get("wallet_address") or "") == wallet_address and str(row.get("variant_id") or "") == variant_id and str(row.get("status") or "") == "OWNED":
+                    row["status"] = "LISTED"
+                    row["marketplace_listing_id"] = str(intent.get("listing_id") or f"ml_{secrets.token_hex(5)}")
+                    row["listed_price_ton"] = _as_float((intent.get("post_action") or {}).get("listing_params", {}).get("list_price_ton"), _as_float(intent.get("price_ton"), fair_ton))
+                    row["updated_at"] = now_iso
+                    break
+        elif intent_type == "CANCEL_LISTING":
+            for row in holdings:
+                if str(row.get("wallet_address") or "") == wallet_address and str(row.get("variant_id") or "") == variant_id and str(row.get("status") or "") == "LISTED":
+                    row["status"] = "OWNED"
+                    row["marketplace_listing_id"] = None
+                    row["listed_price_ton"] = None
+                    row["updated_at"] = now_iso
+                    break
+        elif intent_type in {"SELL", "TRANSFER"}:
+            for row in holdings:
+                if str(row.get("wallet_address") or "") == wallet_address and str(row.get("variant_id") or "") == variant_id and str(row.get("status") or "") in {"OWNED", "LISTED"}:
+                    row["status"] = "SOLD"
+                    row["updated_at"] = now_iso
+                    break
+            self._touch_position(positions, wallet_address, variant_id, qty_delta=-1.0, buy_price=price_ton, mark_price=fair_ton, variant_snapshot=variant_snapshot)
+            self._append_wallet_activity(wallet_address, amount_ton=price_ton, tx_hash=str(intent.get("tx_hash") or ""), direction="IN")
+        self._write_list(self.holdings_file, holdings)
+        self._write_list(self.positions_file, positions)
+        pnl = self.get_pnl_summary(wallet_address, market_regime=market_regime)
+        self._append_event("position.updated", {**self._latest_position_for_wallet(positions, wallet_address, variant_id), "wallet_address": wallet_address})
+        self._append_event("holding.updated", {**self._latest_holding_for_wallet(holdings, wallet_address, variant_id), "wallet_address": wallet_address})
+        self._append_event("pnl.updated", {**pnl, "wallet_address": wallet_address})
+
+    def _create_followup_list_intent(self, *, parent_intent: dict, listing_params: dict) -> None:
+        intents = self._read_list(self.intents_file)
+        idem = f"chain:{parent_intent.get('chain_id')}:step:2"
+        for row in intents:
+            if str(row.get("idempotency_key") or "") == idem:
+                return
+        now = _now_utc()
+        child = {
+            "intent_id": f"ti_{secrets.token_hex(8)}",
+            "intent_type": "LIST",
+            "variant_id": parent_intent.get("variant_id"),
+            "wallet_address": parent_intent.get("wallet_address"),
+            "listing_id": None,
+            "gift_unique_id": None,
+            "price_ton": listing_params.get("list_price_ton"),
+            "max_spend_ton": None,
+            "fee_budget_ton": None,
+            "status": "PENDING_SIGNATURE",
+            "source": "STANDARD",
+            "created_at": _iso(now),
+            "expires_at": _iso(now + timedelta(minutes=10)),
+            "tx_hash": None,
+            "chain_id": parent_intent.get("chain_id"),
+            "parent_intent_id": parent_intent.get("intent_id"),
+            "step_index": 2,
+            "chain_policy": "BUY_THEN_LIST",
+            "post_action": {"type": "LIST", "listing_params": listing_params},
+            "reasons": parent_intent.get("reasons") or [],
+            "risk_flags": parent_intent.get("risk_flags") or [],
+            "decision_trace": {"generated_from_buy_confirm": True},
+            "idempotency_key": idem,
+        }
+        intents.append(child)
+        self._write_list(self.intents_file, intents)
+        self._append_event("trade.intent.created", child)
+
+    def _touch_position(self, positions: list[dict], wallet_address: str, variant_id: str, *, qty_delta: float, buy_price: float, mark_price: float, variant_snapshot: dict | None) -> None:
+        target = None
+        for row in positions:
+            if str(row.get("wallet_address") or "") == wallet_address and str(row.get("variant_id") or "") == variant_id:
+                target = row
+                break
+        now_iso = _iso()
+        if target is None:
+            if qty_delta <= 0:
+                return
+            positions.append({
+                "position_id": f"pos_{secrets.token_hex(6)}",
+                "wallet_address": wallet_address,
+                "variant_id": variant_id,
+                "qty": qty_delta,
+                "avg_buy_price_ton": buy_price,
+                "mark_price_ton": mark_price,
+                "fees_paid_ton": 0.0,
+                "realized_pnl_ton": 0.0,
+                "realized_pnl_pct": 0.0,
+                "unrealized_pnl_ton": round((mark_price - buy_price) * qty_delta, 6),
+                "unrealized_pnl_pct": round(((mark_price - buy_price) / buy_price) * 100.0, 2) if buy_price > 0 else 0.0,
+                "edgeRank100": (variant_snapshot or {}).get("edgeRank100"),
+                "conf_pct": (variant_snapshot or {}).get("conf_pct"),
+                "action": (variant_snapshot or {}).get("action"),
+                "risk_flags": list((variant_snapshot or {}).get("risk_flags") or []),
+                "opened_at": now_iso,
+                "updated_at": now_iso,
+            })
+            return
+        qty_before = _as_float(target.get("qty"), 0.0)
+        avg_buy = _as_float(target.get("avg_buy_price_ton"), buy_price)
+        qty_after = qty_before + qty_delta
+        if qty_delta > 0:
+            total_cost = (qty_before * avg_buy) + (qty_delta * buy_price)
+            target["qty"] = qty_after
+            target["avg_buy_price_ton"] = round(total_cost / qty_after, 6) if qty_after > 0 else avg_buy
+        else:
+            realized = (mark_price - avg_buy) * abs(qty_delta)
+            target["qty"] = max(0.0, qty_after)
+            target["realized_pnl_ton"] = round(_as_float(target.get("realized_pnl_ton"), 0.0) + realized, 6)
+            target["realized_pnl_pct"] = round((target["realized_pnl_ton"] / (avg_buy * max(1.0, qty_before))) * 100.0, 2) if avg_buy > 0 and qty_before > 0 else 0.0
+        target["mark_price_ton"] = mark_price
+        target["unrealized_pnl_ton"] = round((mark_price - _as_float(target.get("avg_buy_price_ton"), avg_buy)) * _as_float(target.get("qty"), 0.0), 6)
+        target["unrealized_pnl_pct"] = round(((mark_price - _as_float(target.get("avg_buy_price_ton"), avg_buy)) / _as_float(target.get("avg_buy_price_ton"), avg_buy)) * 100.0, 2) if _as_float(target.get("avg_buy_price_ton"), avg_buy) > 0 else 0.0
+        target["edgeRank100"] = (variant_snapshot or {}).get("edgeRank100")
+        target["conf_pct"] = (variant_snapshot or {}).get("conf_pct")
+        target["action"] = (variant_snapshot or {}).get("action")
+        target["risk_flags"] = list((variant_snapshot or {}).get("risk_flags") or [])
+        target["updated_at"] = now_iso
+        if _as_float(target.get("qty"), 0.0) <= 0:
+            positions[:] = [x for x in positions if x is not target]
+
+    def _wallet_tx_for_intent(self, intent: dict) -> dict:
+        amount = _as_float(intent.get("max_spend_ton"), _as_float(intent.get("price_ton"), 0.0))
+        return {
+            "validUntil": int(time.time()) + 600,
+            "messages": [
+                {
+                    "address": "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c",
+                    "amount": str(int(max(amount, 0.01) * 1_000_000_000)),
+                    "payload": f"gmz:{intent.get('intent_type')}:{intent.get('intent_id')}",
+                }
+            ],
+        }
+
+    def _append_wallet_activity(self, wallet_address: str, *, amount_ton: float, tx_hash: str, direction: str) -> None:
+        items = self._read_list(self.wallet_activity_file)
+        items.append({
+            "wallet_address": wallet_address,
+            "ts": _iso(),
+            "direction": direction,
+            "amount_ton": round(amount_ton, 6),
+            "counterparty": "marketplace",
+            "tx_hash": tx_hash or f"tx_{secrets.token_hex(6)}",
+        })
+        self._write_list(self.wallet_activity_file, items[-1000:])
+        self._append_event("wallet.activity.updated", {"wallet_address": wallet_address, "items": [items[-1]]})
+
+    def _append_event(self, event: str, payload: dict) -> None:
+        items = self._read_list(self.events_file)
+        items.append({"event": event, "ts": _iso(), "payload": payload})
+        self._write_list(self.events_file, items[-2000:])
+
+    def _latest_position_for_wallet(self, positions: list[dict], wallet_address: str, variant_id: str) -> dict:
+        for row in reversed(positions):
+            if str(row.get("wallet_address") or "") == wallet_address and str(row.get("variant_id") or "") == variant_id:
+                return row
+        return {"wallet_address": wallet_address, "variant_id": variant_id}
+
+    def _latest_holding_for_wallet(self, holdings: list[dict], wallet_address: str, variant_id: str) -> dict:
+        for row in reversed(holdings):
+            if str(row.get("wallet_address") or "") == wallet_address and str(row.get("variant_id") or "") == variant_id:
+                return row
+        return {"wallet_address": wallet_address, "variant_id": variant_id}
+
+    def _read_list(self, path: Path) -> list[dict]:
+        data = _load_json(path, [])
+        return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
+
+    def _write_list(self, path: Path, rows: list[dict]) -> None:
+        _save_json(path, rows)

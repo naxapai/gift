@@ -7,6 +7,7 @@ const CatalogPage = lazy(async () => ({ default: (await import('./pages/CatalogP
 const ScreenersPage = lazy(async () => ({ default: (await import('./pages/ScreenersPage')).ScreenersPage }))
 const SignalsPage = lazy(async () => ({ default: (await import('./pages/SignalsPage')).SignalsPage }))
 const ListingPage = lazy(async () => ({ default: (await import('./pages/ListingPage')).ListingPage }))
+const TradesPage = lazy(async () => ({ default: (await import('./pages/TradesPage')).TradesPage }))
 const FavoritesPage = lazy(async () => ({ default: (await import('./pages/FavoritesPage')).FavoritesPage }))
 const CabinetPage = lazy(async () => ({ default: (await import('./pages/CabinetPage')).CabinetPage }))
 const SettingsPage = lazy(async () => ({ default: (await import('./pages/SettingsPage')).SettingsPage }))
@@ -38,6 +39,7 @@ export default function App() {
         <Route path="screeners" element={lazyRoute(<ScreenersPage />)} />
         <Route path="signals" element={lazyRoute(<SignalsPage />)} />
         <Route path="listing" element={lazyRoute(<ListingPage />)} />
+        <Route path="trades" element={lazyRoute(<TradesPage />)} />
         <Route path="favorites" element={lazyRoute(<FavoritesPage />)} />
         <Route path="cabinet" element={lazyRoute(<CabinetPage />)} />
         <Route path="settings" element={lazyRoute(<SettingsPage />)} />
