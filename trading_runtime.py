@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -51,10 +52,11 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 
 class TradeRuntime:
-    def __init__(self, data_dir: Path, *, quote_secret: str, quote_ttl_sec: int = 5) -> None:
+    def __init__(self, data_dir: Path, *, quote_secret: str, quote_ttl_sec: int = 5, db_path: Path | None = None) -> None:
         self.data_dir = data_dir
         self.quote_secret = str(quote_secret or "gmz-trade-quote-secret").encode("utf-8")
         self.quote_ttl_sec = max(3, min(int(quote_ttl_sec or 5), 10))
+        self.db_path = Path(db_path) if db_path else None
         self.intents_file = data_dir / "trade_intents_store.json"
         self.positions_file = data_dir / "trade_positions_store.json"
         self.holdings_file = data_dir / "trade_holdings_store.json"
@@ -63,6 +65,8 @@ class TradeRuntime:
         self.wallet_activity_file = data_dir / "trade_wallet_activity_store.json"
         self.events_file = data_dir / "trade_events_store.json"
         self.used_quotes: dict[str, float] = {}
+        if self.db_path:
+            self._init_db()
 
     def list_trade_intents(self, wallet_address: str, status: str | None = None, limit: int = 100, cursor: str | None = None) -> dict:
         items = [x for x in self._read_list(self.intents_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
@@ -303,6 +307,8 @@ class TradeRuntime:
         return {"items": items[start:end], "next_cursor": str(end) if end < len(items) else None}
 
     def stream_events(self, wallet_address: str, kinds: set[str] | None = None, limit: int = 100) -> list[dict]:
+        if self.db_path:
+            return self._db_stream_events(wallet_address, kinds=kinds, limit=limit)
         rows = self._read_list(self.events_file)
         out = []
         wanted = kinds or set()
@@ -510,6 +516,9 @@ class TradeRuntime:
         self._append_event("wallet.activity.updated", {"wallet_address": wallet_address, "items": [items[-1]]})
 
     def _append_event(self, event: str, payload: dict) -> None:
+        if self.db_path:
+            self._db_append_event(event, payload)
+            return
         items = self._read_list(self.events_file)
         items.append({"event": event, "ts": _iso(), "payload": payload})
         self._write_list(self.events_file, items[-2000:])
@@ -643,8 +652,87 @@ class TradeRuntime:
         return {"wallet_address": wallet_address, "variant_id": variant_id}
 
     def _read_list(self, path: Path) -> list[dict]:
+        if self.db_path:
+            return self._db_read_snapshot(path.name)
         data = _load_json(path, [])
         return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
 
     def _write_list(self, path: Path, rows: list[dict]) -> None:
+        if self.db_path:
+            self._db_write_snapshot(path.name, rows)
+            return
         _save_json(path, rows)
+
+    def _init_db(self) -> None:
+        assert self.db_path is not None
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS trade_runtime_snapshots (store_name TEXT PRIMARY KEY, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS trade_runtime_events (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, ts TEXT NOT NULL, payload_json TEXT NOT NULL)"
+            )
+            conn.commit()
+
+    def _db_read_snapshot(self, store_name: str) -> list[dict]:
+        assert self.db_path is not None
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM trade_runtime_snapshots WHERE store_name = ?",
+                (str(store_name),),
+            ).fetchone()
+        if not row:
+            return []
+        try:
+            data = json.loads(str(row[0] or "[]"))
+        except Exception:
+            return []
+        return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
+
+    def _db_write_snapshot(self, store_name: str, rows: list[dict]) -> None:
+        assert self.db_path is not None
+        payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        ts = _iso()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO trade_runtime_snapshots(store_name, payload_json, updated_at) VALUES(?,?,?) ON CONFLICT(store_name) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at",
+                (str(store_name), payload, ts),
+            )
+            conn.commit()
+
+    def _db_append_event(self, event: str, payload: dict) -> None:
+        assert self.db_path is not None
+        ts = _iso()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO trade_runtime_events(event, ts, payload_json) VALUES(?,?,?)",
+                (str(event), ts, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
+            )
+            conn.execute(
+                "DELETE FROM trade_runtime_events WHERE id NOT IN (SELECT id FROM trade_runtime_events ORDER BY id DESC LIMIT 4000)"
+            )
+            conn.commit()
+
+    def _db_stream_events(self, wallet_address: str, kinds: set[str] | None = None, limit: int = 100) -> list[dict]:
+        assert self.db_path is not None
+        wanted = kinds or set()
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT event, ts, payload_json FROM trade_runtime_events ORDER BY id DESC LIMIT ?",
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        out: list[dict] = []
+        for event, ts, payload_json in rows:
+            try:
+                payload = json.loads(str(payload_json or "{}"))
+            except Exception:
+                payload = {}
+            candidate_wallet = str((payload or {}).get("wallet_address") or "")
+            if wallet_address and candidate_wallet and candidate_wallet != wallet_address:
+                continue
+            if wanted and str(event or "") not in wanted:
+                continue
+            out.append({"event": str(event or ""), "ts": str(ts or ""), "payload": payload})
+        out.reverse()
+        return out

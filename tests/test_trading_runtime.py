@@ -61,6 +61,19 @@ class TestTradingRuntime(unittest.TestCase):
             self.assertIn('trade.intent.broadcast', names)
             self.assertIn('trade.intent.confirmed', names)
 
+    def test_sqlite_backed_runtime_persists_snapshots_and_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / 'trades.sqlite3'
+            rt = TradeRuntime(root, quote_secret='secret', quote_ttl_sec=5, db_path=db_path)
+            created = rt.create_trade_intent({'intent_type': 'BUY', 'variant_id': 'v4', 'wallet_address': 'EQSQL', 'max_spend_ton': 7.0}, market_regime='RISK_ON', variant_snapshot={'floor_ton': 7.0, 'fair_ton': 7.8})
+            rt.confirm_intent_signature(created['intent']['intent_id'], {'tx_hash': 'tx4'}, market_regime='RISK_ON', variant_snapshot={'floor_ton': 7.0, 'fair_ton': 7.8})
+            rt2 = TradeRuntime(root, quote_secret='secret', quote_ttl_sec=5, db_path=db_path)
+            intents = rt2.list_trade_intents('EQSQL')['items']
+            self.assertTrue(intents)
+            events = rt2.stream_events('EQSQL', kinds={'trade.intent.confirmed'}, limit=20)
+            self.assertTrue(events)
+
 
 if __name__ == '__main__':
     unittest.main()
