@@ -66,6 +66,7 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('Средний Floor', page)
         self.assertIn('Средний Fair', page)
         self.assertIn('Открыть variant', page)
+        self.assertIn('Проверь token/endpoint для owned gifts', page)
 
     def test_bento_grid_component_exists_and_is_6x1(self):
         grid = (FRONT / 'src' / 'components' / 'BentoGrid.tsx').read_text(encoding='utf-8')

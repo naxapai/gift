@@ -289,6 +289,7 @@ export function CabinetPage() {
             <div className="rounded-xl border border-[var(--line)] bg-white/70 px-4 py-4 text-sm text-slate-600">
               {ownedMessage || 'Пока нет данных о подарках пользователя.'}
               {ownedSource ? <div className="mt-2 text-xs text-slate-500">source: {ownedSource}</div> : null}
+              {ownedSource === 'remote_error' ? <div className="mt-2 text-xs text-amber-700">Проверь token/endpoint для owned gifts или включи локальный fallback snapshot.</div> : null}
             </div>
           )}
         </BentoCard>

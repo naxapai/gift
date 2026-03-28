@@ -818,7 +818,11 @@ class GiftAnalyticsService:
             default_chat_id=(os.getenv("TG_CHAT_ID", "").strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip()),
         )
         self.telegram_owned_gifts_api_url = str(os.getenv("TELEGRAM_OWNED_GIFTS_API_URL", "") or "").strip()
-        self.telegram_owned_gifts_api_token = str(os.getenv("TELEGRAM_OWNED_GIFTS_API_TOKEN", "") or "").strip()
+        self.telegram_owned_gifts_api_token = str(
+            os.getenv("TELEGRAM_OWNED_GIFTS_API_TOKEN", "").strip()
+            or os.getenv("BRIDGE_API_TOKEN", "").strip()
+            or os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip()
+        )
         self.telegram_owned_gifts_timeout_sec = max(2.0, float(os.getenv("TELEGRAM_OWNED_GIFTS_TIMEOUT_SEC", "8")))
         self.telegram_owned_gifts_cache_ttl_sec = max(5.0, float(os.getenv("TELEGRAM_OWNED_GIFTS_CACHE_TTL_SEC", "60")))
         self._telegram_owned_gifts_cache: dict[str, tuple[float, dict]] = {}
@@ -3553,7 +3557,23 @@ class GiftAnalyticsService:
         try:
             with urllib.request.urlopen(req, timeout=self.telegram_owned_gifts_timeout_sec) as resp:
                 raw = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            fallback = self._owned_gifts_local_lookup(user_id=user_id, username=username)
+            if fallback.get("items"):
+                fallback["message"] = f"remote_http_error:{exc.code}; показан локальный snapshot"
+                return fallback
+            return {
+                "ok": False,
+                "authenticated": True,
+                "items": [],
+                "source": "remote_error",
+                "message": f"owned_gifts_fetch_failed:HTTP {exc.code}",
+            }
         except Exception as exc:
+            fallback = self._owned_gifts_local_lookup(user_id=user_id, username=username)
+            if fallback.get("items"):
+                fallback["message"] = f"owned_gifts_fetch_failed:{exc.__class__.__name__}; показан локальный snapshot"
+                return fallback
             return {
                 "ok": False,
                 "authenticated": True,
