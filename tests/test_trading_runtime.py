@@ -1,4 +1,9 @@
+import base64
+import hashlib
+import hmac
+import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -109,6 +114,18 @@ class TestTradingRuntime(unittest.TestCase):
             retry = rt.retry_chain_list_intent(parent['intent_id'])
             self.assertEqual(retry.get('intent_type'), 'LIST')
             self.assertNotEqual(retry.get('intent_id'), child.get('intent_id'))
+
+    def test_quote_expiry_marks_state_expired(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=3)
+            quote = rt.issue_buy_quote(variant_id='v7', max_price_ton=2.5, slippage_bps=100, wallet_address='EQTEST', variant_snapshot={'floor_ton': 2.0, 'fair_ton': 2.7})
+            raw = rt._decode_quote(quote['buy_quote_token'])
+            raw['quote']['issued_at'] = int(time.time()) - 10
+            tampered = base64.urlsafe_b64encode(json.dumps({'quote': raw['quote'], 'sig': hmac.new(b'secret', json.dumps(raw['quote'], sort_keys=True, separators=(',', ':')).encode('utf-8'), hashlib.sha256).hexdigest()}).encode('utf-8')).decode('utf-8')
+            with self.assertRaises(TimeoutError):
+                rt.confirm_fast_buy({'buy_quote_token': tampered, 'tx_hash': 'tx7', 'wallet_address': 'EQTEST'}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 2.0, 'fair_ton': 2.7})
+            state = rt._get_quote_state(raw['quote']['nonce'])
+            self.assertEqual(state.get('state'), 'EXPIRED')
 
 
 if __name__ == '__main__':

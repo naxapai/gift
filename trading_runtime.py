@@ -8,9 +8,22 @@ import json
 import secrets
 import sqlite3
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+try:
+    import psycopg  # type: ignore
+except Exception:  # pragma: no cover
+    psycopg = None
+
+try:
+    import redis as redis_lib  # type: ignore
+except Exception:  # pragma: no cover
+    redis_lib = None
 
 
 def _now_utc() -> datetime:
@@ -53,11 +66,26 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 
 class TradeRuntime:
-    def __init__(self, data_dir: Path, *, quote_secret: str, quote_ttl_sec: int = 5, db_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        *,
+        quote_secret: str,
+        quote_ttl_sec: int = 5,
+        db_path: Path | None = None,
+        postgres_dsn: str | None = None,
+        redis_url: str | None = None,
+        tx_verify_url: str | None = None,
+        tx_verify_token: str | None = None,
+    ) -> None:
         self.data_dir = data_dir
         self.quote_secret = str(quote_secret or "gmz-trade-quote-secret").encode("utf-8")
         self.quote_ttl_sec = max(3, min(int(quote_ttl_sec or 5), 10))
         self.db_path = Path(db_path) if db_path else None
+        self.postgres_dsn = str(postgres_dsn or "").strip()
+        self.redis_url = str(redis_url or "").strip()
+        self.tx_verify_url = str(tx_verify_url or "").strip()
+        self.tx_verify_token = str(tx_verify_token or "").strip()
         self.intents_file = data_dir / "trade_intents_store.json"
         self.positions_file = data_dir / "trade_positions_store.json"
         self.holdings_file = data_dir / "trade_holdings_store.json"
@@ -67,12 +95,23 @@ class TradeRuntime:
         self.events_file = data_dir / "trade_events_store.json"
         self.quotes_file = data_dir / "trade_quotes_store.json"
         self.used_quotes: dict[str, float] = {}
+        self._pg_enabled = bool(self.postgres_dsn and psycopg is not None)
+        self._redis = None
         if self.db_path:
             self._init_db()
+        if self._pg_enabled:
+            self._init_postgres()
+        if self.redis_url and redis_lib is not None:
+            try:
+                self._redis = redis_lib.Redis.from_url(self.redis_url, decode_responses=True)
+            except Exception:
+                self._redis = None
 
     def list_trade_intents(self, wallet_address: str, status: str | None = None, limit: int = 100, cursor: str | None = None) -> dict:
         items = [x for x in self._read_list(self.intents_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
         self._expire_stale_intents(items)
+        self.reconcile_broadcast_intents(wallet_address=wallet_address)
+        items = [x for x in self._read_list(self.intents_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
         if status:
             items = [x for x in items if str(x.get("status") or "") == str(status)]
         items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
@@ -84,6 +123,7 @@ class TradeRuntime:
     def get_trade_intent(self, intent_id: str) -> dict | None:
         rows = self._read_list(self.intents_file)
         self._expire_stale_intents(rows)
+        self.reconcile_broadcast_intents()
         for row in rows:
             if str(row.get("intent_id") or "") == str(intent_id or ""):
                 return row
@@ -207,6 +247,14 @@ class TradeRuntime:
         quote_state = self._get_quote_state(nonce)
         if isinstance(quote_state, dict) and str(quote_state.get("state") or "") in {"LOCKED", "USED"}:
             raise RuntimeError("quote_nonce_already_used")
+        if self._redis is not None:
+            try:
+                if self._redis.exists(f"used_quote:{nonce}"):
+                    raise RuntimeError("quote_nonce_already_used")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
         if nonce in self.used_quotes and self.used_quotes[nonce] > time.time():
             raise RuntimeError("quote_nonce_already_used")
         issued_at = _as_int(((quote or {}).get("quote") or {}).get("issued_at"), 0)
@@ -218,6 +266,11 @@ class TradeRuntime:
             raise ValueError("wallet_address_mismatch")
         self._upsert_quote_state(nonce, {"state": "LOCKED", "locked_at": _iso(), "wallet_address": wallet_address, "tx_hash": tx_hash})
         self.used_quotes[nonce] = time.time() + 30.0
+        if self._redis is not None:
+            try:
+                self._redis.setex(f"used_quote:{nonce}", 30, "LOCKED")
+            except Exception:
+                pass
         quote_payload = (quote or {}).get("quote") or {}
         item = self.create_trade_intent(
             {
@@ -388,6 +441,32 @@ class TradeRuntime:
         self._append_event("trade.intent.created", child)
         return child
 
+    def reconcile_broadcast_intents(self, wallet_address: str | None = None) -> None:
+        intents = self._read_list(self.intents_file)
+        changed = False
+        for row in intents:
+            if not isinstance(row, dict):
+                continue
+            if wallet_address and str(row.get("wallet_address") or "") != str(wallet_address or ""):
+                continue
+            if str(row.get("status") or "") != "BROADCAST":
+                continue
+            verdict = self._verify_tx_state(str(row.get("tx_hash") or ""), str(row.get("wallet_address") or ""), str(row.get("intent_id") or ""))
+            state = str(verdict.get("status") or "").upper()
+            if state == "CONFIRMED":
+                row["status"] = "CONFIRMED"
+                row.setdefault("status_timeline", []).append({"status": "CONFIRMED", "ts": _iso(), "source": verdict.get("source")})
+                self._apply_confirmed_intent(row, market_regime=str(verdict.get("market_regime") or "MEAN_REVERT"), variant_snapshot=verdict.get("variant_snapshot") if isinstance(verdict.get("variant_snapshot"), dict) else None)
+                self._append_event("trade.intent.confirmed", row)
+                changed = True
+            elif state == "FAILED":
+                row["status"] = "FAILED"
+                row.setdefault("status_timeline", []).append({"status": "FAILED", "ts": _iso(), "reason": verdict.get("reason")})
+                self._append_event("trade.intent.failed", row)
+                changed = True
+        if changed:
+            self._write_list(self.intents_file, intents)
+
     def _decode_quote(self, token: str) -> dict:
         try:
             raw = json.loads(base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8"))
@@ -400,6 +479,32 @@ class TradeRuntime:
         if not hmac.compare_digest(sig, expected):
             raise ValueError("invalid_quote_signature")
         return raw
+
+    def _verify_tx_state(self, tx_hash: str, wallet_address: str, intent_id: str) -> dict:
+        if not tx_hash:
+            return {"status": "FAILED", "reason": "tx_hash_missing", "source": "runtime"}
+        if self.tx_verify_url:
+            q = f"tx_hash={urllib.parse.quote(tx_hash, safe='')}&wallet_address={urllib.parse.quote(wallet_address, safe='')}"
+            url = self.tx_verify_url + ("&" if "?" in self.tx_verify_url else "?") + q
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            if self.tx_verify_token:
+                req.add_header("Authorization", f"Bearer {self.tx_verify_token}")
+            try:
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                status = str(payload.get("status") or "PENDING").upper()
+                return {
+                    "status": status,
+                    "reason": payload.get("reason"),
+                    "source": "provider",
+                    "market_regime": payload.get("market_regime") or "MEAN_REVERT",
+                    "variant_snapshot": payload.get("variant_snapshot"),
+                }
+            except urllib.error.HTTPError as exc:
+                return {"status": "FAILED" if exc.code in {400, 404, 409} else "PENDING", "reason": f"provider_http_{exc.code}", "source": "provider"}
+            except Exception:
+                return {"status": "PENDING", "reason": "provider_unavailable", "source": "provider"}
+        return {"status": "CONFIRMED", "source": "simulated", "market_regime": "MEAN_REVERT"}
 
     def _apply_confirmed_intent(self, intent: dict, *, market_regime: str, variant_snapshot: dict | None) -> None:
         intent_type = str(intent.get("intent_type") or "")
@@ -585,6 +690,7 @@ class TradeRuntime:
         items = self._read_list(self.events_file)
         items.append({"event": event, "ts": _iso(), "payload": payload})
         self._write_list(self.events_file, items[-2000:])
+        self._redis_publish_event(event, payload)
 
     def _evaluate_autosell(self, *, wallet_address: str, variant_id: str, market_regime: str, positions: list[dict], holdings: list[dict], variant_snapshot: dict | None) -> None:
         rules = [x for x in self._read_list(self.autosell_file) if str(x.get("wallet_address") or "") == wallet_address and bool(x.get("enabled", True))]
@@ -737,12 +843,17 @@ class TradeRuntime:
         return {"wallet_address": wallet_address, "variant_id": variant_id}
 
     def _read_list(self, path: Path) -> list[dict]:
+        if self._pg_enabled:
+            return self._pg_read_snapshot(path.name)
         if self.db_path:
             return self._db_read_snapshot(path.name)
         data = _load_json(path, [])
         return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
 
     def _write_list(self, path: Path, rows: list[dict]) -> None:
+        if self._pg_enabled:
+            self._pg_write_snapshot(path.name, rows)
+            return
         if self.db_path:
             self._db_write_snapshot(path.name, rows)
             return
@@ -798,6 +909,7 @@ class TradeRuntime:
                 "DELETE FROM trade_runtime_events WHERE id NOT IN (SELECT id FROM trade_runtime_events ORDER BY id DESC LIMIT 4000)"
             )
             conn.commit()
+        self._redis_publish_event(event, payload)
 
     def _db_stream_events(self, wallet_address: str, kinds: set[str] | None = None, limit: int = 100) -> list[dict]:
         assert self.db_path is not None
@@ -821,6 +933,93 @@ class TradeRuntime:
             out.append({"event": str(event or ""), "ts": str(ts or ""), "payload": payload})
         out.reverse()
         return out
+
+    def _redis_publish_event(self, event: str, payload: dict) -> None:
+        if self._redis is None:
+            return
+        stream = self._stream_name_for_event(event)
+        if not stream:
+            return
+        env = {"event": event, "ts": _iso(), "payload": payload}
+        try:
+            self._redis.xadd(stream, {"payload": json.dumps(env, ensure_ascii=False, separators=(",", ":"))}, maxlen=self._stream_retention(stream), approximate=True)
+        except Exception:
+            return
+
+    def _stream_name_for_event(self, event: str) -> str:
+        if event.startswith("trade.quote"):
+            return "stream:trade_quotes"
+        if event.startswith("trade.intent"):
+            return "stream:trade_intents"
+        if event.startswith("position."):
+            return "stream:positions"
+        if event.startswith("holding."):
+            return "stream:holdings"
+        if event.startswith("pnl."):
+            return "stream:pnl"
+        if event.startswith("wallet.activity"):
+            return "stream:wallet_activity"
+        return ""
+
+    def _stream_retention(self, stream: str) -> int:
+        mapping = {
+            "stream:trade_quotes": 1000,
+            "stream:trade_intents": 5000,
+            "stream:positions": 3000,
+            "stream:holdings": 3000,
+            "stream:pnl": 3000,
+            "stream:wallet_activity": 3000,
+        }
+        return mapping.get(stream, 2000)
+
+    def _init_postgres(self) -> None:
+        if not self._pg_enabled:
+            return
+        with closing(psycopg.connect(self.postgres_dsn)) as conn:  # type: ignore[arg-type]
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS trade_runtime_snapshots (
+                        store_name TEXT PRIMARY KEY,
+                        payload_json JSONB NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    CREATE TABLE IF NOT EXISTS trade_runtime_events_pg (
+                        id BIGSERIAL PRIMARY KEY,
+                        event TEXT NOT NULL,
+                        ts TIMESTAMPTZ NOT NULL,
+                        payload_json JSONB NOT NULL
+                    );
+                    """
+                )
+            conn.commit()
+
+    def _pg_read_snapshot(self, store_name: str) -> list[dict]:
+        if not self._pg_enabled:
+            return []
+        try:
+            with closing(psycopg.connect(self.postgres_dsn)) as conn:  # type: ignore[arg-type]
+                with conn.cursor() as cur:
+                    cur.execute("SELECT payload_json FROM trade_runtime_snapshots WHERE store_name = %s", (str(store_name),))
+                    row = cur.fetchone()
+        except Exception:
+            return []
+        data = row[0] if row else []
+        return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
+
+    def _pg_write_snapshot(self, store_name: str, rows: list[dict]) -> None:
+        if not self._pg_enabled:
+            return
+        try:
+            with closing(psycopg.connect(self.postgres_dsn)) as conn:  # type: ignore[arg-type]
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO trade_runtime_snapshots(store_name, payload_json, updated_at) VALUES(%s,%s::jsonb,now()) ON CONFLICT(store_name) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at",
+                        (str(store_name), json.dumps(rows, ensure_ascii=False, separators=(",", ":"))),
+                    )
+                conn.commit()
+        except Exception:
+            return
 
     def _get_quote_state(self, nonce: str) -> dict | None:
         if not nonce:

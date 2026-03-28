@@ -835,6 +835,10 @@ class GiftAnalyticsService:
             quote_secret=str(os.getenv("TRADES_QUOTE_SECRET", "giftmarketzone-trades-secret") or "giftmarketzone-trades-secret"),
             quote_ttl_sec=int(os.getenv("TRADES_QUOTE_TTL_SEC", "5") or "5"),
             db_path=Path(os.getenv("TRADES_DB_PATH", str((DATA_DIR / "trades_runtime.sqlite3").resolve()))) if str(os.getenv("TRADES_DB_PATH", str((DATA_DIR / "trades_runtime.sqlite3").resolve()))).strip() else None,
+            postgres_dsn=str(os.getenv("TRADES_POSTGRES_DSN", "") or "").strip() or None,
+            redis_url=str(os.getenv("TRADES_REDIS_URL", "") or "").strip() or None,
+            tx_verify_url=str(os.getenv("TRADES_TX_VERIFY_URL", "") or "").strip() or None,
+            tx_verify_token=str(os.getenv("TRADES_TX_VERIFY_TOKEN", "") or "").strip() or None,
         )
         self.metrics_strict_exact_max_variants = max(50, int(os.getenv("METRICS_STRICT_EXACT_MAX_VARIANTS", "500")))
         self.redis_collections_publish_limit = max(1, min(int(os.getenv("REDIS_COLLECTIONS_PUBLISH_LIMIT", "24")), 200))

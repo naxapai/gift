@@ -138,7 +138,7 @@ class TestFrontendReactStack(unittest.TestCase):
 
     def test_trades_page_contains_trading_workspace_blocks(self):
         page = (FRONT / 'src' / 'pages' / 'TradesPage.tsx').read_text(encoding='utf-8')
-        for token in ['FAST BUY', 'BUY+LIST', 'PnL PRO', 'Positions', 'Holdings', 'History', 'Wallet activity', 'AutoSell rules', 'LIST', 'CANCEL', 'SELL', 'TRANSFER']:
+        for token in ['FAST BUY', 'BUY+LIST', 'PnL PRO', 'Positions', 'Holdings', 'History', 'Wallet activity', 'AutoSell rules', 'LIST', 'CANCEL', 'SELL', 'TRANSFER', 'Повторить выставление', 'optimisticHistory', 'subscribeTradesStream', 'subscribePnlStream']:
             self.assertIn(token, page)
 
     def test_favorites_page_uses_non_blocking_refresh(self):
