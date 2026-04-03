@@ -83,6 +83,7 @@ class TestTelegramDelivery(unittest.TestCase):
         self.assertIn("🧠 Почему:", signal)
         self.assertIn("🆕", market)
         self.assertIn("BUY-триггер", signal)
+        self.assertIn("UTC", signal)
 
     def test_notifier_settings_are_sanitized_and_test_preview_works(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -280,6 +281,40 @@ class TestTelegramDelivery(unittest.TestCase):
             "depth_5pct_ton": 33,
         })
         self.assertIn("Edge 30", text)
+
+    def test_renderer_uses_config_driven_watch_trigger_lines(self) -> None:
+        renderer = MessageRenderer(
+            profile=__import__("json").loads(PROFILE_PATH.read_text(encoding="utf-8")),
+            rules_text=RULES_PATH.read_text(encoding="utf-8"),
+            signal_profiles=__import__("json").loads(SIGNAL_PROFILES_PATH.read_text(encoding="utf-8")),
+            edgerank_weights=__import__("json").loads(EDGE_WEIGHTS_PATH.read_text(encoding="utf-8")),
+        )
+        text = renderer.render_gift_signal({
+            "ts": "2026-03-05T12:00:00Z",
+            "action": "WATCH",
+            "market_regime": "PANIC",
+            "edgeRank100": 58,
+            "score100": 70,
+            "conf_pct": 39,
+            "collection": "snakebox",
+            "model": "Bluebell",
+            "background": "Cobalt Blue",
+            "pattern": "Hourglass",
+            "price_ton": 8.0,
+            "floor_ton": 8.0,
+            "fair_ton": 9.2,
+            "undervalue_pct": 4.0,
+            "expected_profit_pct": 9.0,
+            "liquidity_score": 52,
+            "absorption_30m": 0.75,
+            "listing_pressure": 2.4,
+            "volume_velocity": 0.8,
+            "depth_score": 0.4,
+            "depth_5pct_count": 4,
+            "depth_5pct_ton": 31,
+        })
+        self.assertIn("Вход при цене ≤ Fair*(1-0.06)", text)
+        self.assertIn("Вход при AR ≥ 0.80", text)
 
 
 if __name__ == "__main__":

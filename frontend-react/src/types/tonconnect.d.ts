@@ -28,6 +28,19 @@ declare global {
           }
           [key: string]: unknown
         }>
+        sendTransaction: (tx: {
+          validUntil: number
+          messages: Array<{
+            address: string
+            amount: string
+            payload?: string
+            stateInit?: string
+          }>
+        }) => Promise<{
+          boc?: string
+          transactionHash?: string
+          [key: string]: unknown
+        }>
         disconnect: () => Promise<void>
       }
     }

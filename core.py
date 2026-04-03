@@ -6814,7 +6814,7 @@ class GiftAnalyticsService:
         variant_id = str(sig.get("variant_id") or "")
         collection_id = str(sig.get("collection_id") or sig.get("gift_id") or "")
         action = str(sig.get("action") or sig.get("type") or "WATCH").upper()
-        if action not in {"BUY", "SELL", "WATCH", "SKIP"}:
+        if action not in {"BUY", "SELL", "WATCH", "SKIP", "AVOID"}:
             action = "WATCH"
         regime = str(sig.get("market_regime") or "MEAN_REVERT").upper()
         if regime not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}:
@@ -6879,8 +6879,8 @@ class GiftAnalyticsService:
             "forecast_24h_pct_min": float(sig.get("forecast_24h_pct_min") or sig.get("forecast24h_pct_min") or 0.0),
             "forecast_24h_pct_max": float(sig.get("forecast_24h_pct_max") or sig.get("forecast24h_pct_max") or 0.0),
             "watch_trigger": str(sig.get("watch_trigger") or ""),
-            "reasons": [str(x) for x in (sig.get("reasons") or [])][:3],
-            "risk_flags": [str(x) for x in (sig.get("risk_flags") or [])][:3],
+            "reasons": [self._normalize_signal_reason_token(x) for x in (sig.get("reasons") or [])][:3],
+            "risk_flags": [self._normalize_signal_risk_token(x) for x in (sig.get("risk_flags") or [])][:3],
         }
         if payload["strength_tag"] not in {"NONE", "STRONG_BUY", "STRONG_SELL"}:
             payload["strength_tag"] = "NONE"
@@ -6894,6 +6894,20 @@ class GiftAnalyticsService:
             "trace_id": str(trace_id or uuid.uuid4()),
             "payload": payload,
         }
+
+    def _normalize_signal_reason_token(self, value) -> str:
+        token = str(value or "").strip()
+        key = token.upper()
+        if key in {"NEAR_ENTRY", "GOOD_ABSORPTION", "STRONG_LIQ", "UNDERVALUED", "OVERVALUED"}:
+            return key
+        return token
+
+    def _normalize_signal_risk_token(self, value) -> str:
+        token = str(value or "").strip()
+        key = token.upper()
+        if key in {"LOW_DEPTH_5PCT", "HIGH_PRESSURE", "LOW_CONF", "DATA_DEGRADED"}:
+            return key
+        return token
 
     def build_market_status_event_v1(
         self,

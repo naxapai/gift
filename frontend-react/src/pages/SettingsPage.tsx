@@ -31,12 +31,16 @@ const LS = {
 type TelegramFormState = {
   enabled: boolean
   marketEnabled: boolean
+  marketChannelId: string
   marketIntervalSec: number
   giftEnabled: boolean
+  giftChannelId: string
   includeImage: boolean
   edgeRankMin: number
   confMin: number
   profitMin: number
+  timeoutSec: number
+  dedupeTtlSec: number
   rateLimitPerMinute: number
   maxRetries: number
   retryBackoffSec: number
@@ -69,12 +73,16 @@ function parseTelegramForm(effective?: Record<string, unknown> | null): Telegram
   return {
     enabled: Boolean(effective?.enabled),
     marketEnabled: Boolean(market.enabled),
+    marketChannelId: String(market.channel_id || ''),
     marketIntervalSec: Number(market.min_interval_sec || 900),
     giftEnabled: Boolean(gift.enabled),
+    giftChannelId: String(gift.channel_id || ''),
     includeImage: gift.include_image !== false,
     edgeRankMin: Number(gates.edgeRank100_gte || 55),
     confMin: Number(gates.conf_pct_gte || 35),
     profitMin: Number(gates.expected_profit_pct_gte || 8),
+    timeoutSec: Number(transport.timeout_sec || 12),
+    dedupeTtlSec: Number(transport.dedupe_ttl_sec || 600),
     rateLimitPerMinute: Number(transport.rate_limit_per_minute || 20),
     maxRetries: Number(transport.max_retries || 3),
     retryBackoffSec: Number(transport.retry_backoff_sec || 1.5),
@@ -236,13 +244,15 @@ export function SettingsPage() {
       await saveAdminTelegramDeliveryConfig({
         enabled: tgForm.enabled,
         market_status: {
-          enabled: tgForm.marketEnabled,
-          min_interval_sec: tgForm.marketIntervalSec,
-        },
-        gift_signal: {
-          enabled: tgForm.giftEnabled,
-          include_image: tgForm.includeImage,
-        },
+        enabled: tgForm.marketEnabled,
+        channel_id: tgForm.marketChannelId,
+        min_interval_sec: tgForm.marketIntervalSec,
+      },
+      gift_signal: {
+        enabled: tgForm.giftEnabled,
+        channel_id: tgForm.giftChannelId,
+        include_image: tgForm.includeImage,
+      },
         publish_gates: {
           gift_signal_channel: {
             edgeRank100_gte: tgForm.edgeRankMin,
@@ -251,9 +261,11 @@ export function SettingsPage() {
           },
         },
         transport: {
+          timeout_sec: tgForm.timeoutSec,
           rate_limit_per_minute: tgForm.rateLimitPerMinute,
           max_retries: tgForm.maxRetries,
           retry_backoff_sec: tgForm.retryBackoffSec,
+          dedupe_ttl_sec: tgForm.dedupeTtlSec,
         },
       })
       setTgToast('Telegram delivery настройки сохранены')
@@ -430,6 +442,14 @@ export function SettingsPage() {
 
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-slate-700">Market channel_id</span>
+                  <input value={tgForm.marketChannelId} onChange={(e) => setTgForm((s) => ({ ...s, marketChannelId: e.target.value }))} className="gmz-input" />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-slate-700">Gift channel_id</span>
+                  <input value={tgForm.giftChannelId} onChange={(e) => setTgForm((s) => ({ ...s, giftChannelId: e.target.value }))} className="gmz-input" />
+                </label>
+                <label className="block">
                   <span className="mb-1 block text-sm font-medium text-slate-700">Market status interval (sec)</span>
                   <input type="number" min={60} max={86400} value={tgForm.marketIntervalSec} onChange={(e) => setTgForm((s) => ({ ...s, marketIntervalSec: Number(e.target.value || 900) }))} className="gmz-input" />
                 </label>
@@ -450,12 +470,20 @@ export function SettingsPage() {
                   <input type="number" min={1} max={120} value={tgForm.rateLimitPerMinute} onChange={(e) => setTgForm((s) => ({ ...s, rateLimitPerMinute: Number(e.target.value || 20) }))} className="gmz-input" />
                 </label>
                 <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-slate-700">Timeout sec</span>
+                  <input type="number" min={3} max={120} value={tgForm.timeoutSec} onChange={(e) => setTgForm((s) => ({ ...s, timeoutSec: Number(e.target.value || 12) }))} className="gmz-input" />
+                </label>
+                <label className="block">
                   <span className="mb-1 block text-sm font-medium text-slate-700">Max retries</span>
                   <input type="number" min={1} max={10} value={tgForm.maxRetries} onChange={(e) => setTgForm((s) => ({ ...s, maxRetries: Number(e.target.value || 3) }))} className="gmz-input" />
                 </label>
                 <label className="block xl:col-span-1">
                   <span className="mb-1 block text-sm font-medium text-slate-700">Retry backoff (sec)</span>
                   <input type="number" min={0.1} max={30} step={0.1} value={tgForm.retryBackoffSec} onChange={(e) => setTgForm((s) => ({ ...s, retryBackoffSec: Number(e.target.value || 1.5) }))} className="gmz-input" />
+                </label>
+                <label className="block xl:col-span-1">
+                  <span className="mb-1 block text-sm font-medium text-slate-700">Dedupe TTL sec</span>
+                  <input type="number" min={60} max={86400} value={tgForm.dedupeTtlSec} onChange={(e) => setTgForm((s) => ({ ...s, dedupeTtlSec: Number(e.target.value || 600) }))} className="gmz-input" />
                 </label>
               </div>
 

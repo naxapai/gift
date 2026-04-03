@@ -120,6 +120,11 @@ class MessageRenderer:
         self.rules_text = str(rules_text or "")
         self.signal_profiles = signal_profiles if isinstance(signal_profiles, dict) else {}
         self.edgerank_weights = edgerank_weights if isinstance(edgerank_weights, dict) else {}
+        self.locale = str(self.profile.get("locale") or "ru-RU")
+        self.time_format = str(self.profile.get("time_format") or "YYYY-MM-DD HH:mm:ss z")
+        money = self.profile.get("money") if isinstance(self.profile.get("money"), dict) else {}
+        self.money_unit = str(money.get("unit") or "TON")
+        self.money_decimals = max(0, _safe_int(money.get("decimals"), 2))
         rendering = self.profile.get("rendering") if isinstance(self.profile.get("rendering"), dict) else {}
         self.line_break = str(rendering.get("line_break") or "\n")
         self.bullet = str(rendering.get("bullet") or "• ")
@@ -240,9 +245,9 @@ class MessageRenderer:
             "model": str(payload.get("model") or "Unknown"),
             "background": str(payload.get("background") or "Unknown"),
             "pattern": str(payload.get("pattern") or "Unknown"),
-            "price_ton": self._fmt_num(payload.get("price_ton"), 2),
-            "floor_ton": self._fmt_num(payload.get("floor_ton"), 2),
-            "fair_ton": self._fmt_num(payload.get("fair_ton"), 2),
+            "price_ton": self._fmt_money(payload.get("price_ton")),
+            "floor_ton": self._fmt_money(payload.get("floor_ton")),
+            "fair_ton": self._fmt_money(payload.get("fair_ton")),
             "delta_fair_pct_sign": "+" if delta >= 0 else "-",
             "delta_fair_pct": self._fmt_num(abs(delta), 2),
             "plan_entry_line": plan_entry,
@@ -250,12 +255,12 @@ class MessageRenderer:
             "liquidity_score": self._fmt_num(payload.get("liquidity_score"), 0),
             "absorption_rate_30m": self._fmt_num(payload.get("absorption_30m"), 2),
             "depth_5pct_lots": str(_safe_int(payload.get("depth_5pct_count"), 0)),
-            "depth_5pct_ton": self._fmt_num(payload.get("depth_5pct_ton"), 2),
+            "depth_5pct_ton": self._fmt_money(payload.get("depth_5pct_ton")),
             "listing_pressure": self._fmt_num(payload.get("listing_pressure"), 2),
             "volume_velocity_x": self._fmt_num(payload.get("volume_velocity"), 2),
             "reasons_block": self.line_break.join([f"{self.bullet}{x}" for x in reasons]) if reasons else f"{self.bullet}—",
             "risks_block": self.line_break.join([f"{self.bullet}{x}" for x in risks]) if risks else f"{self.bullet}—",
-            "ts": str(payload.get("ts") or _utcnow_iso()),
+            "ts": self._fmt_time(payload.get("ts") or _utcnow_iso()),
             "score100_raw": self._fmt_num(payload.get("score100"), 0),
             "undervalue_pct": self._fmt_num(payload.get("undervalue_pct"), 2),
             "conf_pct_raw": self._fmt_num(payload.get("conf_pct"), 0),
@@ -383,7 +388,7 @@ class MessageRenderer:
         if "volume_velocity_gte" in buy_all:
             parts.append(f"VV≥{self._fmt_num(buy_all.get('volume_velocity_gte'), 2)}")
 
-        missing: list[str] = []
+        missing_tokens: list[str] = []
         score = _safe_float(payload.get("score100"), 0.0)
         undervalue = _safe_float(payload.get("undervalue_pct"), 0.0) / 100.0
         profit = _safe_float(payload.get("expected_profit_pct"), 0.0)
@@ -393,25 +398,56 @@ class MessageRenderer:
         depth = _safe_float(payload.get("depth_score"), _safe_float(payload.get("depth_5pct_count"), 0.0) / 25.0)
         vv = _safe_float(payload.get("volume_velocity"), 0.0)
         if score < _safe_float(buy_all.get("score100_gte"), 0.0):
-            missing.append("score")
+            missing_tokens.append("score")
         if undervalue < _safe_float(buy_all.get("undervalue_gte"), 0.0):
-            missing.append("недооценка")
+            missing_tokens.append("undervalue")
         if profit < _safe_float(buy_all.get("expected_profit_pct_gte"), 0.0):
-            missing.append("profit")
+            missing_tokens.append("profit")
         if liq < _safe_float(buy_all.get("liquidity_norm_gte"), 0.0):
-            missing.append("ликвидность")
+            missing_tokens.append("liquidity")
         if absorption < _safe_float(buy_all.get("absorption_gte"), 0.0):
-            missing.append("absorption")
+            missing_tokens.append("absorption")
         if pressure > _safe_float(buy_all.get("listing_pressure_lte"), 10.0):
-            missing.append("LP")
+            missing_tokens.append("listing_pressure")
         if depth < _safe_float(buy_all.get("depth_score_gte"), 0.0):
-            missing.append("depth")
+            missing_tokens.append("depth")
         if vv < _safe_float(buy_all.get("volume_velocity_gte"), 0.0):
-            missing.append("VV")
-        missing = missing[:2]
+            missing_tokens.append("volume_velocity")
+        priority_order = ["undervalue", "absorption", "liquidity"] + (["volume_velocity"] if regime == "PANIC" else []) + ["score", "profit", "listing_pressure", "depth"]
+        missing_tokens = [token for token in priority_order if token in missing_tokens][:2]
         entry = f"• BUY-триггер ({regime}): " + ", ".join(parts)
-        exit_line = f"• Не хватает до BUY: {', '.join(missing)}" if missing else "• BUY-гейт выполнен: следим за LP/AR и планом выхода"
+        exit_line = self._watch_trigger_line(regime, buy_all, missing_tokens) if missing_tokens else "• BUY-гейт выполнен: следим за LP/AR и планом выхода"
         return entry, exit_line
+
+    def _watch_trigger_line(self, regime: str, buy_all: dict, missing_tokens: list[str]) -> str:
+        post_rules = self.signal_profiles.get("post_rules") if isinstance(self.signal_profiles.get("post_rules"), dict) else {}
+        watch_triggers = post_rules.get("watch_triggers") if isinstance(post_rules.get("watch_triggers"), list) else []
+        rendered: list[str] = []
+        labels = {
+            "undervalue": "недооценка",
+            "absorption": "absorption",
+            "liquidity": "ликвидность",
+            "volume_velocity": "VV",
+            "score": "score",
+            "profit": "profit",
+            "listing_pressure": "LP",
+            "depth": "depth",
+        }
+        for token in missing_tokens:
+            if token in {"score", "profit", "listing_pressure", "depth"}:
+                rendered.append(labels.get(token, token))
+                continue
+            template = next((x for x in watch_triggers if isinstance(x, dict) and str(x.get("if_missing") or "") == token), None)
+            if not isinstance(template, dict):
+                rendered.append(labels.get(token, token))
+                continue
+            trigger = str(template.get("trigger") or "")
+            trigger = trigger.replace("threshold_undervalue", self._fmt_num(_safe_float(buy_all.get("undervalue_gte"), 0.0), 2))
+            trigger = trigger.replace("threshold_absorption", self._fmt_num(_safe_float(buy_all.get("absorption_gte"), 0.0), 2))
+            trigger = trigger.replace("threshold_liquidity", self._fmt_num(_safe_float(buy_all.get("liquidity_norm_gte"), 0.0), 2))
+            trigger = trigger.replace("threshold_vv", self._fmt_num(_safe_float(buy_all.get("volume_velocity_gte"), 0.0), 2))
+            rendered.append(trigger)
+        return f"• Не хватает до BUY: {'; '.join(rendered)}"
 
     def _fmt(self, template: str, ctx: dict[str, Any]) -> str:
         text = str(template or "")
@@ -423,6 +459,19 @@ class MessageRenderer:
         num = _safe_float(value, 0.0)
         fmt = f"{{:.{max(0, int(digits))}f}}"
         return fmt.format(num)
+
+    def _fmt_money(self, value: Any) -> str:
+        return self._fmt_num(value, self.money_decimals)
+
+    def _fmt_time(self, value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return raw
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 class TelegramNotifier:
