@@ -139,8 +139,26 @@ def _split_csv(raw: str) -> list[str]:
     return [part.strip() for part in str(raw or "").split(",") if part.strip()]
 
 
+def _load_json_file(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _save_json_file(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{int(time.time() * 1000)}")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(path)
+
+
 CORS_ALLOWED_ORIGINS = {item.rstrip("/") for item in _split_csv(CORS_ALLOWED_ORIGINS_RAW)}
 TON_PROOF_ALLOWED_DOMAINS = {item.strip().lower() for item in _split_csv(TON_PROOF_ALLOWED_DOMAINS_RAW)}
+AUTH_SESSIONS_FILE = ROOT / "data" / "auth_sessions.json"
+TON_AUTH_SESSIONS_FILE = ROOT / "data" / "ton_auth_sessions.json"
 
 
 def _admin_rt_cache_get(key: tuple, ttl_sec: float | None = None):
@@ -1103,12 +1121,16 @@ def _refresh_status_snapshot() -> dict:
 class AuthStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._sessions: dict[str, dict] = {}
+        self._sessions: dict[str, dict] = _load_json_file(AUTH_SESSIONS_FILE, {}) if isinstance(_load_json_file(AUTH_SESSIONS_FILE, {}), dict) else {}
 
     def _cleanup_locked(self, now: float) -> None:
         expired = [sid for sid, s in self._sessions.items() if float(s.get("expires_at", 0)) <= now]
         for sid in expired:
             self._sessions.pop(sid, None)
+        self._persist_locked()
+
+    def _persist_locked(self) -> None:
+        _save_json_file(AUTH_SESSIONS_FILE, self._sessions)
 
     def enabled(self) -> bool:
         return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME)
@@ -1231,6 +1253,7 @@ class AuthStore:
         with self._lock:
             self._cleanup_locked(now)
             self._sessions[sid] = session
+            self._persist_locked()
         return session
 
     def get_session(self, sid: str) -> dict | None:
@@ -1244,6 +1267,7 @@ class AuthStore:
                 return None
             session["updated_at"] = now
             session["expires_at"] = now + AUTH_SESSION_TTL_SEC
+            self._persist_locked()
             return dict(session)
 
     def destroy_session(self, sid: str) -> None:
@@ -1251,6 +1275,7 @@ class AuthStore:
             return
         with self._lock:
             self._sessions.pop(sid, None)
+            self._persist_locked()
 
 
 AUTH = AuthStore()
@@ -1259,7 +1284,7 @@ AUTH = AuthStore()
 class TonAuthStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._sessions: dict[str, dict] = {}
+        self._sessions: dict[str, dict] = _load_json_file(TON_AUTH_SESSIONS_FILE, {}) if isinstance(_load_json_file(TON_AUTH_SESSIONS_FILE, {}), dict) else {}
         self._challenges: dict[str, dict] = {}
 
     def _cleanup_locked(self, now: float) -> None:
@@ -1269,6 +1294,10 @@ class TonAuthStore:
         expired_c = [nonce for nonce, c in self._challenges.items() if float(c.get("expires_at", 0)) <= now]
         for nonce in expired_c:
             self._challenges.pop(nonce, None)
+        self._persist_locked()
+
+    def _persist_locked(self) -> None:
+        _save_json_file(TON_AUTH_SESSIONS_FILE, self._sessions)
 
     def issue_challenge(self, host: str, ua_hash: str) -> dict:
         now = time.time()
@@ -1317,6 +1346,7 @@ class TonAuthStore:
         with self._lock:
             self._cleanup_locked(now)
             self._sessions[sid] = session
+            self._persist_locked()
         return session
 
     def get_session(self, sid: str) -> dict | None:
@@ -1330,6 +1360,7 @@ class TonAuthStore:
                 return None
             session["updated_at"] = now
             session["expires_at"] = now + TON_AUTH_SESSION_TTL_SEC
+            self._persist_locked()
             return dict(session)
 
     def destroy_session(self, sid: str) -> None:
@@ -1337,6 +1368,7 @@ class TonAuthStore:
             return
         with self._lock:
             self._sessions.pop(sid, None)
+            self._persist_locked()
 
 
 TON_AUTH = TonAuthStore()

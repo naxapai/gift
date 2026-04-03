@@ -214,7 +214,7 @@ class MessageRenderer:
             "signals_1h_skipwatch": str(_safe_int(signals_1h.get("watch"), 0) + _safe_int(signals_1h.get("skip"), 0)),
             "data_health": str(payload.get("data_health") or "OK"),
             "data_health_note": str(payload.get("data_health_note") or ""),
-            "updated_at": str(payload.get("updated_at") or payload.get("ts") or ""),
+            "updated_at": self._fmt_time(payload.get("updated_at") or payload.get("ts") or ""),
             "p95_ms": str(_safe_int(provider.get("p95_ms"), 0)),
             "err_pct": self._fmt_num(provider.get("err_pct"), 2),
             "tactic_line1": tactics[0],
@@ -471,7 +471,7 @@ class MessageRenderer:
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except Exception:
             return raw
-        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        return dt.astimezone(timezone.utc).strftime("%d.%m.%Y/%H:%M:%S")
 
 
 class TelegramNotifier:

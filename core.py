@@ -8834,7 +8834,7 @@ class GiftAnalyticsService:
         rows_count = len(rows or [])
         if rows_count <= 0:
             return error
-        if source in {"fragment.verified_snapshot", "mtproto_snapshot"}:
+        if source in {"fragment.verified_snapshot", "mtproto_snapshot"} or source.startswith("mtproto"):
             return ""
         return error
 
@@ -9493,6 +9493,14 @@ class GiftAnalyticsService:
         }
         if provider_health_raw.get("provider") not in (None, ""):
             provider_health["provider"] = str(provider_health_raw.get("provider"))
+        source_name = str(source_status.get("source") or "")
+        if source_name.startswith("mtproto") and not source_error:
+            provider_health["provider"] = source_name
+            provider_health["err_pct"] = 0.0
+        if data_health == "DEGRADED":
+            payload_note = str(source_error or summary.get("last_error") or "")
+        else:
+            payload_note = ""
 
         if len(listing_rows) > 5000:
             listing_rows = listing_rows[:5000]
@@ -9536,6 +9544,7 @@ class GiftAnalyticsService:
             "market_regime": regime.get("market_regime"),
             "market_regime_badge": regime.get("market_regime_badge"),
             "data_health": data_health,
+            "data_health_note": payload_note,
             "data_conf_pct": int(data_conf),
             "trend": str(regime.get("trend") or "флет"),
             "velocity_score": int(_clamp(float(velocity_score), 0.0, 100.0)),
