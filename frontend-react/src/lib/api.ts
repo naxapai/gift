@@ -1180,6 +1180,14 @@ export async function getAdminTelegramDeliveryJournal(limit = 20): Promise<Teleg
   return apiGet(withQuery('/api/admin/telegram-delivery/journal', new URLSearchParams({ limit: String(limit) })))
 }
 
+export async function getAdminTelegramDeliveryRecommendation(): Promise<{ ok?: boolean; recommended?: Record<string, unknown>; current?: Record<string, unknown>; current_pass_count?: number; recommended_pass_count?: number; stats?: Record<string, unknown>; reason?: string }> {
+  return apiGet('/api/admin/telegram-delivery/recommendation')
+}
+
+export async function applyAdminTelegramDeliveryRecommendation(): Promise<{ ok?: boolean; recommended?: Record<string, unknown>; effective?: Record<string, unknown>; current_pass_count?: number; recommended_pass_count?: number }> {
+  return apiGet('/api/admin/telegram-delivery/recommendation/apply', { method: 'POST' })
+}
+
 export async function postAdminTelegramDeliveryTest(kind: 'gift_signal' | 'market_status'): Promise<TelegramDeliveryTestResponse> {
   return apiGet('/api/admin/telegram-delivery/test', {
     method: 'POST',

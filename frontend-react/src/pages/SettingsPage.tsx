@@ -7,12 +7,14 @@ import {
   getAutoSellRules,
   getAdminTelegramDeliveryConfig,
   getAdminTelegramDeliveryJournal,
+  getAdminTelegramDeliveryRecommendation,
   getAdminTelegramDeliveryStatus,
   getTelegramAuthMe,
   getTonAuthMe,
   getTradingAccess,
   getAlertsV1,
   getOverview,
+  applyAdminTelegramDeliveryRecommendation,
   postAdminTelegramDeliveryTest,
   resetAdminTelegramDeliveryConfig,
   saveAdminTelegramDeliveryConfig,
@@ -139,6 +141,7 @@ export function SettingsPage() {
   const [tgFailedTotal, setTgFailedTotal] = useState(0)
   const [tgLastError, setTgLastError] = useState('')
   const [tgJournal, setTgJournal] = useState<{ sent: Array<Record<string, unknown>>; failed: Array<Record<string, unknown>> }>({ sent: [], failed: [] })
+  const [tgRecommendation, setTgRecommendation] = useState<{ currentPass?: number; recommendedPass?: number; recommended?: Record<string, unknown>; stats?: Record<string, unknown> } | null>(null)
   const [tgForm, setTgForm] = useState<TelegramFormState>(() => parseTelegramForm(null))
 
   useEffect(() => {
@@ -158,11 +161,13 @@ export function SettingsPage() {
     setTgLoading(true)
     setTgError('')
     try {
-      const [cfg, status, journal] = await Promise.all([
+      const [cfg, status, journal, recommendationRaw] = await Promise.all([
         getAdminTelegramDeliveryConfig(),
         getAdminTelegramDeliveryStatus(),
         getAdminTelegramDeliveryJournal(10),
+        getAdminTelegramDeliveryRecommendation().catch(() => ({ ok: false })),
       ])
+      const recommendation = recommendationRaw && typeof recommendationRaw === 'object' ? recommendationRaw as { current_pass_count?: number; recommended_pass_count?: number; recommended?: Record<string, unknown>; stats?: Record<string, unknown> } : {}
       setTgForm(parseTelegramForm(cfg.effective || null))
       setTgConfigured(Boolean(status.configured))
       setTgWorkerAlive(Boolean(status.worker_alive))
@@ -174,6 +179,12 @@ export function SettingsPage() {
       setTgJournal({
         sent: Array.isArray(journal.sent) ? journal.sent : [],
         failed: Array.isArray(journal.failed) ? journal.failed : [],
+      })
+      setTgRecommendation({
+        currentPass: Number(recommendation.current_pass_count || 0),
+        recommendedPass: Number(recommendation.recommended_pass_count || 0),
+        recommended: recommendation.recommended && typeof recommendation.recommended === 'object' ? recommendation.recommended : {},
+        stats: recommendation.stats && typeof recommendation.stats === 'object' ? recommendation.stats : {},
       })
     } catch (e) {
       setTgError(e instanceof Error ? e.message : 'Не удалось загрузить telegram delivery')
@@ -310,6 +321,21 @@ export function SettingsPage() {
     }
   }, [loadTelegramSettings])
 
+  const applyTelegramRecommendation = useCallback(async () => {
+    setTgSaving(true)
+    setTgError('')
+    setTgToast('')
+    try {
+      await applyAdminTelegramDeliveryRecommendation()
+      setTgToast('Рекомендованные пороги Telegram delivery применены')
+      await loadTelegramSettings()
+    } catch (e) {
+      setTgError(e instanceof Error ? e.message : 'telegram_recommendation_apply_failed')
+    } finally {
+      setTgSaving(false)
+    }
+  }, [loadTelegramSettings])
+
   const saveDefaultAutoSellRule = useCallback(async () => {
     if (!tradeWalletAddress) return
     setAutosellSaving(true)
@@ -420,6 +446,14 @@ export function SettingsPage() {
                 <MetricTile label="Queue" value={String(tgQueueSize)} />
                 <MetricTile label="Sent / Failed" value={`${tgSentTotal} / ${tgFailedTotal}`} />
               </div>
+              {tgRecommendation ? (
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <MetricTile label="Current gate pass" value={String(tgRecommendation.currentPass || 0)} />
+                  <MetricTile label="Recommended pass" value={String(tgRecommendation.recommendedPass || 0)} />
+                  <MetricTile label="Recommended Edge" value={String((tgRecommendation.recommended?.edgeRank100_gte as number | undefined) ?? '—')} />
+                  <MetricTile label="Recommended Conf/Profit" value={`${String((tgRecommendation.recommended?.conf_pct_gte as number | undefined) ?? '—')} / ${String((tgRecommendation.recommended?.expected_profit_pct_gte as number | undefined) ?? '—')}`} />
+                </div>
+              ) : null}
 
               <div className="grid gap-3 md:grid-cols-2">
                 <label className="flex items-center justify-between rounded-xl border border-[var(--line)] bg-white/70 px-3 py-2 text-sm">
@@ -490,6 +524,9 @@ export function SettingsPage() {
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="gmz-btn gmz-btn-primary px-4 py-2 text-sm" disabled={tgSaving || tgLoading} onClick={() => { void saveTelegramSettings() }}>
                   {tgSaving ? 'Сохранение…' : 'Сохранить Telegram delivery'}
+                </button>
+                <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={tgSaving || tgLoading} onClick={() => { void applyTelegramRecommendation() }}>
+                  Применить recommended gate
                 </button>
                 <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={tgSaving || tgLoading} onClick={() => { void resetTelegramSettings() }}>
                   Сбросить к defaults

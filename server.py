@@ -4651,6 +4651,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, _state().telegram_delivery_journal_v1(limit=limit), cache_control="no-store")
             return
 
+        if path == "/api/admin/telegram-delivery/recommendation":
+            if not _require_authenticated_telegram_user(self):
+                return
+            _json_response(self, _state().telegram_delivery_gate_recommendation_v1(limit=300), cache_control="no-store")
+            return
+
         if path == "/api/admin/formula-gates/status":
             if AUTH_REQUIRED and (not _require_admin(self)):
                 return
@@ -5021,6 +5027,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             payload = _read_json_body(self)
             kind = str(payload.get("kind") or "gift_signal") if isinstance(payload, dict) else "gift_signal"
             _json_response(self, _state().telegram_delivery_test_v1(kind=kind), cache_control="no-store")
+            return
+        if parsed.path == "/api/admin/telegram-delivery/recommendation/apply":
+            if not _require_authenticated_telegram_user(self):
+                return
+            _json_response(self, _state().telegram_delivery_apply_recommendation_v1(), cache_control="no-store")
             return
         if parsed.path == "/v1/trades/fast/confirm":
             user, wallet = _require_trading_user(self)

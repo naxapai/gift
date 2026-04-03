@@ -136,7 +136,7 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('saveAdminTelegramDeliveryConfig', page)
         self.assertIn('resetAdminTelegramDeliveryConfig', page)
         self.assertIn('postAdminTelegramDeliveryTest', page)
-        for token in ['EdgeRank ≥', 'Conf ≥', 'Profit % ≥', 'Изображение подарка в сигнале', 'Тест gift_signal', 'Тест market_status', 'Журнал отправок', 'Ошибки доставки', 'Market channel_id', 'Gift channel_id', 'Timeout sec', 'Dedupe TTL sec']:
+        for token in ['EdgeRank ≥', 'Conf ≥', 'Profit % ≥', 'Изображение подарка в сигнале', 'Тест gift_signal', 'Тест market_status', 'Журнал отправок', 'Ошибки доставки', 'Market channel_id', 'Gift channel_id', 'Timeout sec', 'Dedupe TTL sec', 'Current gate pass', 'Recommended pass', 'Применить recommended gate']:
             self.assertIn(token, page)
         for token in ['AutoSell PRO', 'Сохранить AutoSell rule', 'Trading / AutoSell сейчас открыт только для тестовой Telegram учетной записи `144832201`', 'SIGNAL_EXIT', 'AUTO_LIST', 'AUTO_SELL_NOW', 'Take Profit %', 'Stop Loss %', 'Trailing %', 'Regime list (CSV)']:
             self.assertIn(token, page)

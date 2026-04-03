@@ -3509,6 +3509,78 @@ class GiftAnalyticsService:
     def telegram_delivery_journal_v1(self, limit: int = 50) -> dict:
         return self.telegram_notifier.journal_snapshot(limit=limit)
 
+    def telegram_delivery_gate_recommendation_v1(self, limit: int = 300) -> dict:
+        items = self.signals_v1(limit=max(50, min(int(limit or 300), 1000)), mode="tz").get("items") or []
+        rows = [x for x in items if isinstance(x, dict)]
+        if not rows:
+            return {
+                "ok": True,
+                "recommended": {
+                    "edgeRank100_gte": 55.0,
+                    "conf_pct_gte": 35.0,
+                    "expected_profit_pct_gte": 8.0,
+                },
+                "current_pass_count": 0,
+                "recommended_pass_count": 0,
+                "reason": "no_signals",
+            }
+
+        def vals(field: str) -> list[float]:
+            return sorted(float(x.get(field) or 0.0) for x in rows)
+
+        edge_vals = vals("edgeRank100")
+        conf_vals = vals("conf_pct")
+        profit_vals = vals("expected_profit_pct")
+
+        def pct(arr: list[float], q: float) -> float:
+            if not arr:
+                return 0.0
+            idx = min(len(arr) - 1, max(0, int((len(arr) - 1) * q)))
+            return float(arr[idx])
+
+        current_effective = self.telegram_notifier.effective_settings()
+        gate_cfg = ((current_effective.get("publish_gates") or {}).get("gift_signal_channel") or {}) if isinstance(current_effective.get("publish_gates"), dict) else {}
+        current_edge = float(gate_cfg.get("edgeRank100_gte") or 55.0)
+        current_conf = float(gate_cfg.get("conf_pct_gte") or 35.0)
+        current_profit = float(gate_cfg.get("expected_profit_pct_gte") or 8.0)
+        current_pass = [x for x in rows if float(x.get("edgeRank100") or 0.0) >= current_edge and float(x.get("conf_pct") or 0.0) >= current_conf and float(x.get("expected_profit_pct") or 0.0) >= current_profit]
+
+        recommended = {
+            "edgeRank100_gte": round(max(0.0, min(55.0, pct(edge_vals, 0.75))), 1),
+            "conf_pct_gte": round(max(0.0, min(35.0, pct(conf_vals, 0.60))), 1),
+            "expected_profit_pct_gte": round(max(0.0, min(8.0, pct(profit_vals, 0.75))), 1),
+        }
+        recommended_pass = [
+            x for x in rows
+            if float(x.get("edgeRank100") or 0.0) >= recommended["edgeRank100_gte"]
+            and float(x.get("conf_pct") or 0.0) >= recommended["conf_pct_gte"]
+            and float(x.get("expected_profit_pct") or 0.0) >= recommended["expected_profit_pct_gte"]
+        ]
+        return {
+            "ok": True,
+            "recommended": recommended,
+            "current": {
+                "edgeRank100_gte": current_edge,
+                "conf_pct_gte": current_conf,
+                "expected_profit_pct_gte": current_profit,
+            },
+            "current_pass_count": len(current_pass),
+            "recommended_pass_count": len(recommended_pass),
+            "stats": {
+                "signals_count": len(rows),
+                "edgeRank100": {"p50": pct(edge_vals, 0.5), "p75": pct(edge_vals, 0.75), "max": max(edge_vals) if edge_vals else 0.0},
+                "conf_pct": {"p50": pct(conf_vals, 0.5), "p75": pct(conf_vals, 0.75), "max": max(conf_vals) if conf_vals else 0.0},
+                "expected_profit_pct": {"p50": pct(profit_vals, 0.5), "p75": pct(profit_vals, 0.75), "max": max(profit_vals) if profit_vals else 0.0},
+            },
+            "reason": "adaptive_relaxation_for_live_feed",
+        }
+
+    def telegram_delivery_apply_recommendation_v1(self) -> dict:
+        recommendation = self.telegram_delivery_gate_recommendation_v1(limit=300)
+        gate = recommendation.get("recommended") if isinstance(recommendation.get("recommended"), dict) else {}
+        updated = self.telegram_notifier.update_settings({"publish_gates": {"gift_signal_channel": gate}})
+        return {"ok": True, "recommended": gate, "effective": updated, "current_pass_count": recommendation.get("current_pass_count"), "recommended_pass_count": recommendation.get("recommended_pass_count")}
+
     def telegram_delivery_test_v1(self, kind: str = "gift_signal") -> dict:
         target = str(kind or "gift_signal").strip().lower()
         if target == "market_status":

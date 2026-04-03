@@ -254,11 +254,23 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertIn("sent", payload_j)
             self.assertIn("failed", payload_j)
 
+            status_r, payload_r = self._get_json("/api/admin/telegram-delivery/recommendation")
+            self.assertEqual(status_r, 200)
+            self.assertTrue(payload_r.get("ok"))
+            self.assertIn("recommended", payload_r)
+
             status_t, payload_t = self._post_json("/api/admin/telegram-delivery/test", {"kind": "gift_signal"})
             self.assertEqual(status_t, 200)
             self.assertTrue(payload_t.get("ok"))
             self.assertEqual(str(payload_t.get("kind") or ""), "gift_signal")
             self.assertIn("GiftMarketZone", str(payload_t.get("preview") or ""))
+
+    def test_admin_telegram_delivery_apply_recommendation_updates_gate(self) -> None:
+        with patch.object(server, "_auth_user_from_request", return_value={"id": 42, "username": "alice"}), patch.object(server._STATE, "telegram_delivery_gate_recommendation_v1", return_value={"ok": True, "recommended": {"edgeRank100_gte": 1.0, "conf_pct_gte": 10.0, "expected_profit_pct_gte": 0.0}, "current_pass_count": 0, "recommended_pass_count": 12}):
+            status_apply, payload_apply = self._post_json("/api/admin/telegram-delivery/recommendation/apply", {})
+        self.assertEqual(status_apply, 200)
+        self.assertTrue(payload_apply.get("ok"))
+        self.assertEqual(float(((payload_apply.get("recommended") or {}).get("edgeRank100_gte")) or 0.0), 1.0)
 
     def test_telegram_delivery_endpoints_require_authenticated_telegram_user_but_not_admin(self) -> None:
         with patch.object(server, "_auth_user_from_request", return_value=None):
