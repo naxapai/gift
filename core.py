@@ -7213,17 +7213,17 @@ class GiftAnalyticsService:
 
     def _publish_realtime_snapshot(self, mode: str | None = None) -> None:
         store = self.realtime_store
-        if not store.enabled:
-            return
         try:
             overview = self.overview_v1(mode=mode)
-            store.set_json("market:overview", overview, store.kv_overview_ttl_sec)
+            if store.enabled:
+                store.set_json("market:overview", overview, store.kv_overview_ttl_sec)
 
             signals = self.signals_v1(limit=100, mode=mode).get("items") or []
             buy = [s for s in signals if str(s.get("type") or "") == "BUY"][:20]
             sell = [s for s in signals if str(s.get("type") or "") == "SELL"][:20]
-            store.set_json("market:top_signals:BUY", buy, store.kv_signals_ttl_sec)
-            store.set_json("market:top_signals:SELL", sell, store.kv_signals_ttl_sec)
+            if store.enabled:
+                store.set_json("market:top_signals:BUY", buy, store.kv_signals_ttl_sec)
+                store.set_json("market:top_signals:SELL", sell, store.kv_signals_ttl_sec)
 
             for ev in self.stream_events_v1(types={"metric.updated", "provider.health"}, mode=mode):
                 etype = str(ev.get("type") or "")
@@ -7232,9 +7232,10 @@ class GiftAnalyticsService:
                 version = int(ev.get("version") or 1)
                 trace_id = str(ev.get("trace_id") or "")
                 if etype == "metric.updated":
-                    store.xadd_event("stream:metrics.updated", etype, key, payload, version=version, trace_id=trace_id)
-                    store.xadd_event("stream:metrics", etype, key, payload, version=version, trace_id=trace_id)
-                    store.publish("pub:metrics", ev)
+                    if store.enabled:
+                        store.xadd_event("stream:metrics.updated", etype, key, payload, version=version, trace_id=trace_id)
+                        store.xadd_event("stream:metrics", etype, key, payload, version=version, trace_id=trace_id)
+                        store.publish("pub:metrics", ev)
                     metric = str(payload.get("metric") or "").upper()
                     scope = str(payload.get("scope") or "MARKET").upper()
                     metric_id = "MARKET"
@@ -7248,22 +7249,24 @@ class GiftAnalyticsService:
                         "value": float(point.get("value") or 0.0),
                         "extra": point.get("extra") if isinstance(point.get("extra"), dict) else {},
                     }
-                    if metric:
+                    if metric and store.enabled:
                         store.set_json(
                             f"metric:{scope}:{metric_id}:{metric}:last",
                             metric_last,
                             store.kv_metric_last_ttl_sec,
                         )
                 elif etype == "provider.health":
-                    store.xadd_event("stream:provider", etype, key, payload, version=version, trace_id=trace_id)
-                    store.publish("pub:provider", ev)
+                    if store.enabled:
+                        store.xadd_event("stream:provider", etype, key, payload, version=version, trace_id=trace_id)
+                        store.publish("pub:provider", ev)
             for ev in self.stream_events_v1(types={"market.status"}, mode=mode):
                 key = str(ev.get("key") or "market:status")
                 payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
                 version = int(ev.get("version") or 1)
                 trace_id = str(ev.get("trace_id") or "")
-                store.xadd_event("stream:market.status", "market.status", key, payload, version=version, trace_id=trace_id)
-                store.publish("pub:market.status", ev)
+                if store.enabled:
+                    store.xadd_event("stream:market.status", "market.status", key, payload, version=version, trace_id=trace_id)
+                    store.publish("pub:market.status", ev)
                 try:
                     self.telegram_notifier.enqueue_market_status(ev)
                 except Exception:
@@ -7275,30 +7278,32 @@ class GiftAnalyticsService:
                     continue
                 sig_type = str(sig.get("type") or "WATCH")
                 signature = self._signal_signature(sig)
-                if not store.dedupe_signal(variant_id, sig_type, signature):
+                if store.enabled and not store.dedupe_signal(variant_id, sig_type, signature):
                     continue
                 env = self.build_signal_created_event_v1(sig)
                 env_payload = env.get("payload") if isinstance(env.get("payload"), dict) else {}
-                store.xadd_event(
-                    "stream:signal.created",
-                    "signal.created",
-                    variant_id,
-                    env_payload,
-                    version=int(env.get("version") or 1),
-                    trace_id=str(env.get("trace_id") or ""),
-                )
-                store.xadd_event(
-                    "stream:signals",
-                    "signal.created",
-                    variant_id,
-                    env_payload,
-                    version=int(env.get("version") or 1),
-                    trace_id=str(env.get("trace_id") or ""),
-                )
-                store.publish("pub:signals", env)
+                if store.enabled:
+                    store.xadd_event(
+                        "stream:signal.created",
+                        "signal.created",
+                        variant_id,
+                        env_payload,
+                        version=int(env.get("version") or 1),
+                        trace_id=str(env.get("trace_id") or ""),
+                    )
+                    store.xadd_event(
+                        "stream:signals",
+                        "signal.created",
+                        variant_id,
+                        env_payload,
+                        version=int(env.get("version") or 1),
+                        trace_id=str(env.get("trace_id") or ""),
+                    )
+                    store.publish("pub:signals", env)
                 details = self.variant_details_v1(variant_id, mode=mode) or {}
                 variant_agg = details.get("variant") if isinstance(details.get("variant"), dict) else sig
-                store.set_json(f"variant:{variant_id}:agg", variant_agg, store.kv_variant_ttl_sec)
+                if store.enabled:
+                    store.set_json(f"variant:{variant_id}:agg", variant_agg, store.kv_variant_ttl_sec)
                 try:
                     self.telegram_notifier.enqueue_gift_signal(self.build_signal_created_event_v2(sig))
                 except Exception:
@@ -7312,19 +7317,20 @@ class GiftAnalyticsService:
                 if not variant_id:
                     continue
                 signature = self._catalog_row_stream_digest(row)
-                if not store.dedupe_signal(variant_id, "CATALOG", signature):
+                if store.enabled and not store.dedupe_signal(variant_id, "CATALOG", signature):
                     continue
                 env = self.build_catalog_row_event_v1(row)
                 env_payload = env.get("payload") if isinstance(env.get("payload"), dict) else {}
-                store.xadd_event(
-                    "stream:catalog",
-                    "catalog.row",
-                    variant_id,
-                    env_payload,
-                    version=1,
-                    trace_id=str(uuid.uuid4()),
-                )
-                store.publish("pub:catalog", env)
+                if store.enabled:
+                    store.xadd_event(
+                        "stream:catalog",
+                        "catalog.row",
+                        variant_id,
+                        env_payload,
+                        version=1,
+                        trace_id=str(uuid.uuid4()),
+                    )
+                    store.publish("pub:catalog", env)
 
             collections = self.collections_v1(limit=5000).get("items") or []
             collections = sorted(collections, key=lambda x: int(x.get("active_lots_total") or 0), reverse=True)
@@ -7332,16 +7338,18 @@ class GiftAnalyticsService:
                 collection_id = str(col.get("collection_id") or "")
                 if not collection_id:
                     continue
-                store.set_json(f"collection:{collection_id}:agg", col, store.kv_collection_ttl_sec)
+                if store.enabled:
+                    store.set_json(f"collection:{collection_id}:agg", col, store.kv_collection_ttl_sec)
                 details = self.collection_details_v1(collection_id) or {}
                 floor_series = details.get("floor_series") if isinstance(details.get("floor_series"), list) else []
                 if floor_series:
                     floor_series = floor_series[-self.redis_collection_floor_series_limit :]
-                store.set_json(
-                    f"collection:{collection_id}:floor:series",
-                    floor_series,
-                    store.kv_collection_series_ttl_sec,
-                )
+                if store.enabled:
+                    store.set_json(
+                        f"collection:{collection_id}:floor:series",
+                        floor_series,
+                        store.kv_collection_series_ttl_sec,
+                    )
 
             listing_events = self.listings_events_v1(
                 limit=max(200, self.redis_variant_new_listings_tail_limit * 2),
