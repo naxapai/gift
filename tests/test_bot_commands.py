@@ -5,6 +5,9 @@ import bot
 
 
 class TestBotCommands(unittest.TestCase):
+    def setUp(self) -> None:
+        bot.set_notifier(None)
+
     def test_signal_gift_prompt_matches_tz(self) -> None:
         cache = {}
         updates = {"result": [{"update_id": 1, "message": {"text": "/signal_gift", "chat": {"id": 100}}}]}
@@ -36,6 +39,19 @@ class TestBotCommands(unittest.TestCase):
             bot._handle_commands(cache)
         self.assertTrue(sent)
         self.assertIn("GiftMarketZone • РЫНОК", sent[0])
+
+    def test_bot_prefers_notifier_for_outbound_delivery(self) -> None:
+        class StubNotifier:
+            def __init__(self):
+                self.calls = []
+            def send_now(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"ok": True}
+        notifier = StubNotifier()
+        bot.set_notifier(notifier)
+        bot._send_gift_signal_payload_to(123, {"action": "BUY", "market_regime": "RISK_ON", "score100": 80, "conf_pct": 44, "expected_profit_pct": 11, "collection": "snakebox", "model": "Bluebell", "background": "Cobalt Blue", "pattern": "Hourglass", "price_ton": 8.0, "floor_ton": 8.0, "fair_ton": 9.5, "liquidity_score": 51, "absorption_30m": 1.0, "listing_pressure": 2.1, "depth_score": 0.5, "depth_5pct_count": 5, "depth_5pct_ton": 20, "volume_velocity": 1.2})
+        self.assertTrue(notifier.calls)
+        self.assertEqual(notifier.calls[0]["kind"], "gift_signal")
 
 
 if __name__ == "__main__":

@@ -659,6 +659,34 @@ class TelegramNotifier:
         except Exception as exc:
             return {"ok": False, "kind": target_kind, "preview": text, "sent": False, "error": f"{exc.__class__.__name__}:{exc}"}
 
+    def send_now(self, *, kind: str, payload: dict, channel_id: str, include_image: bool | None = None, bypass_gates: bool = False) -> dict:
+        effective = self.effective_settings()
+        target_kind = str(kind or "gift_signal").strip().lower()
+        if target_kind == "gift_signal" and not bypass_gates:
+            gate_values = {
+                "gift_signal_channel": {
+                    "all": [
+                        {"metric": "edgeRank100", "op": ">=", "value": _safe_float((((effective.get("publish_gates") or {}).get("gift_signal_channel") or {}).get("edgeRank100_gte")), 55.0)},
+                        {"metric": "conf_pct", "op": ">=", "value": _safe_float((((effective.get("publish_gates") or {}).get("gift_signal_channel") or {}).get("conf_pct_gte")), 35.0)},
+                        {"metric": "expected_profit_pct", "op": ">=", "value": _safe_float((((effective.get("publish_gates") or {}).get("gift_signal_channel") or {}).get("expected_profit_pct_gte")), 8.0)},
+                    ]
+                }
+            }
+            gate_result = GateEngine(gate_values).evaluate("gift_signal_channel", payload)
+            if not bool(gate_result.get("ok")):
+                return {"ok": False, "kind": target_kind, "sent": False, "error": "publish_gate_blocked", "preview": self.renderer.render_gift_signal(payload)}
+        if target_kind == "market_status":
+            text = self.renderer.render_market_status(payload)
+            with_image = False
+        else:
+            text = self.renderer.render_gift_signal(payload)
+            with_image = bool(include_image if include_image is not None else True)
+        try:
+            self._deliver_message(channel_id=str(channel_id or self.default_chat_id), text=text, preview_url=str(payload.get("preview_url") or "") if with_image else "", include_image=with_image, settings=effective)
+            return {"ok": True, "kind": target_kind, "sent": True, "preview": text}
+        except Exception as exc:
+            return {"ok": False, "kind": target_kind, "sent": False, "error": f"{exc.__class__.__name__}:{exc}", "preview": text}
+
     def _sanitize_patch(self, patch: dict) -> dict:
         src = patch if isinstance(patch, dict) else {}
         out: dict[str, Any] = {}

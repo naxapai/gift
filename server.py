@@ -5210,6 +5210,7 @@ def _start_signal_bot_loop(port: int) -> None:
     signal_bot.API_BASE_URL = BOT_API_BASE_URL or f"http://127.0.0.1:{port}"
     signal_bot.API_AUTH_TOKEN = BOT_API_AUTH_TOKEN
     signal_bot.set_recent_signal_fetcher(lambda limit=20: _state().telegram_delivery_journal_v1(limit=limit))
+    signal_bot.set_notifier(_state().telegram_notifier)
     _BOT_STATUS["enabled"] = True
 
     def _loop() -> None:

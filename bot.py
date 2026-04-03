@@ -44,6 +44,7 @@ MSK_TZ = timezone(timedelta(hours=3))
 ROOT = Path(__file__).resolve().parent
 _RECENT_SIGNAL_FETCHER = None
 _RENDERER: MessageRenderer | None = None
+_NOTIFIER = None
 
 
 def _renderer() -> MessageRenderer:
@@ -61,6 +62,11 @@ def _renderer() -> MessageRenderer:
 def set_recent_signal_fetcher(func) -> None:
     global _RECENT_SIGNAL_FETCHER
     _RECENT_SIGNAL_FETCHER = func
+
+
+def set_notifier(notifier) -> None:
+    global _NOTIFIER
+    _NOTIFIER = notifier
 
 
 def _to_msk_text(ts_iso: str | None) -> str:
@@ -403,6 +409,10 @@ def _utcnow_text_iso() -> str:
 
 
 def _send_gift_signal_payload_to(chat_id: str | int, payload: Dict) -> None:
+    if _NOTIFIER is not None:
+        result = _NOTIFIER.send_now(kind="gift_signal", payload=payload, channel_id=str(chat_id), include_image=True, bypass_gates=True)
+        if bool(result.get("ok")):
+            return
     renderer = _renderer()
     text = renderer.render_gift_signal(payload)
     preview = str(payload.get("preview_url") or "").strip()
@@ -414,6 +424,10 @@ def _send_gift_signal_payload_to(chat_id: str | int, payload: Dict) -> None:
 
 
 def _send_market_status_payload_to(chat_id: str | int, payload: Dict) -> None:
+    if _NOTIFIER is not None:
+        result = _NOTIFIER.send_now(kind="market_status", payload=payload, channel_id=str(chat_id), include_image=False, bypass_gates=True)
+        if bool(result.get("ok")):
+            return
     renderer = _renderer()
     send_message_to(chat_id, renderer.render_market_status(payload))
 
