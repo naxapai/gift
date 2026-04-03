@@ -211,6 +211,8 @@ export type TradeIntentType = 'BUY' | 'BUY_AND_LIST' | 'SELL' | 'LIST' | 'CANCEL
 export interface BuyQuoteResponse {
   buy_quote_token: string
   expires_at: string
+  wallet_tx?: Record<string, unknown>
+  wallet_tx_hash?: string
   quote: {
     variant_id: string
     listing_id?: string | null
@@ -242,6 +244,7 @@ export interface TradeIntent {
   reasons?: string[] | null
   risk_flags?: string[] | null
   decision_trace?: Record<string, unknown> | null
+  wallet_tx_hash?: string | null
 }
 
 export interface PositionPro {

@@ -13,6 +13,28 @@ function ton(v?: number | null): string {
   return `${n.toFixed(2)} TON`
 }
 
+async function walletTxHash(walletTx: Record<string, unknown>): Promise<string> {
+  const raw = JSON.stringify(walletTx || {})
+  const bytes = new TextEncoder().encode(raw)
+  const digest = await window.crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+async function sendTonWalletTx(walletTx: Record<string, unknown>): Promise<{ txHash: string; payloadHash: string }> {
+  const payloadHash = await walletTxHash(walletTx)
+  const uiCtor = window.TON_CONNECT_UI?.TonConnectUI
+  if (!uiCtor) {
+    return { txHash: `sim_${Date.now()}`, payloadHash }
+  }
+  const ui = new uiCtor({ manifestUrl: `${window.location.origin}/tonconnect-manifest.json`, buttonRootId: null })
+  if (ui.connectionRestored) {
+    await ui.connectionRestored.catch(() => undefined)
+  }
+  const res = await ui.sendTransaction(walletTx as { validUntil: number; messages: Array<{ address: string; amount: string; payload?: string; stateInit?: string }> })
+  const txHash = String((res && (res.transactionHash || res.boc)) || `sim_${Date.now()}`)
+  return { txHash, payloadHash }
+}
+
 export function TradesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -147,7 +169,8 @@ export function TradesPage() {
       setOptimisticHistory((prev) => [{ intent_id: optimisticId, intent_type: intentType === 'FAST_BUY' ? 'BUY' : intentType, variant_id: variantId.trim(), wallet_address: walletAddress, status: 'PENDING_SIGNATURE', created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 600000).toISOString(), source: intentType === 'FAST_BUY' ? 'FAST_BUY' : 'STANDARD' }, ...prev].slice(0, 30))
       if (intentType === 'FAST_BUY') {
         const quote = await getBuyQuote({ variantId: variantId.trim(), maxPriceTon: Number(maxPriceTon || 0), walletAddress })
-        await postFastBuyConfirm({ buy_quote_token: quote.buy_quote_token, tx_hash: `fast_${Date.now()}`, wallet_address: walletAddress })
+        const tx = await sendTonWalletTx((quote as unknown as { wallet_tx?: Record<string, unknown> }).wallet_tx || {})
+        await postFastBuyConfirm({ buy_quote_token: quote.buy_quote_token, tx_hash: tx.txHash, wallet_address: walletAddress, client_meta: { payload_hash: tx.payloadHash } })
       } else {
         const payload: Record<string, unknown> = {
           intent_type: intentType,
@@ -160,7 +183,8 @@ export function TradesPage() {
           payload.post_action = { type: 'LIST', listing_params: { list_price_ton: Number(maxPriceTon || 0) * 1.1, duration_sec: 86400, marketplace: 'fragment' } }
         }
         const created = await postTradeIntent(payload)
-        await postTradeIntentConfirm(created.intent.intent_id, { tx_hash: `std_${Date.now()}`, wallet_address: walletAddress })
+        const tx = await sendTonWalletTx(created.wallet_tx || {})
+        await postTradeIntentConfirm(created.intent.intent_id, { tx_hash: tx.txHash, wallet_address: walletAddress, signature_meta: { payload_hash: tx.payloadHash } })
       }
       setVariantId('')
       setMaxPriceTon('')
@@ -192,7 +216,8 @@ export function TradesPage() {
         payload.transfer_params = { telegram_user_id: '144832201' }
       }
       const created = await postTradeIntent(payload)
-      await postTradeIntentConfirm(created.intent.intent_id, { tx_hash: `${action.toLowerCase()}_${Date.now()}`, wallet_address: walletAddress })
+      const tx = await sendTonWalletTx(created.wallet_tx || {})
+      await postTradeIntentConfirm(created.intent.intent_id, { tx_hash: tx.txHash, wallet_address: walletAddress, signature_meta: { payload_hash: tx.payloadHash } })
       await load()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'holding_action_failed')
