@@ -3592,18 +3592,24 @@ class GiftAnalyticsService:
             return {"ok": False, "error": "signal_not_available", "sent": False, "preview": ""}
         return self.telegram_notifier.send_test("gift_signal", sample)
 
-    def telegram_owned_gifts_v1(self, user: dict | None) -> dict:
+    def telegram_owned_gifts_v1(self, user: dict | None, wallet: dict | None = None) -> dict:
         person = user if isinstance(user, dict) else {}
         user_id = str(person.get("id") or "").strip()
         username = str(person.get("username") or "").strip().lstrip("@")
+        wallet_info = wallet if isinstance(wallet, dict) else {}
+        wallet_address = str(wallet_info.get("address") or "").strip()
         if not user_id and not username:
             return {"ok": True, "authenticated": False, "items": [], "source": "anonymous"}
-        cache_key = f"{user_id}|{username.lower()}"
+        cache_key = f"{user_id}|{username.lower()}|{wallet_address}"
         now_ts = time.time()
         cached = self._telegram_owned_gifts_cache.get(cache_key)
         if cached and (now_ts - float(cached[0])) <= self.telegram_owned_gifts_cache_ttl_sec:
             return json.loads(json.dumps(cached[1], ensure_ascii=False))
         payload = self._telegram_owned_gifts_fetch_remote(user_id=user_id, username=username)
+        if (not payload.get("items")) and wallet_address:
+            wallet_payload = self._owned_gifts_wallet_lookup(wallet_address)
+            if wallet_payload.get("items"):
+                payload = wallet_payload
         self._telegram_owned_gifts_cache[cache_key] = (now_ts, payload)
         return json.loads(json.dumps(payload, ensure_ascii=False))
 
@@ -3704,6 +3710,41 @@ class GiftAnalyticsService:
             "items": items,
             "source": "local_file" if self.owned_gifts_file.exists() else "local_file_missing",
             "message": "" if items else ("Подарки пользователя не найдены" if self.owned_gifts_file.exists() else "Файл подарков пользователя пока не заполнен"),
+        }
+
+    def _owned_gifts_wallet_lookup(self, wallet_address: str) -> dict:
+        holdings = self.trade_runtime.list_holdings(wallet_address).get("items") or []
+        items: list[dict] = []
+        for row in holdings:
+            if not isinstance(row, dict):
+                continue
+            variant_id = str(row.get("variant_id") or "")
+            snap = self.catalog_variant_v1(variant_id) if variant_id else {}
+            variant = snap if isinstance(snap, dict) else {}
+            items.append(
+                {
+                    "gift_id": str(row.get("gift_unique_id") or row.get("holding_id") or variant_id),
+                    "variant_id": variant_id or None,
+                    "collection": variant.get("collection") or None,
+                    "model": variant.get("model") or None,
+                    "background": variant.get("background") or None,
+                    "pattern": variant.get("pattern") or None,
+                    "variant_label": variant.get("variant_label") or variant_id,
+                    "preview_url": variant.get("preview_url") or "",
+                    "fragment_url": variant.get("fragment_url") or "",
+                    "status": row.get("status") or "OWNED",
+                    "floor_ton": variant.get("floor_ton"),
+                    "fair_ton": variant.get("fair_ton"),
+                    "acquired_at": row.get("acquired_at") or row.get("updated_at") or "",
+                    "meta": row,
+                }
+            )
+        return {
+            "ok": True,
+            "authenticated": True,
+            "items": [self._normalize_owned_gift_row(x) for x in items],
+            "source": "wallet_holdings" if items else "wallet_holdings_empty",
+            "message": "" if items else "У подключенного wallet пока нет локально известных holdings",
         }
 
     def _normalize_owned_gift_row(self, row: dict) -> dict:
@@ -6910,6 +6951,15 @@ class GiftAnalyticsService:
         fair_ton = sig.get("fair_ton")
         if fair_ton in (None, ""):
             fair_ton = float(floor_ton or 0.0)
+        preview_url = str(sig.get("preview_url") or "").strip()
+        if not preview_url and variant_id:
+            variant_payload = self.variants.get(variant_id)
+            if isinstance(variant_payload, dict):
+                preview_url = str(variant_payload.get("preview_url") or "").strip()
+        if not preview_url and variant_id:
+            variant_details = self.catalog_variant_v1(variant_id)
+            if isinstance(variant_details, dict):
+                preview_url = str(variant_details.get("preview_url") or "").strip()
         expected_profit_pct_raw = float(sig.get("expected_profit_pct") or 0.0)
         expected_profit_pct = expected_profit_pct_raw * 100.0 if abs(expected_profit_pct_raw) <= 1.0 else expected_profit_pct_raw
         undervalue_pct = sig.get("undervalue_pct")
@@ -6946,6 +6996,7 @@ class GiftAnalyticsService:
             "volume_velocity": float(sig.get("volume_velocity") or 0.0),
             "depth_5pct_count": int(sig.get("depth_5pct_count") or 0),
             "depth_5pct_ton": float(sig.get("depth_5pct_ton") or 0.0),
+            "preview_url": preview_url,
             "whale_ratio_pct": float(sig.get("whale_ratio_pct") or 0.0),
             "buy_wall_score": float(sig.get("buy_wall_score") or 0.0),
             "forecast_24h_pct_min": float(sig.get("forecast_24h_pct_min") or sig.get("forecast24h_pct_min") or 0.0),
@@ -8890,10 +8941,10 @@ class GiftAnalyticsService:
         allow_fragment_fallback = bool(self.listing_allow_fragment_fallback and primary_mode in {"auto", "fragment"})
         if not rows and not strict_primary and allow_fragment_fallback:
             rows = self._build_runtime_listing_rows(now, window_sec=window_sec)
-            if not str(source_status.get("source") or "").startswith("mtproto"):
+            if rows:
                 source_status = {
                     "source": "fragment.verified_snapshot",
-                    "error": str(source_status.get("error") or ""),
+                    "error": "",
                     "updated_at": self.state.get("updated_at"),
                 }
         elif not rows and strict_primary:
