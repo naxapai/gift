@@ -643,18 +643,18 @@ class TelegramNotifier:
             data_quality = str((payload or {}).get("data_quality") or "").lower()
             if not (adaptive_sparse and data_quality == "sparse" and action == "SELL"):
                 return False
-            sparse_gate = {
-                "gift_signal_channel": {
-                    "all": [
-                        {"metric": "edgeRank100", "op": ">=", "value": _safe_float(gate_cfg.get("adaptive_sparse_edgeRank100_gte"), 1.0)},
-                        {"metric": "conf_pct", "op": ">=", "value": _safe_float(gate_cfg.get("adaptive_sparse_conf_pct_gte"), 10.0)},
-                        {"metric": "expected_profit_pct", "op": ">=", "value": _safe_float(gate_cfg.get("adaptive_sparse_expected_profit_pct_gte"), 0.0)},
-                    ]
+            # In sparse production mode, SELL is already produced by the backend decision engine
+            # after regime/risk evaluation, while score/conf/profit can collapse to near-zero due to
+            # degraded analytics coverage. Allow those SELL signals through as a dedicated fallback.
+            return self._enqueue(
+                {
+                    "kind": "gift_signal",
+                    "payload": payload,
+                    "channel_id": str(signal_cfg.get("channel_id") or self.default_chat_id),
+                    "include_image": bool(signal_cfg.get("include_image", True)),
+                    "dedupe_key": f"signal:{str((payload or {}).get('signal_id') or '')}:{str((payload or {}).get('ts') or signal_event.get('ts') or '')}",
                 }
-            }
-            sparse_result = GateEngine(sparse_gate).evaluate("gift_signal_channel", payload)
-            if not bool(sparse_result.get("ok")):
-                return False
+            )
         signal_id = str((payload or {}).get("signal_id") or "")
         ts = str((payload or {}).get("ts") or signal_event.get("ts") or "")
         dedupe_key = f"signal:{signal_id}:{ts}"
