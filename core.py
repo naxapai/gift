@@ -8490,6 +8490,8 @@ class GiftAnalyticsService:
                         url_used = candidate_url
                         self.mt_listings_snapshot = {"updated_at": updated_at or _iso(now), "items": rows}
                         self._save_mt_listings_snapshot()
+                        error = ""
+                        source = "mtproto_api"
                         break
                     last_error = "mtproto_payload_items_not_normalized"
                 except urllib.error.HTTPError as exc:
@@ -8526,6 +8528,8 @@ class GiftAnalyticsService:
                 updated_at = self.mt_listings_snapshot.get("updated_at") if isinstance(self.mt_listings_snapshot, dict) else None
                 # Snapshot is a valid degraded datasource; keep UI/API healthy without bubbling transient upstream errors.
                 error = ""
+        if rows and source.startswith("mtproto"):
+            error = ""
         # On transient upstream errors without any usable rows keep previous runtime rows to avoid false removed spikes.
         if not rows and error and prev_rows:
             rows = list(prev_rows)
