@@ -158,6 +158,7 @@ export interface SignalItem {
   depth_5pct_count?: number | null
   depth_5pct_ton?: number | null
   watch_trigger?: string | null
+  decision_trace?: Record<string, unknown> | null
   active_lots?: number | null
   preview_url?: string
   reasons?: string[]

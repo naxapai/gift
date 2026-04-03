@@ -4939,8 +4939,8 @@ class GiftAnalyticsService:
             "depth_5pct_ton": round(float(depth_ton), 6),
             "depth_score": round(depth_score, 6),
             "watch_trigger": watch_trigger,
-            "reasons": (variant.get("reasons") or [])[:3],
-            "risk_flags": (variant.get("risk_flags") or [])[:3],
+            "reasons": self._normalize_signal_reason_list(variant.get("reasons") or []),
+            "risk_flags": self._normalize_signal_risk_list(variant.get("risk_flags") or []),
             "engine_mode": eff_mode,
             "data_quality": data_quality,
         }
@@ -6908,6 +6908,36 @@ class GiftAnalyticsService:
         if key in {"LOW_DEPTH_5PCT", "HIGH_PRESSURE", "LOW_CONF", "DATA_DEGRADED"}:
             return key
         return token
+
+    def _normalize_signal_reason_list(self, values) -> list[str]:
+        rows = [self._normalize_signal_reason_token(x) for x in (values or [])]
+        preferred = ["NEAR_ENTRY", "GOOD_ABSORPTION", "STRONG_LIQ", "UNDERVALUED", "OVERVALUED"]
+        seen: set[str] = set()
+        out: list[str] = []
+        for key in preferred:
+            if key in rows and key not in seen:
+                out.append(key)
+                seen.add(key)
+        for row in rows:
+            if row and row not in seen:
+                out.append(row)
+                seen.add(row)
+        return out[:3]
+
+    def _normalize_signal_risk_list(self, values) -> list[str]:
+        rows = [self._normalize_signal_risk_token(x) for x in (values or [])]
+        preferred = ["LOW_DEPTH_5PCT", "HIGH_PRESSURE", "LOW_CONF", "DATA_DEGRADED"]
+        seen: set[str] = set()
+        out: list[str] = []
+        for key in preferred:
+            if key in rows and key not in seen:
+                out.append(key)
+                seen.add(key)
+        for row in rows:
+            if row and row not in seen:
+                out.append(row)
+                seen.add(row)
+        return out[:3]
 
     def build_market_status_event_v1(
         self,
@@ -9212,8 +9242,8 @@ class GiftAnalyticsService:
                 "D": round(d_norm, 6),
             },
             "decision_trace": decision_trace,
-            "reasons": list(mm.get("reasons") or [])[:3] if isinstance(mm, dict) else [],
-            "risk_flags": list(mm.get("risk_flags") or [])[:3] if isinstance(mm, dict) else [],
+            "reasons": self._normalize_signal_reason_list(list(mm.get("reasons") or []) if isinstance(mm, dict) else []),
+            "risk_flags": self._normalize_signal_risk_list(list(mm.get("risk_flags") or []) if isinstance(mm, dict) else []),
             "ts_source": ts_source,
             "ts_detected": ts_detected_raw,
             "latency_ms": latency_ms,

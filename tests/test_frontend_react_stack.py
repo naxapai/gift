@@ -82,6 +82,7 @@ class TestFrontendReactStack(unittest.TestCase):
 
     def test_signals_page_has_full_filter_set_and_drawer(self):
         page = (FRONT / 'src' / 'pages' / 'SignalsPage.tsx').read_text(encoding='utf-8')
+        drawer = (FRONT / 'src' / 'components' / 'SignalDetailsDrawer.tsx').read_text(encoding='utf-8')
         self.assertIn('Мин. недооценка (%)', page)
         self.assertIn('Макс. риск (0..1)', page)
         self.assertIn('Только новые (1ч)', page)
@@ -102,6 +103,10 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn("bentoBlockTitle('HEADER_MARKET_CONTEXT'", page)
         self.assertIn("bentoBlockTitle('FILTER_BAR'", page)
         self.assertIn("bentoBlockTitle('TABLE_SIGNALS_PRO'", page)
+        self.assertIn('WATCH trigger', drawer)
+        self.assertIn('Decision Trace', drawer)
+        self.assertIn('signal.watch_trigger', drawer)
+        self.assertIn('signal.decision_trace', drawer)
 
     def test_screeners_page_has_required_tabs(self):
         page = (FRONT / 'src' / 'pages' / 'ScreenersPage.tsx').read_text(encoding='utf-8')
