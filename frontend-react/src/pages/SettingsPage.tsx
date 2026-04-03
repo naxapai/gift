@@ -114,6 +114,7 @@ export function SettingsPage() {
   const [alertSaving, setAlertSaving] = useState(false)
 
   const [telegramAuthed, setTelegramAuthed] = useState(false)
+  const [telegramDeliveryAllowed, setTelegramDeliveryAllowed] = useState(false)
   const [tradingAllowed, setTradingAllowed] = useState(false)
   const [tradeWalletAddress, setTradeWalletAddress] = useState('')
   const [autosellRules, setAutosellRules] = useState<AutoSellRule[]>([])
@@ -196,23 +197,25 @@ export function SettingsPage() {
   useEffect(() => {
     void (async () => {
       try {
-        const [ov, auth, tonAuth, tradeAccess] = await Promise.all([
+        const [ov, authRaw, tonAuth, tradeAccess] = await Promise.all([
           getOverview(),
           getTelegramAuthMe().catch(() => ({ authenticated: false })),
           getTonAuthMe().catch(() => ({ wallet: null })),
           getTradingAccess().catch(() => ({ allowed: false, wallet_address: null })),
         ])
+        const auth = authRaw && typeof authRaw === 'object' ? authRaw as { authenticated?: boolean; user?: { id?: number } | null } : {}
         setEngineMode(String(ov.engine_mode || 'н/д'))
         setMarketState(String(ov.market_state || 'н/д'))
         setGifts(Number(ov.counts?.gifts || 0))
         setCollections(Number(ov.counts?.collections || 0))
         const nextTelegramAuthed = Boolean(auth?.authenticated)
         setTelegramAuthed(nextTelegramAuthed)
+        setTelegramDeliveryAllowed(String(auth?.user?.id || '') === '144832201')
         const nextWallet = String(tonAuth?.wallet?.address || tradeAccess?.wallet_address || '')
         setTradeWalletAddress(nextWallet)
         const nextTradingAllowed = Boolean(tradeAccess?.allowed)
         setTradingAllowed(nextTradingAllowed)
-        if (nextTelegramAuthed) {
+        if (nextTelegramAuthed && String(auth?.user?.id || '') === '144832201') {
           await loadTelegramSettings()
         }
         if (nextTradingAllowed && nextWallet) {
@@ -437,6 +440,10 @@ export function SettingsPage() {
           {!telegramAuthed ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
               Войдите через Telegram, чтобы управлять отправкой сигналов и тестировать delivery.
+            </div>
+          ) : !telegramDeliveryAllowed ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
+              Telegram delivery доступен только для Telegram user ID `144832201`.
             </div>
           ) : (
             <div className="space-y-4">

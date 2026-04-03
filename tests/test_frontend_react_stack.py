@@ -32,6 +32,8 @@ class TestFrontendReactStack(unittest.TestCase):
         app = (FRONT / 'src' / 'App.tsx').read_text(encoding='utf-8')
         for route in ['catalog', 'screeners', 'signals', 'listing', 'trades', 'favorites', 'cabinet', 'admin', 'settings', 'variant/:variantId']:
             self.assertIn(route, app)
+        self.assertIn('Failed to fetch dynamically imported module', app)
+        self.assertIn('gmz:dynamic-import-reloaded', app)
 
     def test_shell_has_bento_navigation_labels(self):
         shell = (FRONT / 'src' / 'components' / 'AppShell.tsx').read_text(encoding='utf-8')
@@ -138,6 +140,7 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('postAdminTelegramDeliveryTest', page)
         for token in ['EdgeRank ≥', 'Conf ≥', 'Profit % ≥', 'Изображение подарка в сигнале', 'Тест gift_signal', 'Тест market_status', 'Журнал отправок', 'Ошибки доставки', 'Market channel_id', 'Gift channel_id', 'Timeout sec', 'Dedupe TTL sec', 'Current gate pass', 'Recommended pass', 'Применить recommended gate']:
             self.assertIn(token, page)
+        self.assertIn('Telegram delivery доступен только для Telegram user ID `144832201`.', page)
         for token in ['AutoSell PRO', 'Сохранить AutoSell rule', 'Trading / AutoSell сейчас открыт только для тестовой Telegram учетной записи `144832201`', 'SIGNAL_EXIT', 'AUTO_LIST', 'AUTO_SELL_NOW', 'Take Profit %', 'Stop Loss %', 'Trailing %', 'Regime list (CSV)']:
             self.assertIn(token, page)
 

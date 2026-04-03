@@ -251,6 +251,53 @@ class TestTelegramDelivery(unittest.TestCase):
         self.assertTrue(result.get("ok"))
         self.assertEqual(result.get("exception"), "strong_sell_override")
 
+    def test_notifier_allows_sparse_sell_with_adaptive_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            notifier = TelegramNotifier(
+                profile_path=PROFILE_PATH,
+                rules_path=RULES_PATH,
+                signal_profiles_path=SIGNAL_PROFILES_PATH,
+                edgerank_weights_path=EDGE_WEIGHTS_PATH,
+                settings_path=tmp / "telegram_delivery_settings.json",
+                journal_path=tmp / "telegram_delivery_journal.json",
+                bot_token="token",
+                default_chat_id="-100",
+            )
+            with patch.object(notifier, "_telegram_post", return_value={"ok": True, "result": {}}):
+                accepted = notifier.enqueue_gift_signal({
+                    "payload": {
+                        "signal_id": "adaptive-sell-1",
+                        "ts": "2026-04-03T19:42:48Z",
+                        "action": "SELL",
+                        "data_quality": "sparse",
+                        "market_regime": "RISK_OFF",
+                        "edgeRank100": 1.2,
+                        "score100": 7.5,
+                        "conf_pct": 12.8,
+                        "expected_profit_pct": 0.0,
+                        "collection": "rings",
+                        "model": "Sovereign",
+                        "background": "Black",
+                        "pattern": "Griffon",
+                        "price_ton": 8.0,
+                        "floor_ton": 8.0,
+                        "fair_ton": 7.4,
+                        "liquidity_score": 0,
+                        "absorption_30m": 0.0,
+                        "listing_pressure": 22885.0,
+                        "depth_score": 0.2,
+                        "depth_5pct_count": 919,
+                        "depth_5pct_ton": 7352.0,
+                        "volume_velocity": 0.0,
+                    }
+                })
+                notifier._queue.join()
+            self.assertTrue(accepted)
+            journal = notifier.journal_snapshot(limit=10)
+            self.assertTrue(journal.get("sent"))
+            notifier.close()
+
     def test_renderer_computes_dynamic_edgerank_when_missing(self) -> None:
         renderer = MessageRenderer(
             profile=__import__("json").loads(PROFILE_PATH.read_text(encoding="utf-8")),

@@ -159,6 +159,7 @@ CORS_ALLOWED_ORIGINS = {item.rstrip("/") for item in _split_csv(CORS_ALLOWED_ORI
 TON_PROOF_ALLOWED_DOMAINS = {item.strip().lower() for item in _split_csv(TON_PROOF_ALLOWED_DOMAINS_RAW)}
 AUTH_SESSIONS_FILE = ROOT / "data" / "auth_sessions.json"
 TON_AUTH_SESSIONS_FILE = ROOT / "data" / "ton_auth_sessions.json"
+TELEGRAM_DELIVERY_ALLOWED_USER_IDS = {item.strip() for item in _split_csv(os.getenv("TELEGRAM_DELIVERY_ALLOWED_USER_IDS", "144832201"))}
 
 
 def _admin_rt_cache_get(key: tuple, ttl_sec: float | None = None):
@@ -1678,6 +1679,21 @@ def _require_authenticated_telegram_user(handler: BaseHTTPRequestHandler) -> dic
         handler,
         {"ok": False, "error": "unauthorized", "message": "Требуется вход через Telegram"},
         status=HTTPStatus.UNAUTHORIZED,
+    )
+    return None
+
+
+def _require_telegram_delivery_user(handler: BaseHTTPRequestHandler) -> dict | None:
+    user = _require_authenticated_telegram_user(handler)
+    if not user:
+        return None
+    user_id = str((user or {}).get("id") or "").strip()
+    if user_id in TELEGRAM_DELIVERY_ALLOWED_USER_IDS:
+        return user
+    _json_response(
+        handler,
+        {"ok": False, "error": "forbidden", "message": "Telegram delivery доступен только для разрешенной Telegram учетной записи"},
+        status=HTTPStatus.FORBIDDEN,
     )
     return None
 
@@ -4661,19 +4677,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/admin/telegram-delivery/config":
-            if not _require_authenticated_telegram_user(self):
+            if not _require_telegram_delivery_user(self):
                 return
             _json_response(self, _state().telegram_delivery_config_v1(), cache_control="no-store")
             return
 
         if path == "/api/admin/telegram-delivery/status":
-            if not _require_authenticated_telegram_user(self):
+            if not _require_telegram_delivery_user(self):
                 return
             _json_response(self, _state().telegram_delivery_status_v1(), cache_control="no-store")
             return
 
         if path == "/api/admin/telegram-delivery/journal":
-            if not _require_authenticated_telegram_user(self):
+            if not _require_telegram_delivery_user(self):
                 return
             params = parse_qs(parsed.query)
             try:
@@ -4684,7 +4700,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/admin/telegram-delivery/recommendation":
-            if not _require_authenticated_telegram_user(self):
+            if not _require_telegram_delivery_user(self):
                 return
             _json_response(self, _state().telegram_delivery_gate_recommendation_v1(limit=300), cache_control="no-store")
             return
@@ -5049,19 +5065,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/admin/telegram-delivery/config/reset":
-            if not _require_authenticated_telegram_user(self):
+            if not _require_telegram_delivery_user(self):
                 return
             _json_response(self, _state().telegram_delivery_reset_config_v1(), cache_control="no-store")
             return
         if parsed.path == "/api/admin/telegram-delivery/test":
-            if not _require_authenticated_telegram_user(self):
+            if not _require_telegram_delivery_user(self):
                 return
             payload = _read_json_body(self)
             kind = str(payload.get("kind") or "gift_signal") if isinstance(payload, dict) else "gift_signal"
             _json_response(self, _state().telegram_delivery_test_v1(kind=kind), cache_control="no-store")
             return
         if parsed.path == "/api/admin/telegram-delivery/recommendation/apply":
-            if not _require_authenticated_telegram_user(self):
+            if not _require_telegram_delivery_user(self):
                 return
             _json_response(self, _state().telegram_delivery_apply_recommendation_v1(), cache_control="no-store")
             return
@@ -5177,7 +5193,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/admin/telegram-delivery/config":
-            if not _require_authenticated_telegram_user(self):
+            if not _require_telegram_delivery_user(self):
                 return
             payload = _read_json_body(self)
             overrides = payload.get("overrides") if isinstance(payload, dict) and isinstance(payload.get("overrides"), dict) else payload

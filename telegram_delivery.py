@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import hashlib
 import threading
 import time
 import urllib.error
@@ -529,6 +530,10 @@ class TelegramNotifier:
                     "edgeRank100_gte": thresholds.get("edgeRank100", 55.0),
                     "conf_pct_gte": thresholds.get("conf_pct", 35.0),
                     "expected_profit_pct_gte": thresholds.get("expected_profit_pct", 8.0),
+                    "adaptive_sparse_fallback": True,
+                    "adaptive_sparse_edgeRank100_gte": 1.0,
+                    "adaptive_sparse_conf_pct_gte": 10.0,
+                    "adaptive_sparse_expected_profit_pct_gte": 0.0,
                 }
             },
             "transport": {
@@ -604,9 +609,12 @@ class TelegramNotifier:
         if not bool(market_cfg.get("enabled")):
             return False
         payload = status.get("payload") if isinstance(status.get("payload"), dict) else status
-        updated_at = str((payload or {}).get("updated_at") or (payload or {}).get("ts") or "")
+        stable_payload = dict(payload or {})
+        stable_payload.pop("ts", None)
+        stable_payload.pop("updated_at", None)
+        digest = hashlib.sha1(json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
         regime = str((payload or {}).get("market_regime") or "MEAN_REVERT")
-        dedupe_key = f"market:{updated_at}:{regime}"
+        dedupe_key = f"market:{regime}:{digest}"
         item = {"kind": "market_status", "payload": payload, "channel_id": str(market_cfg.get("channel_id") or self.default_chat_id), "dedupe_key": dedupe_key}
         return self._enqueue(item)
 
@@ -618,18 +626,35 @@ class TelegramNotifier:
         if not bool(signal_cfg.get("enabled")):
             return False
         payload = signal_event.get("payload") if isinstance(signal_event.get("payload"), dict) else signal_event
+        gate_cfg = (((effective.get("publish_gates") or {}).get("gift_signal_channel") or {}) if isinstance(effective.get("publish_gates"), dict) else {})
         gate_values = {
             "gift_signal_channel": {
                 "all": [
-                    {"metric": "edgeRank100", "op": ">=", "value": _safe_float((((effective.get("publish_gates") or {}).get("gift_signal_channel") or {}).get("edgeRank100_gte")), 55.0)},
-                    {"metric": "conf_pct", "op": ">=", "value": _safe_float((((effective.get("publish_gates") or {}).get("gift_signal_channel") or {}).get("conf_pct_gte")), 35.0)},
-                    {"metric": "expected_profit_pct", "op": ">=", "value": _safe_float((((effective.get("publish_gates") or {}).get("gift_signal_channel") or {}).get("expected_profit_pct_gte")), 8.0)},
+                    {"metric": "edgeRank100", "op": ">=", "value": _safe_float(gate_cfg.get("edgeRank100_gte"), 55.0)},
+                    {"metric": "conf_pct", "op": ">=", "value": _safe_float(gate_cfg.get("conf_pct_gte"), 35.0)},
+                    {"metric": "expected_profit_pct", "op": ">=", "value": _safe_float(gate_cfg.get("expected_profit_pct_gte"), 8.0)},
                 ]
             }
         }
         gate_result = GateEngine(gate_values).evaluate("gift_signal_channel", payload)
         if not bool(gate_result.get("ok")):
-            return False
+            adaptive_sparse = bool(gate_cfg.get("adaptive_sparse_fallback", True))
+            action = str((payload or {}).get("action") or (payload or {}).get("type") or "").upper()
+            data_quality = str((payload or {}).get("data_quality") or "").lower()
+            if not (adaptive_sparse and data_quality == "sparse" and action == "SELL"):
+                return False
+            sparse_gate = {
+                "gift_signal_channel": {
+                    "all": [
+                        {"metric": "edgeRank100", "op": ">=", "value": _safe_float(gate_cfg.get("adaptive_sparse_edgeRank100_gte"), 1.0)},
+                        {"metric": "conf_pct", "op": ">=", "value": _safe_float(gate_cfg.get("adaptive_sparse_conf_pct_gte"), 10.0)},
+                        {"metric": "expected_profit_pct", "op": ">=", "value": _safe_float(gate_cfg.get("adaptive_sparse_expected_profit_pct_gte"), 0.0)},
+                    ]
+                }
+            }
+            sparse_result = GateEngine(sparse_gate).evaluate("gift_signal_channel", payload)
+            if not bool(sparse_result.get("ok")):
+                return False
         signal_id = str((payload or {}).get("signal_id") or "")
         ts = str((payload or {}).get("ts") or signal_event.get("ts") or "")
         dedupe_key = f"signal:{signal_id}:{ts}"
@@ -715,6 +740,10 @@ class TelegramNotifier:
                     "edgeRank100_gte": _clamp(_safe_float(signal_gate.get("edgeRank100_gte"), 55.0), 0.0, 100.0),
                     "conf_pct_gte": _clamp(_safe_float(signal_gate.get("conf_pct_gte"), 35.0), 0.0, 100.0),
                     "expected_profit_pct_gte": _clamp(_safe_float(signal_gate.get("expected_profit_pct_gte"), 8.0), 0.0, 1000.0),
+                    "adaptive_sparse_fallback": bool(signal_gate.get("adaptive_sparse_fallback", True)),
+                    "adaptive_sparse_edgeRank100_gte": _clamp(_safe_float(signal_gate.get("adaptive_sparse_edgeRank100_gte"), 1.0), 0.0, 100.0),
+                    "adaptive_sparse_conf_pct_gte": _clamp(_safe_float(signal_gate.get("adaptive_sparse_conf_pct_gte"), 10.0), 0.0, 100.0),
+                    "adaptive_sparse_expected_profit_pct_gte": _clamp(_safe_float(signal_gate.get("adaptive_sparse_expected_profit_pct_gte"), 0.0), 0.0, 1000.0),
                 }
             }
         transport = src.get("transport") if isinstance(src.get("transport"), dict) else None

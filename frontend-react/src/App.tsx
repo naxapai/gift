@@ -1,4 +1,4 @@
-import { Suspense, lazy, type ReactElement } from 'react'
+import { Suspense, lazy, type ReactElement, useEffect } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 
@@ -30,10 +30,28 @@ function NotFoundRedirect() {
   return <Navigate to="/" replace />
 }
 
+function DynamicImportRecovery() {
+  useEffect(() => {
+    const key = 'gmz:dynamic-import-reloaded'
+    const handler = (event: PromiseRejectionEvent) => {
+      const reason = String((event.reason && (event.reason.message || event.reason)) || '')
+      if (!reason.includes('Failed to fetch dynamically imported module')) return
+      if (sessionStorage.getItem(key) === '1') return
+      sessionStorage.setItem(key, '1')
+      window.location.reload()
+    }
+    window.addEventListener('unhandledrejection', handler)
+    return () => window.removeEventListener('unhandledrejection', handler)
+  }, [])
+  return null
+}
+
 export default function App() {
   return (
-    <Routes>
-      <Route element={<AppShell />}>
+    <>
+      <DynamicImportRecovery />
+      <Routes>
+        <Route element={<AppShell />}>
         <Route index element={lazyRoute(<OverviewPage />)} />
         <Route path="catalog" element={lazyRoute(<CatalogPage />)} />
         <Route path="screeners" element={lazyRoute(<ScreenersPage />)} />
@@ -45,8 +63,9 @@ export default function App() {
         <Route path="settings" element={lazyRoute(<SettingsPage />)} />
         <Route path="admin" element={lazyRoute(<AdminPage />)} />
         <Route path="variant/:variantId" element={lazyRoute(<VariantPage />)} />
-      </Route>
-      <Route path="*" element={<NotFoundRedirect />} />
-    </Routes>
+        </Route>
+        <Route path="*" element={<NotFoundRedirect />} />
+      </Routes>
+    </>
   )
 }
