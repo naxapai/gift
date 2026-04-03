@@ -2109,7 +2109,8 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/auth/telegram/owned-gifts":
             user = _auth_user_from_request(self)
-            _json_response(self, _state().telegram_owned_gifts_v1(user), cache_control="no-store")
+            wallet = _ton_wallet_from_request(self)
+            _json_response(self, _state().telegram_owned_gifts_v1(user, wallet), cache_control="no-store")
             return
 
         if path == "/api/admin/access":

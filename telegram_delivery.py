@@ -518,7 +518,7 @@ class TelegramNotifier:
             "market_status": {
                 "enabled": True,
                 "channel_id": self.default_chat_id,
-                "min_interval_sec": 900,
+                "min_interval_sec": 3600,
             },
             "gift_signal": {
                 "enabled": True,

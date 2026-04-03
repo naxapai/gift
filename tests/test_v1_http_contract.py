@@ -314,6 +314,15 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertTrue(payload_owned.get("authenticated"))
             self.assertEqual(str((payload_owned.get("items") or [])[0].get("gift_id") or ""), "g1")
 
+    def test_owned_gifts_endpoint_passes_wallet_context_to_backend(self) -> None:
+        with patch.object(server, "_auth_user_from_request", return_value={"id": 144832201, "username": "alice"}), patch.object(server, "_ton_wallet_from_request", return_value={"address": "EQWALLET"}), patch.object(server._STATE, "telegram_owned_gifts_v1", return_value={"ok": True, "authenticated": True, "items": [], "source": "wallet_holdings_empty"}) as mocked:
+            status, payload = self._get_json("/api/auth/telegram/owned-gifts")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"))
+        args = mocked.call_args[0]
+        self.assertEqual(args[0].get("id"), 144832201)
+        self.assertEqual(args[1].get("address"), "EQWALLET")
+
     def test_telegram_owned_gifts_endpoint_is_safe_for_anonymous_users(self) -> None:
         status, payload = self._get_json("/api/auth/telegram/owned-gifts")
         self.assertEqual(status, 200)

@@ -106,6 +106,7 @@ class TestTelegramDelivery(unittest.TestCase):
             self.assertEqual(float(gate.get("edgeRank100_gte") or 0), 100.0)
             self.assertEqual(float(gate.get("conf_pct_gte") or 0), 0.0)
             self.assertEqual(float(gate.get("expected_profit_pct_gte") or 0), 12.0)
+            self.assertEqual(int(((effective.get("market_status") or {}).get("min_interval_sec")) or 0), 3600)
 
             with patch.object(notifier, "_deliver_message", return_value=None):
                 payload = notifier.send_test("gift_signal", {
