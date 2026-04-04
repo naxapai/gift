@@ -1849,7 +1849,7 @@ def _serve_file(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
     handler.send_response(HTTPStatus.OK)
     handler.send_header("Content-Type", mime)
     handler.send_header("Content-Length", str(len(content)))
-    if target.suffix in {".html"}:
+    if target.suffix in {".html", ".js", ".css"}:
         handler.send_header("Cache-Control", "no-store")
     _add_security_headers(handler)
     handler.end_headers()
@@ -1894,7 +1894,7 @@ def _serve_file_head(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
     handler.send_response(HTTPStatus.OK)
     handler.send_header("Content-Type", mime)
     handler.send_header("Content-Length", str(target.stat().st_size))
-    if target.suffix in {".html"}:
+    if target.suffix in {".html", ".js", ".css"}:
         handler.send_header("Cache-Control", "no-store")
     _add_security_headers(handler)
     handler.end_headers()
