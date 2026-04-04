@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMemo, useState } from 'react'
+import { DecisionTraceCard } from './DecisionTraceCard'
 import { pct, signalPercent, signalTypeRu, ton } from '../lib/api'
 import type { SignalItem } from '../types/api'
 
@@ -123,10 +124,7 @@ export function SignalDetailsDrawer({ signal, onClose }: SignalDetailsDrawerProp
                   <p className="text-sm text-slate-700">{signal.watch_trigger || 'Нет отдельного триггера'}</p>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 p-3">
-                  <h4 className="mb-2 text-sm font-bold text-slate-800">Decision Trace</h4>
-                  <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-2 text-xs text-slate-700">{JSON.stringify(signal.decision_trace || {}, null, 2)}</pre>
-                </div>
+                <DecisionTraceCard trace={signal.decision_trace} />
               </section>
             )}
 

@@ -57,8 +57,8 @@ class TestFrontendReactStack(unittest.TestCase):
     def test_cabinet_page_contains_telegram_auth_and_owned_gifts_ui(self):
         page = (FRONT / 'src' / 'pages' / 'CabinetPage.tsx').read_text(encoding='utf-8')
         self.assertIn('Войти через Telegram', page)
-        self.assertIn('getTelegramAuthConfig', page)
-        self.assertIn('getTelegramAuthMe', page)
+        self.assertIn('getTelegramAuthBootstrap', page)
+        self.assertIn('getTelegramAuthBootstrap', page)
         self.assertIn('getTelegramOwnedGifts', page)
         self.assertIn('postTelegramAuthVerify', page)
         self.assertIn('postTelegramWebAppVerify', page)
@@ -86,6 +86,7 @@ class TestFrontendReactStack(unittest.TestCase):
     def test_signals_page_has_full_filter_set_and_drawer(self):
         page = (FRONT / 'src' / 'pages' / 'SignalsPage.tsx').read_text(encoding='utf-8')
         drawer = (FRONT / 'src' / 'components' / 'SignalDetailsDrawer.tsx').read_text(encoding='utf-8')
+        trace = (FRONT / 'src' / 'components' / 'DecisionTraceCard.tsx').read_text(encoding='utf-8')
         self.assertIn('Мин. недооценка (%)', page)
         self.assertIn('Макс. риск (0..1)', page)
         self.assertIn('Только новые (1ч)', page)
@@ -107,9 +108,11 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn("bentoBlockTitle('FILTER_BAR'", page)
         self.assertIn("bentoBlockTitle('TABLE_SIGNALS_PRO'", page)
         self.assertIn('WATCH trigger', drawer)
-        self.assertIn('Decision Trace', drawer)
+        self.assertIn('DecisionTraceCard', drawer)
         self.assertIn('signal.watch_trigger', drawer)
-        self.assertIn('signal.decision_trace', drawer)
+        self.assertIn('DecisionTraceCard', drawer)
+        self.assertIn('Не хватает до BUY', trace)
+        self.assertIn('Нормализованные', trace)
 
     def test_screeners_page_has_required_tabs(self):
         page = (FRONT / 'src' / 'pages' / 'ScreenersPage.tsx').read_text(encoding='utf-8')

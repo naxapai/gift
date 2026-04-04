@@ -7,6 +7,7 @@ import { GmzSelect } from '../components/GmzSelect'
 import { LoadingBlock } from '../components/LoadingBlock'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
+import { DecisionTraceCard } from '../components/DecisionTraceCard'
 import { getCatalogFeed, getCatalogVariant, getMarketStatus, pct, subscribeCatalogStream, subscribeRealtime, ton } from '../lib/api'
 import { readUiAutoRefreshMinutes, uiAutoRefreshMs } from '../lib/uiSettings'
 import type { CatalogRowPro, MarketStatusResponse, SignalType } from '../types/api'
@@ -550,8 +551,7 @@ export function CatalogPage() {
                                   </ul>
                                 </div>
                                 <div>
-                                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Decision Trace</div>
-                                  <pre className="max-h-48 overflow-auto rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-700">{JSON.stringify(row.decision_trace || {}, null, 2)}</pre>
+                                  <DecisionTraceCard trace={row.decision_trace} />
                                 </div>
                               </div>
                             </td>
