@@ -171,6 +171,38 @@ class TestTradingRuntime(unittest.TestCase):
             cancel = rt.create_trade_intent({'intent_type': 'CANCEL_LISTING', 'variant_id': 'v11', 'wallet_address': 'EQTEST'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
             self.assertEqual(cancel['intent']['intent_type'], 'CANCEL_LISTING')
 
+    def test_cancel_listing_duplicate_pending_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            created = rt.create_trade_intent({'intent_type': 'BUY', 'variant_id': 'v12', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            rt.confirm_intent_signature(created['intent']['intent_id'], {'tx_hash': 'tx12'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            list_intent = rt.create_trade_intent({'intent_type': 'LIST', 'variant_id': 'v12', 'wallet_address': 'EQTEST', 'post_action': {'type': 'LIST', 'listing_params': {'list_price_ton': 6.0, 'duration_sec': 86400, 'marketplace': 'fragment'}}}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            rt.confirm_intent_signature(list_intent['intent']['intent_id'], {'tx_hash': 'tx12-list'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            first = rt.create_trade_intent({'intent_type': 'CANCEL_LISTING', 'variant_id': 'v12', 'wallet_address': 'EQTEST'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            self.assertEqual(first['intent']['status'], 'PENDING_SIGNATURE')
+            with self.assertRaises(ValueError):
+                rt.create_trade_intent({'intent_type': 'CANCEL_LISTING', 'variant_id': 'v12', 'wallet_address': 'EQTEST'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+
+    def test_transfer_marks_holding_terminal_and_preserves_transfer_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            created = rt.create_trade_intent({'intent_type': 'BUY', 'variant_id': 'v13', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            rt.confirm_intent_signature(created['intent']['intent_id'], {'tx_hash': 'tx13'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            transfer = rt.create_trade_intent({'intent_type': 'TRANSFER', 'variant_id': 'v13', 'wallet_address': 'EQTEST', 'transfer_params': {'telegram_user_id': '144832201'}}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            rt.confirm_intent_signature(transfer['intent']['intent_id'], {'tx_hash': 'tx13-transfer'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            holding = rt.list_holdings('EQTEST')['items'][0]
+            self.assertEqual(holding.get('status'), 'SOLD')
+            self.assertEqual(str((holding.get('transfer_meta') or {}).get('result') or ''), 'TRANSFERRED')
+
+    def test_failed_intent_keeps_error_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, tx_verify_url='https://provider/tx')
+            created = rt.create_trade_intent({'intent_type': 'BUY', 'variant_id': 'v14', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            with patch.object(rt, '_verify_tx_state', return_value={'status': 'FAILED', 'reason': 'provider_http_404', 'source': 'provider'}):
+                item = rt.confirm_intent_signature(created['intent']['intent_id'], {'tx_hash': 'tx14'}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            self.assertEqual(item.get('status'), 'FAILED')
+            self.assertEqual(item.get('error_code'), 'provider_http_404')
+
 
 if __name__ == '__main__':
     unittest.main()

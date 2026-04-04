@@ -240,6 +240,8 @@ class TradeRuntime:
                 raise ValueError("holding_not_listed")
             if not str(holding.get("marketplace_listing_id") or ""):
                 raise ValueError("marketplace_listing_id_required")
+            if self._pending_intent_exists(wallet_address, variant_id, kinds={"CANCEL_LISTING"}):
+                raise ValueError("cancel_listing_already_pending")
             return
 
         if intent_type == "SELL":
@@ -544,6 +546,8 @@ class TradeRuntime:
         if state == "CONFIRMED" or (state not in {"FAILED", "PENDING"} and not self.tx_verify_url):
             intent["status"] = "CONFIRMED"
             intent.setdefault("status_timeline", []).append({"status": "CONFIRMED", "ts": _iso(), "source": verdict.get("source") or ("provider" if self.tx_verify_url else "runtime")})
+            intent["error_code"] = None
+            intent["error_message"] = None
             for idx, row in enumerate(intents):
                 if str(row.get("intent_id") or "") == str(intent.get("intent_id") or ""):
                     intents[idx] = intent
@@ -555,6 +559,8 @@ class TradeRuntime:
             return
         if state == "FAILED":
             intent["status"] = "FAILED"
+            intent["error_code"] = str(verdict.get("reason") or "trade_failed")
+            intent["error_message"] = str(verdict.get("reason") or "trade_failed")
             intent.setdefault("status_timeline", []).append({"status": "FAILED", "ts": _iso(), "reason": verdict.get("reason")})
             for idx, row in enumerate(intents):
                 if str(row.get("intent_id") or "") == str(intent.get("intent_id") or ""):
@@ -703,11 +709,12 @@ class TradeRuntime:
             transfer_params = intent.get("transfer_params") if isinstance(intent.get("transfer_params"), dict) else {}
             for row in holdings:
                 if str(row.get("wallet_address") or "") == wallet_address and str(row.get("variant_id") or "") == variant_id and str(row.get("status") or "") in {"OWNED", "LISTED"}:
-                    row["status"] = "TRANSFER_PENDING"
+                    row["status"] = "SOLD"
                     row["transfer_meta"] = {
                         "telegram_user_id": transfer_params.get("telegram_user_id"),
                         "telegram_username": transfer_params.get("telegram_username"),
                         "tx_hash": intent.get("tx_hash"),
+                        "result": "TRANSFERRED",
                     }
                     row["updated_at"] = now_iso
                     break
