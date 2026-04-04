@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -472,7 +472,7 @@ class MessageRenderer:
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except Exception:
             return raw
-        return dt.astimezone(timezone.utc).strftime("%d.%m.%Y/%H:%M:%S")
+        return dt.astimezone(timezone(timedelta(hours=3))).strftime("%d.%m.%Y/%H:%M:%S МСК")
 
 
 class TelegramNotifier:
@@ -609,9 +609,18 @@ class TelegramNotifier:
         if not bool(market_cfg.get("enabled")):
             return False
         payload = status.get("payload") if isinstance(status.get("payload"), dict) else status
-        stable_payload = dict(payload or {})
-        stable_payload.pop("ts", None)
-        stable_payload.pop("updated_at", None)
+        stable_payload = {
+            "market_regime": (payload or {}).get("market_regime"),
+            "data_health": (payload or {}).get("data_health"),
+            "trend": (payload or {}).get("trend"),
+            "velocity_score": (payload or {}).get("velocity_score"),
+            "vol_level": (payload or {}).get("vol_level"),
+            "flow": (payload or {}).get("flow"),
+            "liquidity": (payload or {}).get("liquidity"),
+            "supply": (payload or {}).get("supply"),
+            "whales": (payload or {}).get("whales"),
+            "signals_1h": (payload or {}).get("signals_1h"),
+        }
         digest = hashlib.sha1(json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
         regime = str((payload or {}).get("market_regime") or "MEAN_REVERT")
         dedupe_key = f"market:{regime}:{digest}"

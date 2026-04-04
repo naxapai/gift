@@ -83,7 +83,7 @@ class TestTelegramDelivery(unittest.TestCase):
         self.assertIn("🧠 Почему:", signal)
         self.assertIn("🆕", market)
         self.assertIn("BUY-триггер", signal)
-        self.assertIn("05.03.2026/12:00:00", signal)
+        self.assertIn("05.03.2026/15:00:00 МСК", signal)
 
     def test_notifier_settings_are_sanitized_and_test_preview_works(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

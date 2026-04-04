@@ -8907,7 +8907,7 @@ class GiftAnalyticsService:
         source = str(status.get("source") or "")
         if (
             self.listing_allow_fragment_fallback
-            and source in {"disabled", "mtproto_cache_empty"}
+            and (source in {"disabled", "mtproto_cache_empty"} or (rows_count <= 0 and source.startswith("mtproto")))
             and self.listing_primary_source in {"auto", "fragment"}
         ):
             active_rows = 0
