@@ -627,6 +627,8 @@ class TelegramNotifier:
         if not bool(market_cfg.get("enabled")):
             return False
         payload = status.get("payload") if isinstance(status.get("payload"), dict) else status
+        if str((payload or {}).get("data_health") or "OK").upper() == "DEGRADED":
+            return False
         stable_payload = {
             "market_regime": (payload or {}).get("market_regime"),
             "data_health": (payload or {}).get("data_health"),
