@@ -3845,6 +3845,20 @@ class GiftAnalyticsService:
     def wallet_activity_v1(self, wallet_address: str, limit: int = 50, cursor: str | None = None) -> dict:
         return self.trade_runtime.wallet_activity(wallet_address, limit=limit, cursor=cursor)
 
+    def trades_workspace_v1(self, wallet_address: str) -> dict:
+        market = self.market_status_v1(window="30m") if hasattr(self, "market_status_v1") else {}
+        regime = str((market or {}).get("market_regime") or "MEAN_REVERT")
+        return {
+            "wallet_address": wallet_address,
+            "market_regime": regime,
+            "pnl": self.trade_runtime.get_pnl_summary(wallet_address, market_regime=regime),
+            "positions": self.trade_runtime.list_positions(wallet_address).get("items") or [],
+            "holdings": self.trade_runtime.list_holdings(wallet_address).get("items") or [],
+            "history": self.trade_runtime.list_trade_intents(wallet_address, limit=200).get("items") or [],
+            "wallet_activity": self.trade_runtime.wallet_activity(wallet_address, limit=100).get("items") or [],
+            "autosell_rules": self.trade_runtime.list_autosell_rules(wallet_address).get("items") or [],
+        }
+
     def trades_stream_events_v1(self, wallet_address: str, stream: str = "trades", limit: int = 100) -> dict:
         kinds = {"trade.intent.created", "trade.intent.signed", "trade.intent.broadcast", "trade.intent.confirmed", "trade.intent.failed", "position.updated", "holding.updated", "wallet.activity.updated", "autosell.triggered"}
         if stream == "pnl":

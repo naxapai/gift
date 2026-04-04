@@ -5,7 +5,7 @@ import { BentoGrid } from '../components/BentoGrid'
 import { LoadingBlock } from '../components/LoadingBlock'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
-import { getAutoSellRules, getBuyQuote, getTelegramAuthMe, getTonAuthMe, getTradeHoldings, getTradeIntents, getTradePnl, getTradePositions, getTradingAccess, getWalletActivity, postFastBuyConfirm, postRetryListIntent, postTradeIntent, postTradeIntentConfirm, subscribePnlStream, subscribeTradesStream } from '../lib/api'
+import { getBuyQuote, getTelegramAuthMe, getTonAuthMe, getTradesWorkspace, getTradingAccess, postFastBuyConfirm, postRetryListIntent, postTradeIntent, postTradeIntentConfirm, subscribePnlStream, subscribeTradesStream } from '../lib/api'
 import type { AutoSellRule, HoldingPro, PositionPro, PnlSummaryPro, TradeIntent, WalletActivityItem } from '../types/api'
 
 function ton(v?: number | null): string {
@@ -96,20 +96,13 @@ export function TradesPage() {
         setRules([])
         return
       }
-      const [nextPnl, nextPositions, nextHoldings, nextHistory, nextActivity, nextRules] = await Promise.all([
-        getTradePnl(wa),
-        getTradePositions(wa),
-        getTradeHoldings(wa),
-        getTradeIntents(wa),
-        getWalletActivity(wa),
-        getAutoSellRules(wa),
-      ])
-      setPnl(nextPnl)
-      setPositions(nextPositions.items || [])
-      setHoldings(nextHoldings.items || [])
-      setHistory(nextHistory.items || [])
-      setActivity(nextActivity.items || [])
-      setRules(nextRules.items || [])
+      const workspace = await getTradesWorkspace(wa)
+      setPnl(workspace.pnl || null)
+      setPositions(Array.isArray(workspace.positions) ? workspace.positions : [])
+      setHoldings(Array.isArray(workspace.holdings) ? workspace.holdings : [])
+      setHistory(Array.isArray(workspace.history) ? workspace.history : [])
+      setActivity(Array.isArray(workspace.wallet_activity) ? workspace.wallet_activity : [])
+      setRules(Array.isArray(workspace.autosell_rules) ? workspace.autosell_rules : [])
     } catch (e) {
       setError(e instanceof Error ? e.message : 'trades_load_failed')
     } finally {

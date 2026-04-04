@@ -1342,6 +1342,10 @@ export async function getTradePositions(walletAddress: string): Promise<{ items:
   return apiGet(`/v1/trades/positions?wallet_address=${encodeURIComponent(walletAddress)}`)
 }
 
+export async function getTradesWorkspace(walletAddress: string): Promise<{ wallet_address: string; market_regime?: string; pnl: PnlSummaryPro; positions: PositionPro[]; holdings: HoldingPro[]; history: TradeIntent[]; wallet_activity: WalletActivityItem[]; autosell_rules: AutoSellRule[] }> {
+  return apiGet(`/v1/trades/workspace?wallet_address=${encodeURIComponent(walletAddress)}`)
+}
+
 export async function getTradeHoldings(walletAddress: string): Promise<{ items: HoldingPro[] }> {
   return apiGet(`/v1/trades/holdings?wallet_address=${encodeURIComponent(walletAddress)}`)
 }

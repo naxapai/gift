@@ -2431,6 +2431,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             _json_response(self, _state().trades_positions_v1(wallet_address), cache_control="no-store")
             return
 
+        if path == "/v1/trades/workspace":
+            user, wallet = _require_trading_user(self)
+            if user is None:
+                return
+            params = parse_qs(parsed.query)
+            wallet_address = str((params.get("wallet_address") or [""])[0] or "").strip()
+            ok_wallet, reason = _validate_wallet_match(wallet, wallet_address)
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            _json_response(self, _state().trades_workspace_v1(wallet_address), cache_control="no-store")
+            return
+
         if path == "/v1/trades/holdings":
             user, wallet = _require_trading_user(self)
             if user is None:
