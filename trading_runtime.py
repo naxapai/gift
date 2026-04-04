@@ -149,6 +149,7 @@ class TradeRuntime:
             raise ValueError("unsupported_intent_type")
         if not wallet_address or not variant_id:
             raise ValueError("missing_required_fields")
+        self._validate_intent_preconditions(intent_type, payload, wallet_address=wallet_address, variant_id=variant_id)
         idem = str(payload.get("idempotency_key") or "").strip()
         intents = self._read_list(self.intents_file)
         if idem:
@@ -192,6 +193,61 @@ class TradeRuntime:
         self._append_audit_log("trade_intent", str(item.get("intent_id") or ""), "created", item)
         self._append_event("trade.intent.created", item)
         return {"intent": item, "wallet_tx": wallet_tx}
+
+    def _validate_intent_preconditions(self, intent_type: str, payload: dict, *, wallet_address: str, variant_id: str) -> None:
+        if intent_type in {"BUY", "BUY_AND_LIST"}:
+            max_spend = _as_float(payload.get("max_spend_ton"), 0.0)
+            price = _as_float(payload.get("price_ton"), 0.0)
+            if max(max_spend, price) <= 0.0:
+                raise ValueError("price_or_max_spend_required")
+            if intent_type == "BUY_AND_LIST":
+                post_action = payload.get("post_action") if isinstance(payload.get("post_action"), dict) else {}
+                if str(post_action.get("type") or "") != "LIST":
+                    raise ValueError("buy_and_list_requires_post_action_list")
+                listing_params = post_action.get("listing_params") if isinstance(post_action.get("listing_params"), dict) else {}
+                if _as_float(listing_params.get("list_price_ton"), 0.0) <= 0.0:
+                    raise ValueError("list_price_required")
+            return
+
+        holding = self._latest_holding_for_wallet(self._read_list(self.holdings_file), wallet_address, variant_id)
+        if not isinstance(holding, dict) or not str(holding.get("holding_id") or ""):
+            raise ValueError("holding_not_found")
+        holding_status = str(holding.get("status") or "")
+
+        if intent_type == "LIST":
+            if holding_status != "OWNED":
+                raise ValueError("holding_not_owned_for_list")
+            if self._pending_intent_exists(wallet_address, variant_id, kinds={"LIST"}):
+                raise ValueError("list_intent_already_pending")
+            post_action = payload.get("post_action") if isinstance(payload.get("post_action"), dict) else {}
+            listing_params = post_action.get("listing_params") if isinstance(post_action.get("listing_params"), dict) else {}
+            if _as_float(listing_params.get("list_price_ton"), 0.0) <= 0.0:
+                raise ValueError("list_price_required")
+            return
+
+        if intent_type == "CANCEL_LISTING":
+            if holding_status != "LISTED":
+                raise ValueError("holding_not_listed")
+            if not str(holding.get("marketplace_listing_id") or ""):
+                raise ValueError("marketplace_listing_id_required")
+            return
+
+        if intent_type == "SELL":
+            if holding_status not in {"OWNED", "LISTED"}:
+                raise ValueError("holding_not_sellable")
+            if self._pending_intent_exists(wallet_address, variant_id, kinds={"SELL"}):
+                raise ValueError("sell_intent_already_pending")
+            return
+
+        if intent_type == "TRANSFER":
+            if holding_status != "OWNED":
+                raise ValueError("holding_not_transferable")
+            transfer_params = payload.get("transfer_params") if isinstance(payload.get("transfer_params"), dict) else {}
+            if not str(transfer_params.get("telegram_user_id") or "").strip() and not str(transfer_params.get("telegram_username") or "").strip():
+                raise ValueError("transfer_target_required")
+            if self._pending_intent_exists(wallet_address, variant_id, kinds={"TRANSFER"}):
+                raise ValueError("transfer_intent_already_pending")
+            return
 
     def confirm_intent_signature(self, intent_id: str, payload: dict, *, market_regime: str, variant_snapshot: dict | None) -> dict:
         intents = self._read_list(self.intents_file)

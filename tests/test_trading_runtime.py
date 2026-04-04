@@ -143,6 +143,34 @@ class TestTradingRuntime(unittest.TestCase):
             with self.assertRaises(ValueError):
                 rt.confirm_intent_signature(created['intent']['intent_id'], {'tx_hash': 'tx9', 'signature_meta': {'payload_hash': 'bad_hash'}}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
 
+    def test_list_requires_owned_holding_and_price(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            with self.assertRaises(ValueError):
+                rt.create_trade_intent({'intent_type': 'LIST', 'variant_id': 'v10', 'wallet_address': 'EQTEST'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            created = rt.create_trade_intent({'intent_type': 'BUY', 'variant_id': 'v10', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            rt.confirm_intent_signature(created['intent']['intent_id'], {'tx_hash': 'tx10'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            with self.assertRaises(ValueError):
+                rt.create_trade_intent({'intent_type': 'LIST', 'variant_id': 'v10', 'wallet_address': 'EQTEST', 'post_action': {'type': 'LIST', 'listing_params': {'duration_sec': 86400, 'marketplace': 'fragment'}}}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            listed = rt.create_trade_intent({'intent_type': 'LIST', 'variant_id': 'v10', 'wallet_address': 'EQTEST', 'post_action': {'type': 'LIST', 'listing_params': {'list_price_ton': 6.0, 'duration_sec': 86400, 'marketplace': 'fragment'}}}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            self.assertEqual(listed['intent']['intent_type'], 'LIST')
+
+    def test_cancel_sell_transfer_require_correct_holding_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            created = rt.create_trade_intent({'intent_type': 'BUY', 'variant_id': 'v11', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            rt.confirm_intent_signature(created['intent']['intent_id'], {'tx_hash': 'tx11'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            sell = rt.create_trade_intent({'intent_type': 'SELL', 'variant_id': 'v11', 'wallet_address': 'EQTEST'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            self.assertEqual(sell['intent']['intent_type'], 'SELL')
+            with self.assertRaises(ValueError):
+                rt.create_trade_intent({'intent_type': 'TRANSFER', 'variant_id': 'v11', 'wallet_address': 'EQTEST'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            transfer = rt.create_trade_intent({'intent_type': 'TRANSFER', 'variant_id': 'v11', 'wallet_address': 'EQTEST', 'transfer_params': {'telegram_user_id': '144832201'}}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            self.assertEqual(transfer['intent']['intent_type'], 'TRANSFER')
+            list_intent = rt.create_trade_intent({'intent_type': 'LIST', 'variant_id': 'v11', 'wallet_address': 'EQTEST', 'post_action': {'type': 'LIST', 'listing_params': {'list_price_ton': 6.0, 'duration_sec': 86400, 'marketplace': 'fragment'}}}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            rt.confirm_intent_signature(list_intent['intent']['intent_id'], {'tx_hash': 'tx11-list'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            cancel = rt.create_trade_intent({'intent_type': 'CANCEL_LISTING', 'variant_id': 'v11', 'wallet_address': 'EQTEST'}, market_regime='RISK_OFF', variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5})
+            self.assertEqual(cancel['intent']['intent_type'], 'CANCEL_LISTING')
+
 
 if __name__ == '__main__':
     unittest.main()
