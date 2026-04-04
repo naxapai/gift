@@ -8,6 +8,8 @@ import { PageHeader } from '../components/PageHeader'
 import { getBuyQuote, getTelegramAuthMe, getTonAuthMe, getTradesWorkspace, getTradingAccess, postFastBuyConfirm, postRetryListIntent, postTradeIntent, postTradeIntentConfirm, subscribePnlStream, subscribeTradesStream } from '../lib/api'
 import type { AutoSellRule, HoldingPro, PositionPro, PnlSummaryPro, TradeIntent, WalletActivityItem } from '../types/api'
 
+const TONCONNECT_BUTTON_ROOT_ID = 'gmz-tonconnect-anchor'
+
 function ton(v?: number | null): string {
   const n = Number(v)
   if (!Number.isFinite(n)) return '—'
@@ -42,9 +44,12 @@ async function sendTonWalletTx(walletTx: Record<string, unknown>): Promise<{ txH
   if (!uiCtor) {
     return { txHash: `sim_${Date.now()}`, payloadHash }
   }
-  const ui = new uiCtor({ manifestUrl: `${window.location.origin}/tonconnect-manifest.json`, buttonRootId: null })
+  const ui = new uiCtor({ manifestUrl: `${window.location.origin}/tonconnect-manifest.json`, buttonRootId: TONCONNECT_BUTTON_ROOT_ID })
   if (ui.connectionRestored) {
     await ui.connectionRestored.catch(() => undefined)
+  }
+  if (!ui.wallet?.account?.address) {
+    throw new Error('TON wallet was not connected')
   }
   const res = await ui.sendTransaction(walletTx as { validUntil: number; messages: Array<{ address: string; amount: string; payload?: string; stateInit?: string }> })
   const txHash = String((res && (res.transactionHash || res.boc)) || `sim_${Date.now()}`)
