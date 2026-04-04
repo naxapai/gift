@@ -134,14 +134,16 @@ function NavItem({ to, label }: { to: string; label: string }) {
 }
 
 export function AppShell() {
+  const initialTelegramUser = readJson<{ id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string }>(LS_TELEGRAM_USER)
+  const initialTonWallet = readJson<TonWalletInfo>(LS_TON_WALLET)
   const [adminAllowed, setAdminAllowed] = useState(false)
-  const [telegramUser, setTelegramUser] = useState<{ id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string } | null>(() => readJson(LS_TELEGRAM_USER))
+  const [telegramUser, setTelegramUser] = useState<{ id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string } | null>(initialTelegramUser)
   const [telegramAuthEnabled, setTelegramAuthEnabled] = useState(false)
   const [telegramBotUsername, setTelegramBotUsername] = useState('')
   const [telegramAuthBusy, setTelegramAuthBusy] = useState(false)
   const [telegramAuthError, setTelegramAuthError] = useState('')
-  const [tonConnected, setTonConnected] = useState(false)
-  const [tonWallet, setTonWallet] = useState<TonWalletInfo | null>(() => readJson(LS_TON_WALLET))
+  const [tonConnected, setTonConnected] = useState(Boolean(initialTonWallet?.address))
+  const [tonWallet, setTonWallet] = useState<TonWalletInfo | null>(initialTonWallet)
   const [tonConnecting, setTonConnecting] = useState(false)
   const [tonMenuOpen, setTonMenuOpen] = useState(false)
   const [tonBalance, setTonBalance] = useState<number | null>(null)
@@ -170,10 +172,12 @@ export function AppShell() {
         const auth = authRaw && typeof authRaw === 'object' ? authRaw as { authenticated?: boolean; user?: { id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string } | null; enabled?: boolean; bot_username?: string } : {}
         if (!stop) setAdminAllowed(Boolean(access?.is_admin))
         if (!stop) {
-          setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+          if (auth?.authenticated) {
+            setTelegramUser(auth.user || null)
+            writeJson(LS_TELEGRAM_USER, auth.user || null)
+          }
           setTelegramAuthEnabled(Boolean(auth?.enabled))
           setTelegramBotUsername(String(auth?.bot_username || ''))
-          writeJson(LS_TELEGRAM_USER, auth?.authenticated ? (auth.user || null) : null)
         }
       } catch {
         if (!stop) setAdminAllowed(false)
@@ -213,13 +217,19 @@ export function AppShell() {
     try {
       const me = await getTonAuthMe()
       const connected = Boolean(me?.connected)
-      setTonConnected(connected)
-      setTonWallet(connected ? (me.wallet || null) : null)
+      if (connected) {
+        setTonConnected(true)
+        setTonWallet(me.wallet || null)
+      }
       if (connected) writeJson(LS_TON_WALLET, me.wallet || null)
       if (!connected) {
-        setTonMenuOpen(false)
-        setTonBalance(null)
-        writeJson(LS_TON_WALLET, null)
+        if (!initialTonWallet?.address) {
+          setTonConnected(false)
+          setTonWallet(null)
+          setTonMenuOpen(false)
+          setTonBalance(null)
+          writeJson(LS_TON_WALLET, null)
+        }
       }
       setTonError('')
     } catch (e) {
