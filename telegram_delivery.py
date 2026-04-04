@@ -520,6 +520,16 @@ class TelegramNotifier:
         self._rate_state: dict[str, list[float]] = {}
         loaded_overrides = _load_json(settings_path, {})
         self._settings_overrides = self._sanitize_patch(loaded_overrides if isinstance(loaded_overrides, dict) else {})
+        if self.bot_token and self.default_chat_id:
+            self._settings_overrides["enabled"] = True
+            market_cfg = self._settings_overrides.get("market_status") if isinstance(self._settings_overrides.get("market_status"), dict) else {}
+            gift_cfg = self._settings_overrides.get("gift_signal") if isinstance(self._settings_overrides.get("gift_signal"), dict) else {}
+            market_cfg["enabled"] = bool(market_cfg.get("enabled", True))
+            market_cfg["channel_id"] = str(market_cfg.get("channel_id") or self.default_chat_id)
+            gift_cfg["enabled"] = True
+            gift_cfg["channel_id"] = str(gift_cfg.get("channel_id") or self.default_chat_id)
+            self._settings_overrides["market_status"] = market_cfg
+            self._settings_overrides["gift_signal"] = gift_cfg
         if self._settings_overrides != (loaded_overrides if isinstance(loaded_overrides, dict) else {}):
             _save_json_atomic(self.settings_path, self._settings_overrides)
         self._journal = _load_json(journal_path, {"sent": {}, "failed": [], "stats": {}})
