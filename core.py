@@ -43,7 +43,11 @@ MT_LISTINGS_SNAPSHOT_FILE = DATA_DIR / "mt_listings_snapshot.json"
 TELEGRAM_DELIVERY_SETTINGS_FILE = DATA_DIR / "telegram_delivery_settings.json"
 TELEGRAM_DELIVERY_JOURNAL_FILE = DATA_DIR / "telegram_delivery_journal.json"
 OWNED_GIFTS_FILE = DATA_DIR / "owned_gifts_by_user.json"
-TRADE_ALLOWED_USERS = {str(x).strip() for x in os.getenv("TRADES_ALLOWED_TELEGRAM_USER_IDS", "144832201").split(",") if str(x).strip()}
+TRADE_ALLOWED_USERS = {
+    *(str(x).strip() for x in os.getenv("TRADES_ALLOWED_TELEGRAM_USER_IDS", "144832201").split(",") if str(x).strip()),
+    *(str(x).strip() for x in os.getenv("ADMIN_TELEGRAM_USER_IDS", "").split(",") if str(x).strip()),
+    str(os.getenv("ADMIN_TELEGRAM_USER_ID", "")).strip(),
+}
 
 WINDOWS = {
     "10m": 10 * 60,
