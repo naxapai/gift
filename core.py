@@ -4977,18 +4977,26 @@ class GiftAnalyticsService:
         )
         conf_pct = round(_clamp(conf_pct + conf_adj, 0.0, 99.0), 1)
 
+        profile_ctx = {
+            "edgeRank100": float(edge_rank100),
+            "score100": float(score100),
+            "conf": float(conf_pct),
+            "sales24h": float(sales24h),
+            "undervalue": float(undervalue_ratio),
+            "expected_profit_pct": float(expected_profit_pct_num),
+            "liquidity_norm": float(liquidity_score / 100.0),
+            "absorption": float(absorption_30m),
+            "listing_pressure": float(listing_pressure),
+            "depth_score": float(depth_score),
+            "volume_velocity": float(volume_velocity),
+        }
+        signal_type = self._listing_action_from_profiles_v1(market_regime, profile_ctx, fallback_action=signal_type)
         watch_trigger = ""
         if signal_type == "WATCH":
             if buy_profile_invalid:
                 watch_trigger = "BUY заблокирован: ожидаемая прибыль не покрывает риск/комиссии."
-            elif listing_pressure >= 4.0 and absorption_30m <= 0.8:
-                watch_trigger = "Ожидаем разгрузку предложения: LP высокий, AR низкий."
-            elif edge_rank100 >= 55.0 and expected_profit_pct_num < 8.0:
-                watch_trigger = "Подтверждение profit%: edge есть, но profit ниже порога."
-            elif conf_pct < 35.0:
-                watch_trigger = "Подтверждение confidence: дождаться conf >= 35%."
             else:
-                watch_trigger = "Наблюдать 1ч: при улучшении контекста возможен переход в BUY/SELL."
+                watch_trigger = self._listing_watch_trigger_from_profiles_v1(market_regime, profile_ctx) or "Наблюдать 1ч: при улучшении контекста возможен переход в BUY/SELL."
         signal_id = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
@@ -5052,6 +5060,11 @@ class GiftAnalyticsService:
             "depth_5pct_ton": round(float(depth_ton), 6),
             "depth_score": round(depth_score, 6),
             "watch_trigger": watch_trigger,
+            "decision_trace": {
+                "market_regime": market_regime,
+                "missing_for_buy": self._listing_missing_for_buy_v1(market_regime, profile_ctx) if signal_type in {"WATCH", "SKIP"} else [],
+                "engine_mode": eff_mode,
+            },
             "reasons": self._normalize_signal_reason_list(variant.get("reasons") or []),
             "risk_flags": self._normalize_signal_risk_list(variant.get("risk_flags") or []),
             "engine_mode": eff_mode,
@@ -9144,6 +9157,57 @@ class GiftAnalyticsService:
         payload = action if action in {"BUY", "SELL", "WATCH", "SKIP"} else "SKIP"
         self._rt_cache_set(rt_cache_key, payload)
         return payload
+
+    def _listing_missing_for_buy_v1(self, regime: str, ctx: dict[str, float]) -> list[str]:
+        normalized_regime = str(regime or "MEAN_REVERT").strip().upper()
+        if normalized_regime not in {"RISK_ON", "MEAN_REVERT", "RISK_OFF", "PANIC"}:
+            normalized_regime = "MEAN_REVERT"
+        profile = self.listing_signal_profiles.get(normalized_regime) if isinstance(self.listing_signal_profiles, dict) else None
+        if not isinstance(profile, dict):
+            profile = {}
+        buy_all = profile.get("buy_all") if isinstance(profile.get("buy_all"), dict) else {}
+        missing: list[str] = []
+        for raw_key, threshold in buy_all.items():
+            if raw_key.endswith("_gte"):
+                field = raw_key[:-4]
+                left = float(ctx.get(field) or 0.0)
+                right = float(threshold or 0.0)
+                if left < right:
+                    missing.append(field)
+            elif raw_key.endswith("_lte"):
+                field = raw_key[:-4]
+                left = float(ctx.get(field) or 0.0)
+                right = float(threshold or 0.0)
+                if left > right:
+                    missing.append(field)
+        return missing
+
+    def _listing_watch_trigger_from_profiles_v1(self, regime: str, ctx: dict[str, float]) -> str:
+        missing = self._listing_missing_for_buy_v1(regime, ctx)
+        if not missing:
+            return ""
+        post_rules = self.listing_signal_post_rules if isinstance(getattr(self, "listing_signal_post_rules", None), dict) else {}
+        watch_triggers = post_rules.get("watch_triggers") if isinstance(post_rules.get("watch_triggers"), list) else []
+        preferred = ["undervalue", "absorption", "liquidity", "volume_velocity", "score100", "expected_profit_pct", "listing_pressure", "depth_score"]
+        selected = [token for token in preferred if token in missing][:2]
+        parts: list[str] = []
+        profile = self.listing_signal_profiles.get(str(regime or "MEAN_REVERT").strip().upper()) if isinstance(self.listing_signal_profiles, dict) else None
+        buy_all = profile.get("buy_all") if isinstance(profile, dict) and isinstance(profile.get("buy_all"), dict) else {}
+        for token in selected:
+            if token in {"score100", "expected_profit_pct", "listing_pressure", "depth_score"}:
+                parts.append(token)
+                continue
+            row = next((x for x in watch_triggers if isinstance(x, dict) and str(x.get("if_missing") or "") == token), None)
+            if not isinstance(row, dict):
+                parts.append(token)
+                continue
+            trigger = str(row.get("trigger") or "")
+            trigger = trigger.replace("threshold_undervalue", str(buy_all.get("undervalue_gte") or 0.0))
+            trigger = trigger.replace("threshold_absorption", str(buy_all.get("absorption_gte") or 0.0))
+            trigger = trigger.replace("threshold_liquidity", str(buy_all.get("liquidity_norm_gte") or 0.0))
+            trigger = trigger.replace("threshold_vv", str(buy_all.get("volume_velocity_gte") or 0.0))
+            parts.append(trigger)
+        return "; ".join(parts)
 
     def _edge_rank_raw_v1(
         self,
