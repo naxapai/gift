@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import clsx from 'clsx'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
-import { getAdminAccess, getTelegramAuthBootstrap, getTelegramAuthMe, getTelegramOwnedGifts, getTonAuthConfig, getTonAuthMe, getTonBalance, postTelegramLogout, postTonChallenge, postTonLogout, postTonVerify, type TonWalletInfo } from '../lib/api'
+import { getAdminAccess, getTelegramAuthBootstrap, getTelegramAuthMe, getTelegramOwnedGifts, getTonAuthConfig, getTonAuthMe, getTonBalance, postTelegramAuthVerify, postTelegramLogout, postTelegramWebAppVerify, postTonChallenge, postTonLogout, postTonVerify, type TonWalletInfo } from '../lib/api'
 import type { OwnedGiftItem } from '../types/api'
 
 const navItems = [
@@ -18,6 +18,7 @@ const navItems = [
 ]
 
 const TONCONNECT_UI_SRC = 'https://unpkg.com/@tonconnect/ui@2.0.9/dist/tonconnect-ui.min.js'
+const TELEGRAM_WIDGET_SRC = 'https://telegram.org/js/telegram-widget.js?22'
 const TONCONNECT_BUTTON_ROOT_ID = 'gmz-tonconnect-anchor'
 
 function fmtTon(value?: number | null): string {
@@ -46,6 +47,7 @@ function formatTonBalance(value?: number | null): string {
 }
 
 let tonScriptPromise: Promise<void> | null = null
+let telegramScriptPromise: Promise<void> | null = null
 
 async function ensureTonConnectSdk(): Promise<void> {
   if (window.TON_CONNECT_UI?.TonConnectUI) return
@@ -66,6 +68,26 @@ async function ensureTonConnectSdk(): Promise<void> {
     })
   }
   await tonScriptPromise
+}
+
+async function ensureTelegramWidgetSdk(): Promise<void> {
+  if (!telegramScriptPromise) {
+    telegramScriptPromise = new Promise<void>((resolve, reject) => {
+      const existing = document.querySelector<HTMLScriptElement>(`script[src^="${TELEGRAM_WIDGET_SRC}"]`)
+      if (existing) {
+        existing.addEventListener('load', () => resolve(), { once: true })
+        existing.addEventListener('error', () => reject(new Error('telegram_widget_load_failed')), { once: true })
+        return
+      }
+      const script = document.createElement('script')
+      script.src = TELEGRAM_WIDGET_SRC
+      script.async = true
+      script.onload = () => resolve()
+      script.onerror = () => reject(new Error('telegram_widget_load_failed'))
+      document.head.appendChild(script)
+    })
+  }
+  await telegramScriptPromise
 }
 
 function NavItem({ to, label }: { to: string; label: string }) {
@@ -90,6 +112,10 @@ function NavItem({ to, label }: { to: string; label: string }) {
 export function AppShell() {
   const [adminAllowed, setAdminAllowed] = useState(false)
   const [telegramUser, setTelegramUser] = useState<{ id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string } | null>(null)
+  const [telegramAuthEnabled, setTelegramAuthEnabled] = useState(false)
+  const [telegramBotUsername, setTelegramBotUsername] = useState('')
+  const [telegramAuthBusy, setTelegramAuthBusy] = useState(false)
+  const [telegramAuthError, setTelegramAuthError] = useState('')
   const [tonConnected, setTonConnected] = useState(false)
   const [tonWallet, setTonWallet] = useState<TonWalletInfo | null>(null)
   const [tonConnecting, setTonConnecting] = useState(false)
@@ -108,6 +134,7 @@ export function AppShell() {
     connectWallet: (opts?: { tonProof?: string }) => Promise<{ account?: { address?: string; chain?: string; publicKey?: string; [key: string]: unknown }; connectItems?: { tonProof?: { proof?: Record<string, unknown> } } }>
     disconnect: () => Promise<void>
   } | null>(null)
+  const telegramWidgetRef = useRef<HTMLDivElement | null>(null)
   const tonMenuRef = useRef<HTMLDivElement | null>(null)
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
 
@@ -115,12 +142,21 @@ export function AppShell() {
     let stop = false
     ;(async () => {
       try {
-        const [access, auth] = await Promise.all([getAdminAccess(), getTelegramAuthBootstrap().catch(() => ({ authenticated: false, user: null }))])
+        const [access, authRaw] = await Promise.all([getAdminAccess(), getTelegramAuthBootstrap().catch(() => ({ authenticated: false, user: null }))])
+        const auth = authRaw && typeof authRaw === 'object' ? authRaw as { authenticated?: boolean; user?: { id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string } | null; enabled?: boolean; bot_username?: string } : {}
         if (!stop) setAdminAllowed(Boolean(access?.is_admin))
-        if (!stop) setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+        if (!stop) {
+          setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+          setTelegramAuthEnabled(Boolean(auth?.enabled))
+          setTelegramBotUsername(String(auth?.bot_username || ''))
+        }
       } catch {
         if (!stop) setAdminAllowed(false)
-        if (!stop) setTelegramUser(null)
+        if (!stop) {
+          setTelegramUser(null)
+          setTelegramAuthEnabled(false)
+          setTelegramBotUsername('')
+        }
       }
     })()
     return () => {
@@ -272,6 +308,65 @@ export function AppShell() {
   }, [telegramUser, profileOpen, loadOwnedGifts])
 
   useEffect(() => {
+    if (!profileOpen || telegramUser || !telegramAuthEnabled || !telegramBotUsername || !telegramWidgetRef.current) return
+    let mounted = true
+    const mount = async () => {
+      try {
+        const initData = String(window.Telegram?.WebApp?.initData || '').trim()
+        if (initData) {
+          setTelegramAuthBusy(true)
+          setTelegramAuthError('')
+          try {
+            window.Telegram?.WebApp?.ready?.()
+            window.Telegram?.WebApp?.expand?.()
+            await postTelegramWebAppVerify(initData)
+            const auth = await getTelegramAuthBootstrap()
+            if (mounted) setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+          } catch (e) {
+            if (mounted) setTelegramAuthError(e instanceof Error ? e.message : 'telegram_webapp_auth_failed')
+          } finally {
+            if (mounted) setTelegramAuthBusy(false)
+          }
+          return
+        }
+        await ensureTelegramWidgetSdk()
+        if (!mounted || !telegramWidgetRef.current) return
+        telegramWidgetRef.current.innerHTML = ''
+        window.gmzTelegramAuth = async (telegramUserPayload: Record<string, unknown>) => {
+          setTelegramAuthBusy(true)
+          setTelegramAuthError('')
+          try {
+            await postTelegramAuthVerify(telegramUserPayload)
+            const auth = await getTelegramAuthBootstrap()
+            if (mounted) setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+          } catch (e) {
+            if (mounted) setTelegramAuthError(e instanceof Error ? e.message : 'telegram_auth_failed')
+          } finally {
+            if (mounted) setTelegramAuthBusy(false)
+          }
+        }
+        const script = document.createElement('script')
+        script.async = true
+        script.src = TELEGRAM_WIDGET_SRC
+        script.setAttribute('data-telegram-login', telegramBotUsername)
+        script.setAttribute('data-size', 'large')
+        script.setAttribute('data-radius', '14')
+        script.setAttribute('data-request-access', 'write')
+        script.setAttribute('data-userpic', 'false')
+        script.setAttribute('data-onauth', 'gmzTelegramAuth(user)')
+        telegramWidgetRef.current.appendChild(script)
+      } catch (e) {
+        if (mounted) setTelegramAuthError(e instanceof Error ? e.message : 'telegram_widget_failed')
+      }
+    }
+    void mount()
+    return () => {
+      mounted = false
+      window.gmzTelegramAuth = undefined
+    }
+  }, [profileOpen, telegramUser, telegramAuthEnabled, telegramBotUsername])
+
+  useEffect(() => {
     if (!tonMenuOpen) return
     void refreshTonBalance()
   }, [tonMenuOpen, refreshTonBalance])
@@ -380,7 +475,12 @@ export function AppShell() {
                       </div>
                     </div>
                   ) : (
-                    <div className="text-sm text-slate-600">Войдите через Telegram, чтобы видеть данные профиля и подарки.</div>
+                    <div className="space-y-3">
+                      <div className="text-sm text-slate-600">Войдите через Telegram, чтобы видеть данные профиля и подарки.</div>
+                      {telegramAuthEnabled ? <div ref={telegramWidgetRef} /> : <div className="text-xs text-amber-700">Telegram auth пока не настроен на backend.</div>}
+                      {telegramAuthBusy ? <div className="text-xs text-slate-500">Проверяем подпись Telegram…</div> : null}
+                      {telegramAuthError ? <div className="text-xs text-rose-600">{telegramAuthError}</div> : null}
+                    </div>
                   )}
                 </div>
               ) : null}
