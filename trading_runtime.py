@@ -811,7 +811,9 @@ class TradeRuntime:
                 "edgeRank100": (variant_snapshot or {}).get("edgeRank100"),
                 "conf_pct": (variant_snapshot or {}).get("conf_pct"),
                 "action": (variant_snapshot or {}).get("action"),
+                "reasons": list((variant_snapshot or {}).get("reasons") or []),
                 "risk_flags": list((variant_snapshot or {}).get("risk_flags") or []),
+                "decision_trace": (variant_snapshot or {}).get("decision_trace") if isinstance((variant_snapshot or {}).get("decision_trace"), dict) else {},
                 "opened_at": now_iso,
                 "updated_at": now_iso,
             })
@@ -834,7 +836,9 @@ class TradeRuntime:
         target["edgeRank100"] = (variant_snapshot or {}).get("edgeRank100")
         target["conf_pct"] = (variant_snapshot or {}).get("conf_pct")
         target["action"] = (variant_snapshot or {}).get("action")
+        target["reasons"] = list((variant_snapshot or {}).get("reasons") or [])
         target["risk_flags"] = list((variant_snapshot or {}).get("risk_flags") or [])
+        target["decision_trace"] = (variant_snapshot or {}).get("decision_trace") if isinstance((variant_snapshot or {}).get("decision_trace"), dict) else target.get("decision_trace") or {}
         target["updated_at"] = now_iso
         if _as_float(target.get("qty"), 0.0) <= 0:
             positions[:] = [x for x in positions if x is not target]

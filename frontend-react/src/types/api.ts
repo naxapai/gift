@@ -265,7 +265,9 @@ export interface PositionPro {
   edgeRank100?: number | null
   conf_pct?: number | null
   action?: string | null
+  reasons?: string[]
   risk_flags?: string[]
+  decision_trace?: Record<string, unknown> | null
   opened_at?: string | null
   updated_at: string
 }
