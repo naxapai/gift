@@ -16,6 +16,24 @@ function ton(v?: number | null): string {
   return `${n.toFixed(2)} TON`
 }
 
+function readableTradeError(message: string): string {
+  const raw = String(message || '')
+  if (raw.includes('holding_not_found')) return 'Holding не найден для выбранного варианта.'
+  if (raw.includes('holding_not_owned_for_list')) return 'Листинг доступен только для holding в статусе OWNED.'
+  if (raw.includes('holding_not_listed')) return 'Отмена листинга доступна только для LISTED holding.'
+  if (raw.includes('holding_not_sellable')) return 'Продажа доступна только для OWNED или LISTED holding.'
+  if (raw.includes('holding_not_transferable')) return 'TRANSFER доступен только для OWNED holding.'
+  if (raw.includes('list_intent_already_pending')) return 'Уже есть pending LIST intent для этого варианта.'
+  if (raw.includes('cancel_listing_already_pending')) return 'Уже есть pending CANCEL_LISTING intent для этого варианта.'
+  if (raw.includes('sell_intent_already_pending')) return 'Уже есть pending SELL intent для этого варианта.'
+  if (raw.includes('transfer_intent_already_pending')) return 'Уже есть pending TRANSFER intent для этого варианта.'
+  if (raw.includes('list_price_required')) return 'Укажите цену листинга.'
+  if (raw.includes('transfer_target_required')) return 'Укажите Telegram user id или username для TRANSFER.'
+  if (raw.includes('wallet_tx_payload_mismatch')) return 'Кошелек подписал не тот payload. Повторите операцию.'
+  if (raw.includes('TON wallet was not connected')) return 'Подключите TON wallet перед отправкой транзакции.'
+  return raw || 'Не удалось выполнить торговую операцию.'
+}
+
 function timelineSteps(value: unknown): Array<{ status: string; ts: string; source?: string; reason?: string }> {
   if (!Array.isArray(value)) return []
   return value
@@ -208,7 +226,7 @@ export function TradesPage() {
       setBuyAndListPriceTon('')
       await load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'trade_create_failed')
+      setError(readableTradeError(e instanceof Error ? e.message : 'trade_create_failed'))
     } finally {
       setOptimisticHistory([])
       setCreating(false)
@@ -240,7 +258,7 @@ export function TradesPage() {
       await postTradeIntentConfirm(created.intent.intent_id, { tx_hash: tx.txHash, wallet_address: walletAddress, signature_meta: { payload_hash: tx.payloadHash } })
       await load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'holding_action_failed')
+      setError(readableTradeError(e instanceof Error ? e.message : 'holding_action_failed'))
     } finally {
       setActionBusyId('')
     }
