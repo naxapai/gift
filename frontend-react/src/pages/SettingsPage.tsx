@@ -379,6 +379,34 @@ export function SettingsPage() {
     }
   }, [tradeWalletAddress, autosellTriggerType, autosellMode, autosellCooldownSec, autosellPriority, autosellTakeProfitPct, autosellStopLossPct, autosellTrailingPct, autosellMaxHoldMinutes, autosellRegimes])
 
+  const loadRuleIntoEditor = useCallback((rule: AutoSellRule) => {
+    setAutosellTriggerType(rule.trigger_type)
+    setAutosellMode(rule.mode)
+    setAutosellCooldownSec(Number(rule.cooldown_sec || 0))
+    setAutosellPriority(Number(rule.priority || 0))
+    const params = rule.params || {}
+    setAutosellTakeProfitPct(Number((params.tp_pct as number | undefined) || 0) * 100)
+    setAutosellStopLossPct(Number((params.sl_pct as number | undefined) || 0) * 100)
+    setAutosellTrailingPct(Number((params.trailing_pct as number | undefined) || 0) * 100)
+    setAutosellMaxHoldMinutes(Number((params.max_hold_minutes as number | undefined) || 60))
+    setAutosellRegimes(Array.isArray(params.regimes) ? params.regimes.join(',') : 'RISK_OFF,PANIC')
+  }, [])
+
+  const toggleRuleEnabled = useCallback(async (rule: AutoSellRule) => {
+    setAutosellSaving(true)
+    setAutosellError('')
+    setAutosellToast('')
+    try {
+      const next = await upsertAutoSellRule({ ...rule, enabled: !rule.enabled })
+      setAutosellRules((prev) => prev.map((x) => x.rule_id === next.rule_id ? next : x))
+      setAutosellToast(`Правило ${next.rule_id} ${next.enabled ? 'включено' : 'выключено'}`)
+    } catch (e) {
+      setAutosellError(e instanceof Error ? e.message : 'autosell_toggle_failed')
+    } finally {
+      setAutosellSaving(false)
+    }
+  }, [])
+
   return (
     <section>
       <PageHeader title="Настройки" subtitle="Локальные параметры интерфейса, серверные alerts и управление Telegram delivery" />
@@ -634,7 +662,7 @@ export function SettingsPage() {
                   </thead>
                   <tbody>
                     {autosellRules.map((rule) => (
-                      <tr key={rule.rule_id} className="border-t border-slate-100"><td className="py-2">{rule.rule_id}</td><td>{rule.trigger_type}</td><td>{rule.mode}</td><td>{rule.cooldown_sec}</td><td>{rule.priority}</td></tr>
+                      <tr key={rule.rule_id} className="border-t border-slate-100"><td className="py-2">{rule.rule_id}<div className="text-[11px] text-slate-500">{rule.enabled ? 'enabled' : 'disabled'}</div></td><td>{rule.trigger_type}</td><td>{rule.mode}</td><td>{rule.cooldown_sec}</td><td>{rule.priority}<div className="mt-2 flex gap-2"><button type="button" className="gmz-btn px-2 py-1 text-xs" onClick={() => loadRuleIntoEditor(rule)}>Редактировать</button><button type="button" className="gmz-btn px-2 py-1 text-xs" onClick={() => { void toggleRuleEnabled(rule) }}>{rule.enabled ? 'Выключить' : 'Включить'}</button></div></td></tr>
                     ))}
                   </tbody>
                 </table>
