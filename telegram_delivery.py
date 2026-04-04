@@ -518,7 +518,10 @@ class TelegramNotifier:
         self._stop = threading.Event()
         self._rate_lock = threading.Lock()
         self._rate_state: dict[str, list[float]] = {}
-        self._settings_overrides = _load_json(settings_path, {})
+        loaded_overrides = _load_json(settings_path, {})
+        self._settings_overrides = self._sanitize_patch(loaded_overrides if isinstance(loaded_overrides, dict) else {})
+        if self._settings_overrides != (loaded_overrides if isinstance(loaded_overrides, dict) else {}):
+            _save_json_atomic(self.settings_path, self._settings_overrides)
         self._journal = _load_json(journal_path, {"sent": {}, "failed": [], "stats": {}})
         self._worker = threading.Thread(target=self._worker_loop, name="telegram-notifier", daemon=True)
         self._worker.start()
