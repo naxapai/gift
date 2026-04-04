@@ -1911,7 +1911,11 @@ def _resolve_stale_asset_target(rel: str) -> Path | None:
         stem = Path(name).stem
         suffix = Path(name).suffix
         prefix = stem.rsplit("-", 1)[0]
-        candidates = sorted((STATIC_DIR / "assets").glob(f"{prefix}-*{suffix}"), key=lambda p: p.stat().st_mtime, reverse=True)
+        assets_dir = STATIC_DIR / "assets"
+        candidates = sorted(assets_dir.glob(f"{prefix}-*{suffix}"), key=lambda p: p.stat().st_mtime, reverse=True)
+        stable_candidate = assets_dir / f"{prefix}{suffix}"
+        if stable_candidate.exists() and stable_candidate.is_file():
+            candidates.insert(0, stable_candidate)
         for candidate in candidates:
             resolved = candidate.resolve()
             if str(resolved).startswith(str((STATIC_DIR / "assets").resolve())) and resolved.is_file():
