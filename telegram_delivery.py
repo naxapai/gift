@@ -190,6 +190,9 @@ class MessageRenderer:
         while len(tactics) < 3:
             tactics.append("")
         delta_lots = _safe_int(supply.get("delta_lots_1h"), 0)
+        data_health_note_raw = str(payload.get("data_health_note") or "").strip()
+        data_health = str(payload.get("data_health") or "OK")
+        data_health_note = self._human_market_health_note(data_health, data_health_note_raw)
         return {
             "market_regime": regime,
             "regime_emoji": str(self.regime_badges.get(regime) or ""),
@@ -213,8 +216,8 @@ class MessageRenderer:
             "signals_1h_buy": str(_safe_int(signals_1h.get("buy"), 0)),
             "signals_1h_sell": str(_safe_int(signals_1h.get("sell"), 0)),
             "signals_1h_skipwatch": str(_safe_int(signals_1h.get("watch"), 0) + _safe_int(signals_1h.get("skip"), 0)),
-            "data_health": str(payload.get("data_health") or "OK"),
-            "data_health_note": str(payload.get("data_health_note") or ""),
+            "data_health": data_health,
+            "data_health_note": data_health_note,
             "updated_at": self._fmt_time(payload.get("updated_at") or payload.get("ts") or ""),
             "p95_ms": str(_safe_int(provider.get("p95_ms"), 0)),
             "err_pct": self._fmt_num(provider.get("err_pct"), 2),
@@ -473,6 +476,18 @@ class MessageRenderer:
         except Exception:
             return raw
         return dt.astimezone(timezone(timedelta(hours=3))).strftime("%d.%m.%Y/%H:%M:%S МСК")
+
+    def _human_market_health_note(self, data_health: str, note: str) -> str:
+        health = str(data_health or "OK").upper()
+        raw = str(note or "").strip()
+        if health == "OK":
+            return ""
+        if not raw:
+            return "(недостаточно свежих данных)"
+        lowered = raw.lower()
+        if lowered.startswith("mtproto_empty_payload") or lowered.startswith("mtproto_status_endpoint_used_instead_of_listings_new"):
+            return "(недостаточно свежих данных по листингам)"
+        return f"({raw})"
 
 
 class TelegramNotifier:
@@ -806,6 +821,8 @@ class TelegramNotifier:
                 return
         if kind == "market_status":
             text = self.renderer.render_market_status(payload)
+            if self._same_kind_preview_sent(kind, channel_id, text):
+                return
             include_image = False
             preview_url = ""
         else:
@@ -904,7 +921,7 @@ class TelegramNotifier:
 
     def _recent_kind_sent(self, kind: str, channel_id: str, interval_sec: int) -> bool:
         sent = self._journal.get("sent") if isinstance(self._journal.get("sent"), dict) else {}
-        now_mono = time.monotonic()
+        now_ts = time.time()
         for value in sent.values():
             if not isinstance(value, dict):
                 continue
@@ -912,8 +929,12 @@ class TelegramNotifier:
                 continue
             if str(value.get("channel_id") or "") != channel_id:
                 continue
-            mono_ts = _safe_float(value.get("mono_ts"), 0.0)
-            if mono_ts > 0 and (now_mono - mono_ts) <= float(interval_sec):
+            sent_at_raw = str(value.get("sent_at") or "").strip()
+            try:
+                sent_at_ts = datetime.fromisoformat(sent_at_raw.replace("Z", "+00:00")).timestamp() if sent_at_raw else 0.0
+            except Exception:
+                sent_at_ts = 0.0
+            if sent_at_ts > 0 and (now_ts - sent_at_ts) <= float(interval_sec):
                 return True
         return False
 
@@ -927,6 +948,22 @@ class TelegramNotifier:
             if str(value.get("channel_id") or "") != channel_id:
                 continue
             if str(key or "") == str(dedupe_key or ""):
+                return True
+        return False
+
+    def _same_kind_preview_sent(self, kind: str, channel_id: str, preview_text: str) -> bool:
+        sent = self._journal.get("sent") if isinstance(self._journal.get("sent"), dict) else {}
+        target = str(preview_text or "").strip()
+        if not target:
+            return False
+        for value in sent.values():
+            if not isinstance(value, dict):
+                continue
+            if str(value.get("kind") or "") != kind:
+                continue
+            if str(value.get("channel_id") or "") != channel_id:
+                continue
+            if str(value.get("preview_text") or "").strip() == target:
                 return True
         return False
 
