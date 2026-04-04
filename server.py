@@ -220,6 +220,11 @@ def _v1_stream_snapshot_token(svc: GiftAnalyticsService) -> str:
 
 def _v1_signals_stream_snapshot_token(svc: GiftAnalyticsService, mode: str | None = None) -> str:
     state = svc.state if isinstance(getattr(svc, "state", None), dict) else {}
+    try:
+        actionable = svc.actionable_signals_v1(limit=20, mode=mode)
+        top_ids = [str((x or {}).get("signal_id") or "") for x in (actionable.get("items") or [])[:20]] if isinstance(actionable, dict) else []
+    except Exception:
+        top_ids = []
     payload = {
         "mode": str(mode or ""),
         "engine_mode": str(getattr(svc, "v1_signal_engine_mode", "") or ""),
@@ -228,6 +233,7 @@ def _v1_signals_stream_snapshot_token(svc: GiftAnalyticsService, mode: str | Non
         "last_error": str(state.get("last_error") or ""),
         "ingest_in_progress": bool(state.get("ingest_in_progress")),
         "listing_runtime_error_count": int(getattr(svc, "_listing_runtime_error_count", 0)),
+        "top_signal_ids": top_ids,
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -4442,7 +4448,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                         emitted = 0
                         if snapshot_token != last_snapshot_token:
                             last_snapshot_token = snapshot_token
-                            payload = svc.signals_v1(limit=limit, mode=mode)
+                            payload = svc.actionable_signals_v1(limit=limit, mode=mode)
                             rows = payload.get("items") if isinstance(payload.get("items"), list) else []
                             for row in reversed(rows):
                                 sid = str((row or {}).get("signal_id") or "")
