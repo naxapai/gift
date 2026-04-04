@@ -247,6 +247,7 @@ export interface TradeIntent {
   risk_flags?: string[] | null
   decision_trace?: Record<string, unknown> | null
   wallet_tx_hash?: string | null
+  executions?: Array<Record<string, unknown>>
 }
 
 export interface PositionPro {

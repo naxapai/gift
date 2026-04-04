@@ -89,6 +89,7 @@ class TradeRuntime:
         self.intents_file = data_dir / "trade_intents_store.json"
         self.positions_file = data_dir / "trade_positions_store.json"
         self.holdings_file = data_dir / "trade_holdings_store.json"
+        self.executions_file = data_dir / "trade_executions_store.json"
         self.autosell_file = data_dir / "trade_autosell_rules_store.json"
         self.autosell_state_file = data_dir / "trade_autosell_state_store.json"
         self.wallet_activity_file = data_dir / "trade_wallet_activity_store.json"
@@ -113,6 +114,7 @@ class TradeRuntime:
             self.intents_file.name: ("trade_intents", "intent_id", ("wallet_address", "variant_id", "status", "created_at", "expires_at", "source", "intent_type")),
             self.positions_file.name: ("positions", "position_id", ("wallet_address", "variant_id", "updated_at")),
             self.holdings_file.name: ("holdings", "holding_id", ("wallet_address", "variant_id", "status", "updated_at")),
+            self.executions_file.name: ("trade_executions", "exec_id", ("intent_id", "confirmed_at")),
             self.autosell_file.name: ("autosell_rules", "rule_id", ("wallet_address", "enabled", "scope", "trigger_type", "mode", "priority", "updated_at")),
             self.wallet_activity_file.name: ("wallet_activity_runtime", "activity_id", ("wallet_address", "ts")),
             self.quotes_file.name: ("trade_quote_state", "nonce", ("state", "expires_at")),
@@ -124,6 +126,15 @@ class TradeRuntime:
         self._expire_stale_intents(items)
         self.reconcile_broadcast_intents(wallet_address=wallet_address)
         items = [x for x in self._read_list(self.intents_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
+        executions = self._read_list(self.executions_file)
+        by_intent: dict[str, list[dict]] = {}
+        for row in executions:
+            intent_id = str(row.get("intent_id") or "")
+            if not intent_id:
+                continue
+            by_intent.setdefault(intent_id, []).append(row)
+        for item in items:
+            item["executions"] = by_intent.get(str(item.get("intent_id") or ""), [])
         if status:
             items = [x for x in items if str(x.get("status") or "") == str(status)]
         items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
@@ -138,6 +149,8 @@ class TradeRuntime:
         self.reconcile_broadcast_intents()
         for row in rows:
             if str(row.get("intent_id") or "") == str(intent_id or ""):
+                row = dict(row)
+                row["executions"] = [x for x in self._read_list(self.executions_file) if str(x.get("intent_id") or "") == str(intent_id or "")]
                 return row
         return None
 
@@ -554,6 +567,7 @@ class TradeRuntime:
                     break
             self._write_list(self.intents_file, intents)
             self._apply_confirmed_intent(intent, market_regime=str(verdict.get("market_regime") or market_regime), variant_snapshot=variant_snapshot if isinstance(variant_snapshot, dict) else verdict.get("variant_snapshot") if isinstance(verdict.get("variant_snapshot"), dict) else None)
+            self._append_execution(intent_id=str(intent.get("intent_id") or ""), tx_hash=str(intent.get("tx_hash") or ""), result="CONFIRMED")
             self._append_audit_log("trade_intent", str(intent.get("intent_id") or ""), "fast_confirmed" if fast else "confirmed", intent)
             self._append_event("trade.intent.confirmed", intent)
             return
@@ -567,6 +581,7 @@ class TradeRuntime:
                     intents[idx] = intent
                     break
             self._write_list(self.intents_file, intents)
+            self._append_execution(intent_id=str(intent.get("intent_id") or ""), tx_hash=str(intent.get("tx_hash") or ""), result="FAILED", error_code=intent.get("error_code"), error_message=intent.get("error_message"))
             self._append_audit_log("trade_intent", str(intent.get("intent_id") or ""), "failed", intent)
             self._append_event("trade.intent.failed", intent)
             return
@@ -874,6 +889,20 @@ class TradeRuntime:
         items.append({"event": event, "ts": _iso(), "payload": payload})
         self._write_list(self.events_file, items[-2000:])
         self._redis_publish_event(event, payload)
+
+    def _append_execution(self, *, intent_id: str, tx_hash: str, result: str, error_code: Any = None, error_message: Any = None) -> None:
+        rows = self._read_list(self.executions_file)
+        item = {
+            "exec_id": f"exec_{secrets.token_hex(6)}",
+            "intent_id": intent_id,
+            "tx_hash": tx_hash or None,
+            "result": str(result or "").upper(),
+            "error_code": str(error_code) if error_code not in (None, "") else None,
+            "error_message": str(error_message) if error_message not in (None, "") else None,
+            "confirmed_at": _iso() if str(result or "").upper() == "CONFIRMED" else None,
+        }
+        rows.append(item)
+        self._write_list(self.executions_file, rows[-4000:])
 
     def _evaluate_autosell(self, *, wallet_address: str, variant_id: str, market_regime: str, positions: list[dict], holdings: list[dict], variant_snapshot: dict | None) -> None:
         rules = [x for x in self._read_list(self.autosell_file) if str(x.get("wallet_address") or "") == wallet_address and bool(x.get("enabled", True))]
@@ -1228,6 +1257,18 @@ class TradeRuntime:
                         payload_json JSONB NOT NULL
                     );
                     CREATE INDEX IF NOT EXISTS idx_holdings_wallet ON holdings(wallet_address, updated_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS trade_executions (
+                        exec_id TEXT PRIMARY KEY,
+                        intent_id TEXT NOT NULL,
+                        tx_hash TEXT,
+                        result TEXT NOT NULL,
+                        error_code TEXT,
+                        error_message TEXT,
+                        confirmed_at TIMESTAMPTZ,
+                        payload_json JSONB NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_trade_executions_intent ON trade_executions(intent_id);
 
                     CREATE TABLE IF NOT EXISTS autosell_rules (
                         rule_id TEXT PRIMARY KEY,
