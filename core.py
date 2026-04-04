@@ -5902,6 +5902,7 @@ class GiftAnalyticsService:
         gate_edge = _clamp(self._cfg_float(publish_gate.get("edgeRank100_gte"), 55.0), 0.0, 100.0)
         gate_conf = _clamp(self._cfg_float(publish_gate.get("conf_pct_gte"), 35.0), 0.0, 100.0)
         gate_profit = self._cfg_float(publish_gate.get("expected_profit_pct_gte"), 8.0)
+        by_variant: dict[str, dict] = {}
         for v in self.variants.values():
             sig = self._v1_signal(v, mode=eff_mode, regime_snapshot=regime_snapshot, depth_cache=depth_cache)
             action_val = str(sig.get("type") or "").upper()
@@ -5960,7 +5961,50 @@ class GiftAnalyticsService:
                 ).lower()
                 if q_norm not in hay:
                     continue
-            items.append(sig)
+            key = str(sig.get("variant_id") or sig.get("signal_id") or f"row:{len(by_variant)}")
+            by_variant[key] = sig
+
+        if eff_mode.startswith("tz"):
+            listing_rows, _listing_status = self._listing_source_rows_v1(window_sec=max(WINDOWS["30m"], WINDOWS["1h"]), allow_remote=False, sync_tracker=False)
+            variant_math_cache: dict[str, dict] = {}
+            now = _now()
+            for row in listing_rows:
+                try:
+                    listing_sig = self._signal_from_listing_row_v1(self._listing_pro_item_from_row(row, now=now, window_sec=max(WINDOWS["30m"], WINDOWS["1h"]), regime_snapshot=regime_snapshot, variant_math_cache=variant_math_cache, depth_cache=depth_cache))
+                except Exception:
+                    continue
+                action_val = str(listing_sig.get("type") or "").upper()
+                if action_filter and action_val not in action_filter:
+                    continue
+                if regime_filter and str(listing_sig.get("market_regime") or "").upper() not in regime_filter:
+                    continue
+                if since_dt and _parse_ts(listing_sig.get("ts")) < since_dt:
+                    continue
+                if only_new_1h and _parse_ts(listing_sig.get("ts")) < new_1h_cutoff:
+                    continue
+                if only_pro_alerts and not (float(listing_sig.get("edgeRank100") or 0.0) >= gate_edge and float(listing_sig.get("conf_pct") or 0.0) >= gate_conf and float(listing_sig.get("expected_profit_pct") or 0.0) >= gate_profit):
+                    continue
+                if q_norm:
+                    hay = " ".join([
+                        str(listing_sig.get("variant_id") or ""),
+                        str(listing_sig.get("variant_label") or ""),
+                        str(listing_sig.get("collection") or ""),
+                        str(listing_sig.get("model") or ""),
+                        str(listing_sig.get("background") or ""),
+                        str(listing_sig.get("pattern") or ""),
+                    ]).lower()
+                    if q_norm not in hay:
+                        continue
+                key = str(listing_sig.get("variant_id") or listing_sig.get("signal_id") or f"row:{len(by_variant)}")
+                prev = by_variant.get(key)
+                if not isinstance(prev, dict):
+                    by_variant[key] = listing_sig
+                else:
+                    prev_rank = (self._signal_action_priority(str(prev.get("type") or prev.get("action") or "")), float(prev.get("edgeRank100") or 0.0), float(prev.get("conf_pct") or 0.0), str(prev.get("ts") or ""))
+                    next_rank = (self._signal_action_priority(str(listing_sig.get("type") or listing_sig.get("action") or "")), float(listing_sig.get("edgeRank100") or 0.0), float(listing_sig.get("conf_pct") or 0.0), str(listing_sig.get("ts") or ""))
+                    if next_rank > prev_rank:
+                        by_variant[key] = listing_sig
+        items = list(by_variant.values())
         sort_field = str(sort_by or "").strip()
         sort_direction = str(sort_dir or "").strip().lower()
         reverse = sort_direction != "asc"
@@ -5995,6 +6039,7 @@ class GiftAnalyticsService:
             # PRO default sort from Signals TZ mapping.
             items.sort(
                 key=lambda x: (
+                    self._signal_action_priority(str(x.get("type") or x.get("action") or "")),
                     float(x.get("edgeRank100") or 0.0),
                     float(x.get("conf_pct") or 0.0),
                     str(x.get("ts") or ""),
@@ -6028,6 +6073,33 @@ class GiftAnalyticsService:
         }
         self._cache_set(cache_key, payload)
         return payload
+
+    def actionable_signals_v1(self, limit: int = 200, mode: str | None = None) -> dict:
+        payload = self.signals_v1(action=["BUY", "SELL", "WATCH"], limit=max(1, min(int(limit or 200), 500)), mode=mode)
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        items = sorted(
+            items,
+            key=lambda x: (
+                self._signal_action_priority(str((x or {}).get("type") or (x or {}).get("action") or "")),
+                float((x or {}).get("edgeRank100") or 0.0),
+                float((x or {}).get("conf_pct") or 0.0),
+                str((x or {}).get("ts") or ""),
+            ),
+            reverse=True,
+        )
+        return {**payload, "items": items[: max(1, min(int(limit or 200), 500))]}
+
+    def _signal_action_priority(self, action: str) -> int:
+        val = str(action or "").strip().upper()
+        if val == "BUY":
+            return 4
+        if val == "SELL":
+            return 3
+        if val == "WATCH":
+            return 2
+        if val == "SKIP":
+            return 1
+        return 0
 
     def _screeners_thresholds_for_regime(self, regime: str) -> dict[str, float]:
         regime_key = str(regime or "MEAN_REVERT").strip().upper()
@@ -9513,6 +9585,61 @@ class GiftAnalyticsService:
         payload = list(dedupe.values())
         self._rt_cache_set(rt_cache_key, payload)
         return payload
+
+    def _signal_from_listing_row_v1(self, row: dict) -> dict:
+        variant_id = str(row.get("variant_id") or "")
+        ts = str(row.get("ts_detected") or row.get("ts_source") or _iso(_now()))
+        action = str(row.get("action") or "WATCH").upper()
+        if action not in {"BUY", "SELL", "WATCH", "SKIP"}:
+            action = "WATCH"
+        signal_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"listing-signal|{variant_id}|{action}|{ts}"))
+        decision_trace = row.get("decision_trace") if isinstance(row.get("decision_trace"), dict) else {}
+        watch_trigger = ""
+        if action == "WATCH":
+            missing = decision_trace.get("missing_for_buy") if isinstance(decision_trace.get("missing_for_buy"), list) else []
+            if missing:
+                watch_trigger = ", ".join(str(x) for x in missing[:2])
+        return {
+            "signal_id": signal_id,
+            "ts": ts,
+            "type": action,
+            "action": action,
+            "strength_tag": str(row.get("strength_tag") or "NONE"),
+            "variant_id": variant_id,
+            "variant_label": str(row.get("variant_label") or variant_id),
+            "collection": row.get("collection"),
+            "model": row.get("model"),
+            "background": row.get("background"),
+            "pattern": row.get("pattern"),
+            "market_regime": row.get("market_regime"),
+            "market_regime_badge": row.get("market_regime_badge"),
+            "edgeRank_profile": row.get("edgeRank_profile") or row.get("market_regime"),
+            "edgeRank_raw": row.get("edgeRank_raw"),
+            "edgeRank100": row.get("edgeRank100"),
+            "score100": row.get("score100"),
+            "conf_pct": row.get("conf_pct"),
+            "price_ton": row.get("price_ton"),
+            "floor_ton": row.get("floor_ton"),
+            "fair_ton": row.get("fair_ton"),
+            "undervalue_pct": row.get("undervalue_pct"),
+            "expected_profit_pct": row.get("expected_profit_pct"),
+            "target_ton": row.get("target_ton"),
+            "stop_ton": row.get("stop_ton"),
+            "liquidity_score": row.get("liquidity_score"),
+            "absorption_30m": row.get("absorption_30m"),
+            "listing_pressure": row.get("listing_pressure"),
+            "volume_velocity": row.get("volume_velocity"),
+            "depth_5pct_count": row.get("depth_5pct_count"),
+            "depth_5pct_ton": row.get("depth_5pct_ton"),
+            "depth_score": row.get("depth_score"),
+            "watch_trigger": watch_trigger,
+            "reasons": self._normalize_signal_reason_list(row.get("reasons") or []),
+            "risk_flags": self._normalize_signal_risk_list(row.get("risk_flags") or []),
+            "decision_trace": decision_trace,
+            "data_quality": "ok",
+            "preview_url": row.get("preview_url"),
+            "source": row.get("source") or "listing_feed",
+        }
 
     def market_status_v1(self, window: str | None = None) -> dict:
         window_raw = str(window or "30m").strip().lower()
