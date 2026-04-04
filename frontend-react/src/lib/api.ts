@@ -71,7 +71,7 @@ async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
     const timeoutId = globalThis.setTimeout(() => controller.abort('timeout'), API_TIMEOUT_MS)
     try {
       const res = await fetch(url, {
-        credentials: 'same-origin',
+        credentials: 'include',
         cache: 'no-store',
         ...init,
         signal: controller.signal,

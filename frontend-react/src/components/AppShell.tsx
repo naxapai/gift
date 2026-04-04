@@ -423,8 +423,6 @@ export function AppShell() {
             <div
               className="relative"
               ref={profileMenuRef}
-              onMouseEnter={() => setProfileOpen(true)}
-              onMouseLeave={() => setProfileOpen(false)}
             >
               <button
                 type="button"
