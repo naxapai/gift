@@ -7354,7 +7354,7 @@ class GiftAnalyticsService:
             if store.enabled:
                 store.set_json("market:overview", overview, store.kv_overview_ttl_sec)
 
-            signals = self.signals_v1(limit=100, mode=mode).get("items") or []
+            signals = self.signals_v1(limit=500, action=["BUY", "SELL", "WATCH"], mode=mode).get("items") or []
             buy = [s for s in signals if str(s.get("type") or "") == "BUY"][:20]
             sell = [s for s in signals if str(s.get("type") or "") == "SELL"][:20]
             if store.enabled:
