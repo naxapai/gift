@@ -9,7 +9,6 @@ const SignalsPage = lazy(async () => ({ default: (await import('./pages/SignalsP
 const ListingPage = lazy(async () => ({ default: (await import('./pages/ListingPage')).ListingPage }))
 const TradesPage = lazy(async () => ({ default: (await import('./pages/TradesPage')).TradesPage }))
 const FavoritesPage = lazy(async () => ({ default: (await import('./pages/FavoritesPage')).FavoritesPage }))
-const CabinetPage = lazy(async () => ({ default: (await import('./pages/CabinetPage')).CabinetPage }))
 const SettingsPage = lazy(async () => ({ default: (await import('./pages/SettingsPage')).SettingsPage }))
 const AdminPage = lazy(async () => ({ default: (await import('./pages/AdminPage')).AdminPage }))
 const VariantPage = lazy(async () => ({ default: (await import('./pages/VariantPage')).VariantPage }))
@@ -59,7 +58,7 @@ export default function App() {
         <Route path="listing" element={lazyRoute(<ListingPage />)} />
         <Route path="trades" element={lazyRoute(<TradesPage />)} />
         <Route path="favorites" element={lazyRoute(<FavoritesPage />)} />
-        <Route path="cabinet" element={lazyRoute(<CabinetPage />)} />
+        <Route path="cabinet" element={<Navigate to="/" replace />} />
         <Route path="settings" element={lazyRoute(<SettingsPage />)} />
         <Route path="admin" element={lazyRoute(<AdminPage />)} />
         <Route path="variant/:variantId" element={lazyRoute(<VariantPage />)} />

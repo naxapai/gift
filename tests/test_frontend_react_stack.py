@@ -34,10 +34,11 @@ class TestFrontendReactStack(unittest.TestCase):
             self.assertIn(route, app)
         self.assertIn('Failed to fetch dynamically imported module', app)
         self.assertIn('gmz:dynamic-import-reloaded', app)
+        self.assertIn('Navigate to="/" replace', app)
 
     def test_shell_has_bento_navigation_labels(self):
         shell = (FRONT / 'src' / 'components' / 'AppShell.tsx').read_text(encoding='utf-8')
-        for label in ['Обзор', 'Каталог', 'Скринеры', 'Сигналы', 'Листинг', 'Сделки', 'Избранное', 'Кабинет', 'Админ', 'Настройки']:
+        for label in ['Обзор', 'Каталог', 'Скринеры', 'Сигналы', 'Листинг', 'Сделки', 'Избранное', 'Админ', 'Настройки']:
             self.assertIn(label, shell)
         self.assertIn('adminOnly: true', shell)
         self.assertIn('visibleNavItems', shell)
@@ -52,7 +53,10 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('postTonLogout', shell)
         self.assertIn('tonconnect-manifest.json', shell)
         self.assertIn('getTelegramAuthMe', shell)
+        self.assertIn('getTelegramOwnedGifts', shell)
         self.assertIn('Войти через Telegram', shell)
+        self.assertIn('TONCONNECT_BUTTON_ROOT_ID', shell)
+        self.assertIn('Подарки в наличии', shell)
 
     def test_cabinet_page_contains_telegram_auth_and_owned_gifts_ui(self):
         page = (FRONT / 'src' / 'pages' / 'CabinetPage.tsx').read_text(encoding='utf-8')

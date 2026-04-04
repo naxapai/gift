@@ -1,8 +1,9 @@
 import { motion } from 'framer-motion'
 import clsx from 'clsx'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { getAdminAccess, getTelegramAuthBootstrap, getTelegramAuthMe, getTonAuthConfig, getTonAuthMe, getTonBalance, postTonChallenge, postTonLogout, postTonVerify, type TonWalletInfo } from '../lib/api'
+import { Link, NavLink, Outlet } from 'react-router-dom'
+import { getAdminAccess, getTelegramAuthBootstrap, getTelegramAuthMe, getTelegramOwnedGifts, getTonAuthConfig, getTonAuthMe, getTonBalance, postTelegramLogout, postTonChallenge, postTonLogout, postTonVerify, type TonWalletInfo } from '../lib/api'
+import type { OwnedGiftItem } from '../types/api'
 
 const navItems = [
   { to: '/', label: 'Обзор' },
@@ -12,12 +13,18 @@ const navItems = [
   { to: '/listing', label: 'Листинг' },
   { to: '/trades', label: 'Сделки' },
   { to: '/favorites', label: 'Избранное' },
-  { to: '/cabinet', label: 'Кабинет' },
   { to: '/admin', label: 'Админ', adminOnly: true },
   { to: '/settings', label: 'Настройки' },
 ]
 
 const TONCONNECT_UI_SRC = 'https://unpkg.com/@tonconnect/ui@2.0.9/dist/tonconnect-ui.min.js'
+const TONCONNECT_BUTTON_ROOT_ID = 'gmz-tonconnect-anchor'
+
+function fmtTon(value?: number | null): string {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  return `${n.toFixed(2)} TON`
+}
 
 function shortTonAddress(address?: string | null): string {
   const raw = String(address || '').trim()
@@ -90,6 +97,11 @@ export function AppShell() {
   const [tonBalance, setTonBalance] = useState<number | null>(null)
   const [tonBalanceLoading, setTonBalanceLoading] = useState(false)
   const [tonError, setTonError] = useState('')
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [ownedLoading, setOwnedLoading] = useState(false)
+  const [ownedGifts, setOwnedGifts] = useState<OwnedGiftItem[]>([])
+  const [ownedSource, setOwnedSource] = useState('')
+  const [ownedMessage, setOwnedMessage] = useState('')
   const tonUiRef = useRef<{
     wallet?: { account?: { address?: string; chain?: string; publicKey?: string; [key: string]: unknown } } | null
     connectionRestored?: Promise<unknown>
@@ -97,7 +109,7 @@ export function AppShell() {
     disconnect: () => Promise<void>
   } | null>(null)
   const tonMenuRef = useRef<HTMLDivElement | null>(null)
-  const navigate = useNavigate()
+  const profileMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     let stop = false
@@ -172,10 +184,10 @@ export function AppShell() {
     await ensureTonConnectSdk()
     if (!window.TON_CONNECT_UI?.TonConnectUI) throw new Error('tonconnect_sdk_unavailable')
     if (!tonUiRef.current) {
-      tonUiRef.current = new window.TON_CONNECT_UI.TonConnectUI({
-        manifestUrl: `${window.location.origin}/tonconnect-manifest.json`,
-        buttonRootId: null,
-      })
+        tonUiRef.current = new window.TON_CONNECT_UI.TonConnectUI({
+          manifestUrl: `${window.location.origin}/tonconnect-manifest.json`,
+          buttonRootId: TONCONNECT_BUTTON_ROOT_ID,
+        })
       if (tonUiRef.current?.connectionRestored) {
         await tonUiRef.current.connectionRestored.catch(() => undefined)
       }
@@ -238,21 +250,49 @@ export function AppShell() {
     return () => window.clearInterval(timer)
   }, [refreshTonMe])
 
+  const loadOwnedGifts = useCallback(async () => {
+    setOwnedLoading(true)
+    try {
+      const payload = await getTelegramOwnedGifts()
+      setOwnedGifts(Array.isArray(payload.items) ? (payload.items as OwnedGiftItem[]) : [])
+      setOwnedSource(String(payload.source || ''))
+      setOwnedMessage(String(payload.message || ''))
+    } catch (e) {
+      setOwnedGifts([])
+      setOwnedSource('error')
+      setOwnedMessage(e instanceof Error ? e.message : 'owned_gifts_failed')
+    } finally {
+      setOwnedLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!telegramUser || !profileOpen) return
+    void loadOwnedGifts()
+  }, [telegramUser, profileOpen, loadOwnedGifts])
+
   useEffect(() => {
     if (!tonMenuOpen) return
     void refreshTonBalance()
   }, [tonMenuOpen, refreshTonBalance])
 
   useEffect(() => {
-    if (!tonMenuOpen) return
+    if (!tonMenuOpen && !profileOpen) return
     const onPointerDown = (e: MouseEvent) => {
-      if (!tonMenuRef.current) return
-      if (!tonMenuRef.current.contains(e.target as Node)) {
+      const insideTon = tonMenuRef.current?.contains(e.target as Node)
+      const insideProfile = profileMenuRef.current?.contains(e.target as Node)
+      if (!insideTon) {
         setTonMenuOpen(false)
+      }
+      if (!insideProfile) {
+        setProfileOpen(false)
       }
     }
     const onEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setTonMenuOpen(false)
+      if (e.key === 'Escape') {
+        setTonMenuOpen(false)
+        setProfileOpen(false)
+      }
     }
     window.addEventListener('mousedown', onPointerDown)
     window.addEventListener('keydown', onEsc)
@@ -260,7 +300,7 @@ export function AppShell() {
       window.removeEventListener('mousedown', onPointerDown)
       window.removeEventListener('keydown', onEsc)
     }
-  }, [tonMenuOpen])
+  }, [tonMenuOpen, profileOpen])
 
   const visibleNavItems = useMemo(
     () => navItems.filter((item) => !item.adminOnly || adminAllowed),
@@ -285,18 +325,66 @@ export function AppShell() {
             <span className="sr-only">GiftMarketZone</span>
           </div>
           <div className="flex items-center gap-3">
-            <button
-              type="button"
-              className="gmz-btn flex items-center gap-2 rounded-xl border border-[#c8d5ea] bg-white px-4 py-2 text-sm font-semibold text-slate-700"
-              onClick={() => navigate('/cabinet')}
+            <div
+              className="relative"
+              ref={profileMenuRef}
+              onMouseEnter={() => setProfileOpen(true)}
+              onMouseLeave={() => setProfileOpen(false)}
             >
-              {telegramUser?.photo_url ? (
-                <img src={String(telegramUser.photo_url)} alt="" className="h-5 w-5 rounded-full object-cover" referrerPolicy="no-referrer" />
-              ) : (
-                <span aria-hidden="true">✈️</span>
-              )}
-              <span>{telegramUser ? (telegramUser.username ? `@${telegramUser.username}` : (telegramUser.first_name || 'Кабинет')) : 'Войти через Telegram'}</span>
-            </button>
+              <button
+                type="button"
+                className="gmz-btn flex items-center gap-2 rounded-xl border border-[#c8d5ea] bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => setProfileOpen((s) => !s)}
+              >
+                {telegramUser?.photo_url ? (
+                  <img src={String(telegramUser.photo_url)} alt="" className="h-5 w-5 rounded-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <span aria-hidden="true">✈️</span>
+                )}
+                <span>{telegramUser ? (telegramUser.username ? `@${telegramUser.username}` : (telegramUser.first_name || 'Профиль')) : 'Войти через Telegram'}</span>
+              </button>
+              {profileOpen ? (
+                <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-[360px] rounded-2xl border border-[var(--line)] bg-white/95 p-3 shadow-soft backdrop-blur">
+                  {telegramUser ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        {telegramUser.photo_url ? <img src={String(telegramUser.photo_url)} alt="" className="h-10 w-10 rounded-full object-cover" referrerPolicy="no-referrer" /> : <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#eaf3ff] text-lg">✈️</div>}
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">{[telegramUser.first_name, telegramUser.last_name].filter(Boolean).join(' ') || 'Telegram user'}</div>
+                          <div className="text-xs text-slate-500">{telegramUser.username ? `@${telegramUser.username}` : 'Без username'} · ID {telegramUser.id ?? '—'}</div>
+                        </div>
+                      </div>
+                      {ownedLoading ? <div className="text-xs text-slate-500">Загрузка подарков…</div> : ownedGifts.length ? (
+                        <div className="space-y-2">
+                          <div className="text-xs font-semibold text-slate-700">Подарки в наличии</div>
+                          <div className="max-h-[220px] space-y-2 overflow-y-auto">
+                            {ownedGifts.slice(0, 6).map((gift, idx) => (
+                              <div key={String(gift.gift_id || gift.variant_id || idx)} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-2">
+                                <div className="h-12 w-12 overflow-hidden rounded-lg bg-slate-100">{gift.preview_url ? <img src={String(gift.preview_url)} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" /> : null}</div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-xs font-semibold text-slate-900">{gift.variant_label || gift.collection || 'Gift'}</div>
+                                  <div className="text-[11px] text-slate-500">Floor {fmtTon(gift.floor_ton)} · Fair {fmtTon(gift.fair_ton)}</div>
+                                </div>
+                                {gift.variant_id ? <Link to={`/variant/${encodeURIComponent(String(gift.variant_id))}`} className="text-[11px] font-semibold text-[var(--accent)] hover:underline">Открыть</Link> : null}
+                              </div>
+                            ))}
+                          </div>
+                          {ownedSource ? <div className="text-[11px] text-slate-400">source: {ownedSource}</div> : null}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-slate-500">{ownedMessage || 'Пока нет данных о подарках пользователя.'}</div>
+                      )}
+                      <div className="flex gap-2">
+                        <button type="button" className="gmz-btn gmz-btn-ghost flex-1 px-3 py-2 text-sm" onClick={() => void loadOwnedGifts()} disabled={ownedLoading}>Обновить</button>
+                        <button type="button" className="gmz-btn flex-1 rounded-xl border border-rose-200 bg-[#fff8f8] px-3 py-2 text-sm font-semibold text-rose-700" onClick={() => { void postTelegramLogout().then(async () => { setProfileOpen(false); await getTelegramAuthBootstrap().catch(() => ({ authenticated: false })); setTelegramUser(null) }) }}>Выйти</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-slate-600">Войдите через Telegram, чтобы видеть данные профиля и подарки.</div>
+                  )}
+                </div>
+              ) : null}
+            </div>
             <div className="relative" ref={tonMenuRef}>
             <button
               type="button"
@@ -355,6 +443,7 @@ export function AppShell() {
       </header>
 
       <div className="mx-auto grid max-w-[1680px] gap-4 px-3 py-4 lg:grid-cols-[240px_minmax(0,1fr)] lg:px-6">
+        <div id={TONCONNECT_BUTTON_ROOT_ID} className="hidden" />
         <aside className="gmz-panel sticky top-[78px] hidden h-fit p-3 lg:block">
           <nav className="flex flex-col gap-2">
             {visibleNavItems.map((item) => (
