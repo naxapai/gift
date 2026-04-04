@@ -1224,6 +1224,10 @@ export async function getTelegramAuthConfig(): Promise<{ ok?: boolean; enabled?:
   return apiGet('/api/auth/config')
 }
 
+export async function getTelegramAuthBootstrap(): Promise<{ ok?: boolean; enabled?: boolean; required?: boolean; bot_username?: string; session_ttl_sec?: number; max_auth_age_sec?: number; authenticated?: boolean; user?: { id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string; auth_date?: number } | null }> {
+  return apiGet('/api/auth/bootstrap')
+}
+
 export async function getTelegramAuthMe(): Promise<{ ok?: boolean; authenticated?: boolean; enabled?: boolean; required?: boolean; user?: { id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string; auth_date?: number } | null }> {
   return apiGet('/api/auth/me')
 }
@@ -1233,6 +1237,14 @@ export async function postTelegramAuthVerify(payload: Record<string, unknown>): 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload || {}),
+  })
+}
+
+export async function postTelegramWebAppVerify(initDataRaw: string): Promise<{ ok?: boolean; authenticated?: boolean; user?: Record<string, unknown> | null }> {
+  return apiGet('/api/auth/telegram/webapp/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ init_data: initDataRaw }),
   })
 }
 

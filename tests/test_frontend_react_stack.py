@@ -61,6 +61,7 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('getTelegramAuthMe', page)
         self.assertIn('getTelegramOwnedGifts', page)
         self.assertIn('postTelegramAuthVerify', page)
+        self.assertIn('postTelegramWebAppVerify', page)
         self.assertIn('postTelegramLogout', page)
         self.assertIn('Подарки в наличии', page)
         self.assertIn('TELEGRAM_WIDGET_SRC', page)

@@ -5,7 +5,7 @@ import { BentoGrid } from '../components/BentoGrid'
 import { LoadingBlock } from '../components/LoadingBlock'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
-import { getTelegramAuthConfig, getTelegramAuthMe, getTelegramOwnedGifts, postTelegramAuthVerify, postTelegramLogout } from '../lib/api'
+import { getTelegramAuthConfig, getTelegramAuthMe, getTelegramOwnedGifts, postTelegramAuthVerify, postTelegramLogout, postTelegramWebAppVerify } from '../lib/api'
 import type { AuthUser, OwnedGiftItem } from '../types/api'
 
 const TELEGRAM_WIDGET_SRC = 'https://telegram.org/js/telegram-widget.js?22'
@@ -13,6 +13,13 @@ const TELEGRAM_WIDGET_SRC = 'https://telegram.org/js/telegram-widget.js?22'
 declare global {
   interface Window {
     gmzTelegramAuth?: (user: Record<string, unknown>) => void
+    Telegram?: {
+      WebApp?: {
+        initData?: string
+        ready?: () => void
+        expand?: () => void
+      }
+    }
   }
 }
 
@@ -154,6 +161,31 @@ export function CabinetPage() {
       window.gmzTelegramAuth = undefined
     }
   }, [authEnabled, botUsername, loadSession, user])
+
+  useEffect(() => {
+    if (!authEnabled || user) return
+    const initData = String(window.Telegram?.WebApp?.initData || '').trim()
+    if (!initData) return
+    let mounted = true
+    const run = async () => {
+      setAuthBusy(true)
+      setError('')
+      try {
+        window.Telegram?.WebApp?.ready?.()
+        window.Telegram?.WebApp?.expand?.()
+        await postTelegramWebAppVerify(initData)
+        if (mounted) await loadSession()
+      } catch (e) {
+        if (mounted) setError(e instanceof Error ? e.message : 'telegram_webapp_auth_failed')
+      } finally {
+        if (mounted) setAuthBusy(false)
+      }
+    }
+    void run()
+    return () => {
+      mounted = false
+    }
+  }, [authEnabled, loadSession, user])
 
   const subtitle = useMemo(() => {
     if (user) return 'Личный кабинет Telegram-пользователя и подарки в наличии'
