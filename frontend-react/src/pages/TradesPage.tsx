@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { BentoCard } from '../components/BentoCard'
 import { BentoGrid } from '../components/BentoGrid'
 import { LoadingBlock } from '../components/LoadingBlock'
@@ -49,6 +50,8 @@ export function TradesPage() {
   const [rules, setRules] = useState<AutoSellRule[]>([])
   const [variantId, setVariantId] = useState('')
   const [maxPriceTon, setMaxPriceTon] = useState('')
+  const [slippageBps, setSlippageBps] = useState('100')
+  const [buyAndListPriceTon, setBuyAndListPriceTon] = useState('')
   const [creating, setCreating] = useState(false)
   const [actionBusyId, setActionBusyId] = useState('')
   const [optimisticHistory, setOptimisticHistory] = useState<TradeIntent[]>([])
@@ -169,7 +172,7 @@ export function TradesPage() {
       const optimisticId = `optimistic_${Date.now()}`
       setOptimisticHistory((prev) => [{ intent_id: optimisticId, intent_type: intentType === 'FAST_BUY' ? 'BUY' : intentType, variant_id: variantId.trim(), wallet_address: walletAddress, status: 'PENDING_SIGNATURE', created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 600000).toISOString(), source: intentType === 'FAST_BUY' ? 'FAST_BUY' : 'STANDARD' }, ...prev].slice(0, 30))
       if (intentType === 'FAST_BUY') {
-        const quote = await getBuyQuote({ variantId: variantId.trim(), maxPriceTon: Number(maxPriceTon || 0), walletAddress })
+        const quote = await getBuyQuote({ variantId: variantId.trim(), maxPriceTon: Number(maxPriceTon || 0), slippageBps: Number(slippageBps || 100), walletAddress })
         const tx = await sendTonWalletTx((quote as unknown as { wallet_tx?: Record<string, unknown> }).wallet_tx || {})
         await postFastBuyConfirm({ buy_quote_token: quote.buy_quote_token, tx_hash: tx.txHash, wallet_address: walletAddress, client_meta: { payload_hash: tx.payloadHash } })
       } else {
@@ -181,7 +184,7 @@ export function TradesPage() {
           chain_policy: intentType === 'BUY_AND_LIST' ? 'BUY_THEN_LIST' : 'MANUAL',
         }
         if (intentType === 'BUY_AND_LIST') {
-          payload.post_action = { type: 'LIST', listing_params: { list_price_ton: Number(maxPriceTon || 0) * 1.1, duration_sec: 86400, marketplace: 'fragment' } }
+          payload.post_action = { type: 'LIST', listing_params: { list_price_ton: Number(buyAndListPriceTon || Number(maxPriceTon || 0) * 1.1), duration_sec: 86400, marketplace: 'fragment' } }
         }
         const created = await postTradeIntent(payload)
         const tx = await sendTonWalletTx(created.wallet_tx || {})
@@ -189,6 +192,7 @@ export function TradesPage() {
       }
       setVariantId('')
       setMaxPriceTon('')
+      setBuyAndListPriceTon('')
       await load()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'trade_create_failed')
@@ -196,7 +200,7 @@ export function TradesPage() {
       setOptimisticHistory([])
       setCreating(false)
     }
-  }, [walletAddress, variantId, maxPriceTon, load])
+  }, [walletAddress, variantId, maxPriceTon, slippageBps, buyAndListPriceTon, load])
 
   const runHoldingAction = useCallback(async (holding: HoldingPro, action: 'LIST' | 'CANCEL_LISTING' | 'SELL' | 'TRANSFER') => {
     if (!walletAddress) return
@@ -275,6 +279,12 @@ export function TradesPage() {
             <div className="mt-2 text-xs">Ваш Telegram user id: {telegramUserId || 'не авторизован'}; wallet: {walletAddress || 'не подключен'}</div>
           </div>
         </BentoCard>
+      ) : !walletAddress ? (
+        <BentoCard title="Подключите кошелек">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
+            Для покупки и продажи подарков нужен подключенный TON wallet.
+          </div>
+        </BentoCard>
       ) : loading ? (
         <LoadingBlock />
       ) : (
@@ -283,15 +293,18 @@ export function TradesPage() {
             <div className="text-sm text-slate-700">{policyText}</div>
           </BentoCard>
           <BentoCard title="Fast Buy / Buy / Buy+List" className="xl:col-span-12">
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-4">
               <input value={variantId} onChange={(e) => setVariantId(e.target.value)} placeholder="variant_id" className="gmz-input" />
               <input value={maxPriceTon} onChange={(e) => setMaxPriceTon(e.target.value)} placeholder="max price TON" className="gmz-input" />
+              <input value={slippageBps} onChange={(e) => setSlippageBps(e.target.value)} placeholder="slippage bps" className="gmz-input" />
+              <input value={buyAndListPriceTon} onChange={(e) => setBuyAndListPriceTon(e.target.value)} placeholder="BUY+LIST price TON" className="gmz-input" />
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="gmz-btn gmz-btn-primary px-4 py-2 text-sm" disabled={creating} onClick={() => { void createBuy('FAST_BUY') }}>FAST BUY</button>
                 <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating} onClick={() => { void createBuy('BUY') }}>BUY</button>
                 <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating} onClick={() => { void createBuy('BUY_AND_LIST') }}>BUY+LIST</button>
               </div>
             </div>
+            <div className="mt-2 text-xs text-slate-500">Кнопка “Купить и выставить” создает 2 шага: BUY → CONFIRMED → LIST.</div>
             {error ? <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div> : null}
           </BentoCard>
           <BentoCard title="PnL PRO" className="xl:col-span-12">
@@ -304,6 +317,7 @@ export function TradesPage() {
             </div>
           </BentoCard>
           <BentoCard title="Positions" className="xl:col-span-12">
+            {!positions.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">Нет открытых позиций. <Link to="/catalog" className="font-semibold text-[var(--accent)] hover:underline">Откройте каталог</Link> и купите первый подарок.</div> : null}
             <div className="grid gap-3 md:hidden">
               {positions.map((row) => (
                 <article key={row.position_id} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
@@ -315,6 +329,7 @@ export function TradesPage() {
             <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Variant</th><th>Qty</th><th>Avg buy</th><th>Mark</th><th>UPnL</th><th>Action</th></tr></thead><tbody>{positions.map((row) => <tr key={row.position_id} className="border-t border-slate-100"><td className="py-2">{row.variant_id}</td><td>{row.qty}</td><td>{ton(row.avg_buy_price_ton)}</td><td>{ton(row.mark_price_ton)}</td><td>{ton(row.unrealized_pnl_ton)}</td><td>{row.action || '—'}</td></tr>)}</tbody></table></div>
           </BentoCard>
           <BentoCard title="Holdings" className="xl:col-span-12">
+            {!holdings.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">Нет holdings. После подтвержденной покупки подарок появится здесь.</div> : null}
             <div className="grid gap-3 md:hidden">
               {holdings.map((row) => (
                 <article key={row.holding_id} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
@@ -329,6 +344,7 @@ export function TradesPage() {
             <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Gift</th><th>Variant</th><th>Status</th><th>Acquired</th><th>Listed</th><th>List price</th><th>Transfer</th><th>Actions</th></tr></thead><tbody>{holdings.map((row) => <tr key={row.holding_id} className="border-t border-slate-100"><td className="py-2">{row.gift_unique_id}</td><td>{row.variant_id}</td><td>{row.status}</td><td>{ton(row.acquired_price_ton)}</td><td>{ton(row.listed_price_ton)}</td><td>{row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.listPriceTon || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { listPriceTon: e.target.value })} placeholder={String(Number((row.acquired_price_ton || 0) * 1.12).toFixed(2))} className="gmz-input text-xs" /> : '—'}</td><td>{row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.transferUserId || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { transferUserId: e.target.value })} placeholder="144832201" className="gmz-input text-xs" /> : '—'}</td><td><div className="flex flex-wrap gap-2 py-2">{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:LIST`} onClick={() => { void runHoldingAction(row, 'LIST') }}>LIST</button> : null}{row.status === 'LISTED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:CANCEL_LISTING`} onClick={() => { void runHoldingAction(row, 'CANCEL_LISTING') }}>CANCEL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:SELL`} onClick={() => { void runHoldingAction(row, 'SELL') }}>SELL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:TRANSFER`} onClick={() => { void runHoldingAction(row, 'TRANSFER') }}>TRANSFER</button> : null}</div></td></tr>)}</tbody></table></div>
           </BentoCard>
           <BentoCard title="History" className="xl:col-span-12">
+            {!mergedHistory.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">История сделок пуста. Создайте первый BUY или FAST BUY.</div> : null}
             <div className="grid gap-3 md:hidden">
               {mergedHistory.map((row) => (
                 <article key={row.intent_id} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
