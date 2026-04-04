@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import clsx from 'clsx'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { getAdminAccess, getTelegramAuthMe, getTonAuthConfig, getTonAuthMe, getTonBalance, postTonChallenge, postTonLogout, postTonVerify, type TonWalletInfo } from '../lib/api'
+import { getAdminAccess, getTelegramAuthBootstrap, getTelegramAuthMe, getTonAuthConfig, getTonAuthMe, getTonBalance, postTonChallenge, postTonLogout, postTonVerify, type TonWalletInfo } from '../lib/api'
 
 const navItems = [
   { to: '/', label: 'Обзор' },
@@ -103,7 +103,7 @@ export function AppShell() {
     let stop = false
     ;(async () => {
       try {
-        const [access, auth] = await Promise.all([getAdminAccess(), getTelegramAuthMe().catch(() => ({ authenticated: false, user: null }))])
+        const [access, auth] = await Promise.all([getAdminAccess(), getTelegramAuthBootstrap().catch(() => ({ authenticated: false, user: null }))])
         if (!stop) setAdminAllowed(Boolean(access?.is_admin))
         if (!stop) setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
       } catch {
@@ -127,7 +127,7 @@ export function AppShell() {
       }
     }
     void load()
-    const timer = window.setInterval(() => { void load() }, 30000)
+    const timer = window.setInterval(() => { void load() }, 60000)
     return () => {
       stop = true
       window.clearInterval(timer)

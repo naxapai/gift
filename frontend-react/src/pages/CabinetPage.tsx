@@ -5,7 +5,7 @@ import { BentoGrid } from '../components/BentoGrid'
 import { LoadingBlock } from '../components/LoadingBlock'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
-import { getTelegramAuthConfig, getTelegramAuthMe, getTelegramOwnedGifts, postTelegramAuthVerify, postTelegramLogout, postTelegramWebAppVerify } from '../lib/api'
+import { getTelegramAuthBootstrap, getTelegramOwnedGifts, postTelegramAuthVerify, postTelegramLogout, postTelegramWebAppVerify } from '../lib/api'
 import type { AuthUser, OwnedGiftItem } from '../types/api'
 
 const TELEGRAM_WIDGET_SRC = 'https://telegram.org/js/telegram-widget.js?22'
@@ -79,10 +79,10 @@ export function CabinetPage() {
     setLoading(true)
     setError('')
     try {
-      const [cfg, me] = await Promise.all([getTelegramAuthConfig(), getTelegramAuthMe()])
-      setAuthEnabled(Boolean(cfg.enabled))
-      setBotUsername(String(cfg.bot_username || ''))
-      setUser(me.authenticated ? (me.user || null) : null)
+      const bootstrap = await getTelegramAuthBootstrap()
+      setAuthEnabled(Boolean(bootstrap.enabled))
+      setBotUsername(String(bootstrap.bot_username || ''))
+      setUser(bootstrap.authenticated ? (bootstrap.user || null) : null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'auth_load_failed')
       setUser(null)

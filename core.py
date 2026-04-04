@@ -7426,7 +7426,7 @@ class GiftAnalyticsService:
             if store.enabled:
                 store.set_json("market:overview", overview, store.kv_overview_ttl_sec)
 
-            signals = self.signals_v1(limit=500, action=["BUY", "SELL", "WATCH"], mode=mode).get("items") or []
+            signals = self.actionable_signals_v1(limit=500, mode=mode).get("items") or []
             buy = [s for s in signals if str(s.get("type") or "") == "BUY"][:20]
             sell = [s for s in signals if str(s.get("type") or "") == "SELL"][:20]
             if store.enabled:
@@ -9710,9 +9710,11 @@ class GiftAnalyticsService:
         else:
             vol_level = "MED"
         one_hour_ago = _iso(now - timedelta(hours=1))
-        signals_1h_feed = self.signals_v1(since=one_hour_ago, limit=300, mode="tz")
+        signals_1h_feed = self.actionable_signals_v1(limit=500, mode="tz")
         signals_1h = {"buy": 0, "sell": 0, "watch": 0, "skip": 0}
         for row in (signals_1h_feed.get("items") or []):
+            if _parse_ts((row or {}).get("ts")) < _parse_ts(one_hour_ago):
+                continue
             t = str((row or {}).get("type") or "").upper()
             if t == "BUY":
                 signals_1h["buy"] += 1
