@@ -177,13 +177,23 @@ class TradeRuntime:
             "step_index": payload.get("step_index"),
             "chain_policy": payload.get("chain_policy"),
             "post_action": payload.get("post_action"),
+            "transfer_params": payload.get("transfer_params") if isinstance(payload.get("transfer_params"), dict) else None,
             "reasons": list((variant_snapshot or {}).get("reasons") or []),
             "risk_flags": list((variant_snapshot or {}).get("risk_flags") or []),
             "decision_trace": {
                 "market_regime": market_regime,
                 "variant_label": (variant_snapshot or {}).get("variant_label"),
                 "requested_intent_type": intent_type,
+                "post_action": payload.get("post_action") if isinstance(payload.get("post_action"), dict) else None,
+                "transfer_params": payload.get("transfer_params") if isinstance(payload.get("transfer_params"), dict) else None,
             },
+            "status_timeline": [
+                {
+                    "status": "PENDING_SIGNATURE",
+                    "ts": _iso(now),
+                    "source": "runtime",
+                }
+            ],
             "idempotency_key": idem or None,
         }
         wallet_tx = self._wallet_tx_for_intent(item)
@@ -512,6 +522,13 @@ class TradeRuntime:
             "reasons": parent.get("reasons") or [],
             "risk_flags": parent.get("risk_flags") or [],
             "decision_trace": {"retry_from_parent": True},
+            "status_timeline": [
+                {
+                    "status": "PENDING_SIGNATURE",
+                    "ts": _iso(),
+                    "source": "runtime",
+                }
+            ],
             "idempotency_key": f"chain:{parent.get('chain_id')}:retry:{secrets.token_hex(4)}",
         }
         intents.append(child)
@@ -734,6 +751,13 @@ class TradeRuntime:
             "reasons": parent_intent.get("reasons") or [],
             "risk_flags": parent_intent.get("risk_flags") or [],
             "decision_trace": {"generated_from_buy_confirm": True},
+            "status_timeline": [
+                {
+                    "status": "PENDING_SIGNATURE",
+                    "ts": _iso(now),
+                    "source": "runtime",
+                }
+            ],
             "idempotency_key": idem,
         }
         intents.append(child)

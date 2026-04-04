@@ -242,6 +242,7 @@ export interface TradeIntent {
   step_index?: number | null
   chain_policy?: 'MANUAL' | 'BUY_THEN_LIST' | string | null
   post_action?: Record<string, unknown> | null
+  transfer_params?: Record<string, unknown> | null
   reasons?: string[] | null
   risk_flags?: string[] | null
   decision_trace?: Record<string, unknown> | null
