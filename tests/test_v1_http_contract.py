@@ -548,6 +548,14 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertEqual(resp_head.status, 200)
             self.assertIn('application/javascript', str(resp_head.headers.get('Content-Type') or ''))
 
+    def test_stale_hashed_asset_falls_back_to_latest_matching_chunk(self) -> None:
+        stale = '/assets/OverviewPage-OLDHASH.js'
+        req = Request(f"http://127.0.0.1:{self.port}{stale}", method='GET')
+        with urlopen(req, timeout=10) as resp:
+            body = resp.read().decode('utf-8')
+        self.assertEqual(resp.status, 200)
+        self.assertIn('PageHeader', body)
+
     def test_legacy_signal_bot_is_not_enabled_by_default(self) -> None:
         self.assertFalse(server.BOT_AUTORUN)
 

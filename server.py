@@ -1816,6 +1816,10 @@ def _redirect(handler: BaseHTTPRequestHandler, location: str, *, set_cookies: li
 def _serve_file(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
     rel = rel_path.lstrip("/")
     target = (STATIC_DIR / rel).resolve()
+    if (not target.exists()) and rel.startswith("assets/"):
+        fallback = _resolve_stale_asset_target(rel)
+        if fallback is not None:
+            target = fallback
     if not str(target).startswith(str(STATIC_DIR.resolve())):
         _safe_send_error(handler, HTTPStatus.FORBIDDEN)
         return
@@ -1858,6 +1862,10 @@ def _serve_file(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
 def _serve_file_head(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
     rel = rel_path.lstrip("/")
     target = (STATIC_DIR / rel).resolve()
+    if (not target.exists()) and rel.startswith("assets/"):
+        fallback = _resolve_stale_asset_target(rel)
+        if fallback is not None:
+            target = fallback
     if not str(target).startswith(str(STATIC_DIR.resolve())):
         _safe_send_error(handler, HTTPStatus.FORBIDDEN)
         return
@@ -1890,6 +1898,27 @@ def _serve_file_head(handler: BaseHTTPRequestHandler, rel_path: str) -> None:
         handler.send_header("Cache-Control", "no-store")
     _add_security_headers(handler)
     handler.end_headers()
+
+
+def _resolve_stale_asset_target(rel: str) -> Path | None:
+    try:
+        rel_clean = str(rel or "").strip().lstrip("/")
+        if not rel_clean.startswith("assets/"):
+            return None
+        name = Path(rel_clean).name
+        if "-" not in name or "." not in name:
+            return None
+        stem = Path(name).stem
+        suffix = Path(name).suffix
+        prefix = stem.rsplit("-", 1)[0]
+        candidates = sorted((STATIC_DIR / "assets").glob(f"{prefix}-*{suffix}"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if str(resolved).startswith(str((STATIC_DIR / "assets").resolve())) and resolved.is_file():
+                return resolved
+    except Exception:
+        return None
+    return None
 
 
 def _request_origin(handler: BaseHTTPRequestHandler) -> str:
