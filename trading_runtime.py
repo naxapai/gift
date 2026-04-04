@@ -640,6 +640,8 @@ class TradeRuntime:
                 "status": "OWNED",
                 "marketplace_listing_id": None,
                 "listed_price_ton": None,
+                "listing_meta": None,
+                "transfer_meta": None,
                 "updated_at": now_iso,
             })
             self._touch_position(positions, wallet_address, variant_id, qty_delta=1.0, buy_price=price_ton, mark_price=fair_ton, variant_snapshot=variant_snapshot)
@@ -654,6 +656,12 @@ class TradeRuntime:
                     row["status"] = "LISTED"
                     row["marketplace_listing_id"] = str(intent.get("listing_id") or f"ml_{secrets.token_hex(5)}")
                     row["listed_price_ton"] = _as_float((intent.get("post_action") or {}).get("listing_params", {}).get("list_price_ton"), _as_float(intent.get("price_ton"), fair_ton))
+                    row["listing_meta"] = {
+                        "list_price_ton": row["listed_price_ton"],
+                        "listing_id": row["marketplace_listing_id"],
+                        "marketplace": ((intent.get("post_action") or {}).get("listing_params") or {}).get("marketplace"),
+                        "duration_sec": ((intent.get("post_action") or {}).get("listing_params") or {}).get("duration_sec"),
+                    }
                     row["updated_at"] = now_iso
                     break
         elif intent_type == "CANCEL_LISTING":
@@ -662,16 +670,31 @@ class TradeRuntime:
                     row["status"] = "OWNED"
                     row["marketplace_listing_id"] = None
                     row["listed_price_ton"] = None
+                    row["listing_meta"] = None
                     row["updated_at"] = now_iso
                     break
-        elif intent_type in {"SELL", "TRANSFER"}:
+        elif intent_type == "SELL":
             for row in holdings:
                 if str(row.get("wallet_address") or "") == wallet_address and str(row.get("variant_id") or "") == variant_id and str(row.get("status") or "") in {"OWNED", "LISTED"}:
                     row["status"] = "SOLD"
+                    row["transfer_meta"] = None
                     row["updated_at"] = now_iso
                     break
             self._touch_position(positions, wallet_address, variant_id, qty_delta=-1.0, buy_price=price_ton, mark_price=fair_ton, variant_snapshot=variant_snapshot)
             self._append_wallet_activity(wallet_address, amount_ton=price_ton, tx_hash=str(intent.get("tx_hash") or ""), direction="IN")
+        elif intent_type == "TRANSFER":
+            transfer_params = intent.get("transfer_params") if isinstance(intent.get("transfer_params"), dict) else {}
+            for row in holdings:
+                if str(row.get("wallet_address") or "") == wallet_address and str(row.get("variant_id") or "") == variant_id and str(row.get("status") or "") in {"OWNED", "LISTED"}:
+                    row["status"] = "TRANSFER_PENDING"
+                    row["transfer_meta"] = {
+                        "telegram_user_id": transfer_params.get("telegram_user_id"),
+                        "telegram_username": transfer_params.get("telegram_username"),
+                        "tx_hash": intent.get("tx_hash"),
+                    }
+                    row["updated_at"] = now_iso
+                    break
+            self._append_wallet_activity(wallet_address, amount_ton=0.0, tx_hash=str(intent.get("tx_hash") or ""), direction="OUT")
         self._write_list(self.holdings_file, holdings)
         self._write_list(self.positions_file, positions)
         pnl = self.get_pnl_summary(wallet_address, market_regime=market_regime)

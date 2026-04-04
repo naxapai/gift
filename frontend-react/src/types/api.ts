@@ -278,6 +278,8 @@ export interface HoldingPro {
   status: 'OWNED' | 'LISTED' | 'TRANSFER_PENDING' | 'SOLD' | string
   marketplace_listing_id?: string | null
   listed_price_ton?: number | null
+  listing_meta?: Record<string, unknown> | null
+  transfer_meta?: Record<string, unknown> | null
   updated_at?: string | null
 }
 
