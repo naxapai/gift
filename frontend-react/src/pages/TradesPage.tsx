@@ -53,6 +53,7 @@ export function TradesPage() {
   const [actionBusyId, setActionBusyId] = useState('')
   const [optimisticHistory, setOptimisticHistory] = useState<TradeIntent[]>([])
   const [expandedIntentId, setExpandedIntentId] = useState('')
+  const [holdingDrafts, setHoldingDrafts] = useState<Record<string, { listPriceTon: string; transferUserId: string }>>({})
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -202,6 +203,7 @@ export function TradesPage() {
     setActionBusyId(`${holding.holding_id}:${action}`)
     setError('')
     try {
+      const draft = holdingDrafts[holding.holding_id] || { listPriceTon: '', transferUserId: '' }
       const payload: Record<string, unknown> = {
         intent_type: action,
         variant_id: holding.variant_id,
@@ -210,10 +212,11 @@ export function TradesPage() {
         price_ton: holding.listed_price_ton || holding.acquired_price_ton,
       }
       if (action === 'LIST') {
-        payload.post_action = { type: 'LIST', listing_params: { list_price_ton: Number((holding.acquired_price_ton || 0) * 1.12), duration_sec: 86400, marketplace: 'fragment' } }
+        const listPriceTon = Number(draft.listPriceTon || Number((holding.acquired_price_ton || 0) * 1.12))
+        payload.post_action = { type: 'LIST', listing_params: { list_price_ton: listPriceTon, duration_sec: 86400, marketplace: 'fragment' } }
       }
       if (action === 'TRANSFER') {
-        payload.transfer_params = { telegram_user_id: '144832201' }
+        payload.transfer_params = { telegram_user_id: String(draft.transferUserId || '144832201') }
       }
       const created = await postTradeIntent(payload)
       const tx = await sendTonWalletTx(created.wallet_tx || {})
@@ -224,7 +227,18 @@ export function TradesPage() {
     } finally {
       setActionBusyId('')
     }
-  }, [walletAddress, load])
+  }, [walletAddress, load, holdingDrafts])
+
+  const updateHoldingDraft = useCallback((holdingId: string, patch: Partial<{ listPriceTon: string; transferUserId: string }>) => {
+    setHoldingDrafts((prev) => ({
+      ...prev,
+      [holdingId]: {
+        listPriceTon: prev[holdingId]?.listPriceTon || '',
+        transferUserId: prev[holdingId]?.transferUserId || '',
+        ...patch,
+      },
+    }))
+  }, [])
 
   const retryChildList = useCallback(async (parentIntentId: string) => {
     setActionBusyId(`retry:${parentIntentId}`)
@@ -306,10 +320,13 @@ export function TradesPage() {
                 <article key={row.holding_id} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
                   <div className="flex items-center justify-between"><strong>{row.variant_id}</strong><span>{row.status}</span></div>
                   <div className="mt-2 grid gap-2 text-xs text-slate-600"><div>Gift: {row.gift_unique_id}</div><div>Acquired: {ton(row.acquired_price_ton)}</div><div>Listed: {ton(row.listed_price_ton)}</div></div>
+                  {row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.listPriceTon || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { listPriceTon: e.target.value })} placeholder="Цена листинга TON" className="gmz-input mt-3 text-xs" /> : null}
+                  {row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.transferUserId || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { transferUserId: e.target.value })} placeholder="Telegram user id для TRANSFER" className="gmz-input mt-2 text-xs" /> : null}
+                  <div className="mt-3 flex flex-wrap gap-2">{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:LIST`} onClick={() => { void runHoldingAction(row, 'LIST') }}>LIST</button> : null}{row.status === 'LISTED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:CANCEL_LISTING`} onClick={() => { void runHoldingAction(row, 'CANCEL_LISTING') }}>CANCEL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:SELL`} onClick={() => { void runHoldingAction(row, 'SELL') }}>SELL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:TRANSFER`} onClick={() => { void runHoldingAction(row, 'TRANSFER') }}>TRANSFER</button> : null}</div>
                 </article>
               ))}
             </div>
-            <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Gift</th><th>Variant</th><th>Status</th><th>Acquired</th><th>Listed</th><th>Actions</th></tr></thead><tbody>{holdings.map((row) => <tr key={row.holding_id} className="border-t border-slate-100"><td className="py-2">{row.gift_unique_id}</td><td>{row.variant_id}</td><td>{row.status}</td><td>{ton(row.acquired_price_ton)}</td><td>{ton(row.listed_price_ton)}</td><td><div className="flex flex-wrap gap-2 py-2">{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:LIST`} onClick={() => { void runHoldingAction(row, 'LIST') }}>LIST</button> : null}{row.status === 'LISTED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:CANCEL_LISTING`} onClick={() => { void runHoldingAction(row, 'CANCEL_LISTING') }}>CANCEL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:SELL`} onClick={() => { void runHoldingAction(row, 'SELL') }}>SELL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:TRANSFER`} onClick={() => { void runHoldingAction(row, 'TRANSFER') }}>TRANSFER</button> : null}</div></td></tr>)}</tbody></table></div>
+            <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Gift</th><th>Variant</th><th>Status</th><th>Acquired</th><th>Listed</th><th>List price</th><th>Transfer</th><th>Actions</th></tr></thead><tbody>{holdings.map((row) => <tr key={row.holding_id} className="border-t border-slate-100"><td className="py-2">{row.gift_unique_id}</td><td>{row.variant_id}</td><td>{row.status}</td><td>{ton(row.acquired_price_ton)}</td><td>{ton(row.listed_price_ton)}</td><td>{row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.listPriceTon || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { listPriceTon: e.target.value })} placeholder={String(Number((row.acquired_price_ton || 0) * 1.12).toFixed(2))} className="gmz-input text-xs" /> : '—'}</td><td>{row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.transferUserId || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { transferUserId: e.target.value })} placeholder="144832201" className="gmz-input text-xs" /> : '—'}</td><td><div className="flex flex-wrap gap-2 py-2">{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:LIST`} onClick={() => { void runHoldingAction(row, 'LIST') }}>LIST</button> : null}{row.status === 'LISTED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:CANCEL_LISTING`} onClick={() => { void runHoldingAction(row, 'CANCEL_LISTING') }}>CANCEL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:SELL`} onClick={() => { void runHoldingAction(row, 'SELL') }}>SELL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:TRANSFER`} onClick={() => { void runHoldingAction(row, 'TRANSFER') }}>TRANSFER</button> : null}</div></td></tr>)}</tbody></table></div>
           </BentoCard>
           <BentoCard title="History" className="xl:col-span-12">
             <div className="grid gap-3 md:hidden">
