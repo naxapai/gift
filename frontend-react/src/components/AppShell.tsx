@@ -238,10 +238,31 @@ export function AppShell() {
     try {
       await getTonAuthConfig().catch(() => null)
       const ui = await ensureTonUi()
+      const existingAccount = ui.wallet?.account || null
+      if (existingAccount?.address && tonConnected && tonWallet?.address === existingAccount.address) {
+        setTonMenuOpen(true)
+        await refreshTonBalance()
+        return
+      }
+      if (existingAccount?.address) {
+        await ui.disconnect().catch(() => undefined)
+        await postTonLogout().catch(() => undefined)
+      }
       const challengePayload = await postTonChallenge()
       const challenge = String(challengePayload?.challenge || '').trim()
       if (!challenge) throw new Error('challenge_missing')
-      const connected = await ui.connectWallet({ tonProof: challenge })
+      let connected
+      try {
+        connected = await ui.connectWallet({ tonProof: challenge })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e || '')
+        if (msg.includes('wallet already connected')) {
+          await ui.disconnect().catch(() => undefined)
+          connected = await ui.connectWallet({ tonProof: challenge })
+        } else {
+          throw e
+        }
+      }
       const account = connected?.account || ui.wallet?.account || null
       if (!account?.address) throw new Error('ton_account_missing')
       const tonProof = connected?.connectItems?.tonProof?.proof || null
