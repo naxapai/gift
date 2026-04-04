@@ -727,7 +727,7 @@ class TelegramNotifier:
             if "channel_id" in row:
                 item["channel_id"] = str(row.get("channel_id") or "").strip()
             if key == "market_status" and "min_interval_sec" in row:
-                item["min_interval_sec"] = max(60, min(_safe_int(row.get("min_interval_sec"), 900), 86400))
+                item["min_interval_sec"] = max(3600, min(_safe_int(row.get("min_interval_sec"), 3600), 86400))
             if key == "gift_signal" and "include_image" in row:
                 item["include_image"] = bool(row.get("include_image"))
             if item:
@@ -790,8 +790,10 @@ class TelegramNotifier:
             return
         if kind == "market_status":
             market_cfg = effective.get("market_status") if isinstance(effective.get("market_status"), dict) else {}
-            min_interval_sec = max(60, min(_safe_int(market_cfg.get("min_interval_sec"), 900), 86400))
+            min_interval_sec = max(3600, min(_safe_int(market_cfg.get("min_interval_sec"), 3600), 86400))
             if self._recent_kind_sent(kind, channel_id, min_interval_sec):
+                return
+            if self._same_kind_payload_sent(kind, channel_id, dedupe_key):
                 return
         if kind == "market_status":
             text = self.renderer.render_market_status(payload)
@@ -903,6 +905,19 @@ class TelegramNotifier:
                 continue
             mono_ts = _safe_float(value.get("mono_ts"), 0.0)
             if mono_ts > 0 and (now_mono - mono_ts) <= float(interval_sec):
+                return True
+        return False
+
+    def _same_kind_payload_sent(self, kind: str, channel_id: str, dedupe_key: str) -> bool:
+        sent = self._journal.get("sent") if isinstance(self._journal.get("sent"), dict) else {}
+        for key, value in sent.items():
+            if not isinstance(value, dict):
+                continue
+            if str(value.get("kind") or "") != kind:
+                continue
+            if str(value.get("channel_id") or "") != channel_id:
+                continue
+            if str(key or "") == str(dedupe_key or ""):
                 return True
         return False
 

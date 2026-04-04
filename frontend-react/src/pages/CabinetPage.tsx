@@ -322,6 +322,7 @@ export function CabinetPage() {
               {ownedMessage || 'Пока нет данных о подарках пользователя.'}
               {ownedSource ? <div className="mt-2 text-xs text-slate-500">source: {ownedSource}</div> : null}
               {ownedSource === 'remote_error' ? <div className="mt-2 text-xs text-amber-700">Проверь token/endpoint для owned gifts или включи локальный fallback snapshot.</div> : null}
+              {ownedSource === 'local_file_missing' ? <div className="mt-2 text-xs text-amber-700">Внешний источник подарков пользователя не подключен. Если у пользователя уже есть локальные wallet holdings, они появятся здесь автоматически после торговых операций в системе.</div> : null}
             </div>
           )}
         </BentoCard>
