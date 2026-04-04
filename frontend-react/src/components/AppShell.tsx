@@ -20,6 +20,8 @@ const navItems = [
 const TONCONNECT_UI_SRC = 'https://unpkg.com/@tonconnect/ui@2.0.9/dist/tonconnect-ui.min.js'
 const TELEGRAM_WIDGET_SRC = 'https://telegram.org/js/telegram-widget.js?22'
 const TONCONNECT_BUTTON_ROOT_ID = 'gmz-tonconnect-anchor'
+const LS_TELEGRAM_USER = 'gmz:telegram:user'
+const LS_TON_WALLET = 'gmz:ton:wallet'
 
 function fmtTon(value?: number | null): string {
   const n = Number(value)
@@ -44,6 +46,28 @@ function formatTonBalance(value?: number | null): string {
   const n = Number(value)
   if (!Number.isFinite(n)) return '— TON'
   return `${n.toFixed(3)} TON`
+}
+
+function readJson<T>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
+function writeJson(key: string, value: unknown | null) {
+  try {
+    if (value == null) {
+      localStorage.removeItem(key)
+      return
+    }
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // ignore
+  }
 }
 
 let tonScriptPromise: Promise<void> | null = null
@@ -111,13 +135,13 @@ function NavItem({ to, label }: { to: string; label: string }) {
 
 export function AppShell() {
   const [adminAllowed, setAdminAllowed] = useState(false)
-  const [telegramUser, setTelegramUser] = useState<{ id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string } | null>(null)
+  const [telegramUser, setTelegramUser] = useState<{ id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string } | null>(() => readJson(LS_TELEGRAM_USER))
   const [telegramAuthEnabled, setTelegramAuthEnabled] = useState(false)
   const [telegramBotUsername, setTelegramBotUsername] = useState('')
   const [telegramAuthBusy, setTelegramAuthBusy] = useState(false)
   const [telegramAuthError, setTelegramAuthError] = useState('')
   const [tonConnected, setTonConnected] = useState(false)
-  const [tonWallet, setTonWallet] = useState<TonWalletInfo | null>(null)
+  const [tonWallet, setTonWallet] = useState<TonWalletInfo | null>(() => readJson(LS_TON_WALLET))
   const [tonConnecting, setTonConnecting] = useState(false)
   const [tonMenuOpen, setTonMenuOpen] = useState(false)
   const [tonBalance, setTonBalance] = useState<number | null>(null)
@@ -149,11 +173,11 @@ export function AppShell() {
           setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
           setTelegramAuthEnabled(Boolean(auth?.enabled))
           setTelegramBotUsername(String(auth?.bot_username || ''))
+          writeJson(LS_TELEGRAM_USER, auth?.authenticated ? (auth.user || null) : null)
         }
       } catch {
         if (!stop) setAdminAllowed(false)
         if (!stop) {
-          setTelegramUser(null)
           setTelegramAuthEnabled(false)
           setTelegramBotUsername('')
         }
@@ -169,9 +193,12 @@ export function AppShell() {
     const load = async () => {
       try {
         const auth = await getTelegramAuthMe()
-        if (!stop) setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+        if (!stop && auth?.authenticated) {
+          setTelegramUser(auth.user || null)
+          writeJson(LS_TELEGRAM_USER, auth.user || null)
+        }
       } catch {
-        if (!stop) setTelegramUser(null)
+        // keep cached telegram user on transient failure
       }
     }
     void load()
@@ -188,16 +215,15 @@ export function AppShell() {
       const connected = Boolean(me?.connected)
       setTonConnected(connected)
       setTonWallet(connected ? (me.wallet || null) : null)
+      if (connected) writeJson(LS_TON_WALLET, me.wallet || null)
       if (!connected) {
         setTonMenuOpen(false)
         setTonBalance(null)
+        writeJson(LS_TON_WALLET, null)
       }
       setTonError('')
     } catch (e) {
-      setTonConnected(false)
-      setTonWallet(null)
-      setTonMenuOpen(false)
-      setTonBalance(null)
+      // keep cached TON wallet on transient failure
       setTonError(e instanceof Error ? e.message : 'ton_me_failed')
     }
   }, [])
@@ -295,6 +321,7 @@ export function AppShell() {
       setTonWallet(null)
       setTonMenuOpen(false)
       setTonBalance(null)
+      writeJson(LS_TON_WALLET, null)
       setTonConnecting(false)
     }
   }, [])
@@ -342,7 +369,10 @@ export function AppShell() {
             window.Telegram?.WebApp?.expand?.()
             await postTelegramWebAppVerify(initData)
             const auth = await getTelegramAuthBootstrap()
-            if (mounted) setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+            if (mounted) {
+              setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+              writeJson(LS_TELEGRAM_USER, auth?.authenticated ? (auth.user || null) : null)
+            }
           } catch (e) {
             if (mounted) setTelegramAuthError(e instanceof Error ? e.message : 'telegram_webapp_auth_failed')
           } finally {
@@ -359,7 +389,10 @@ export function AppShell() {
           try {
             await postTelegramAuthVerify(telegramUserPayload)
             const auth = await getTelegramAuthBootstrap()
-            if (mounted) setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+            if (mounted) {
+              setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+              writeJson(LS_TELEGRAM_USER, auth?.authenticated ? (auth.user || null) : null)
+            }
           } catch (e) {
             if (mounted) setTelegramAuthError(e instanceof Error ? e.message : 'telegram_auth_failed')
           } finally {
@@ -490,7 +523,7 @@ export function AppShell() {
                       )}
                       <div className="flex gap-2">
                         <button type="button" className="gmz-btn gmz-btn-ghost flex-1 px-3 py-2 text-sm" onClick={() => void loadOwnedGifts()} disabled={ownedLoading}>Обновить</button>
-                        <button type="button" className="gmz-btn flex-1 rounded-xl border border-rose-200 bg-[#fff8f8] px-3 py-2 text-sm font-semibold text-rose-700" onClick={() => { void postTelegramLogout().then(async () => { setProfileOpen(false); await getTelegramAuthBootstrap().catch(() => ({ authenticated: false })); setTelegramUser(null) }) }}>Выйти</button>
+                        <button type="button" className="gmz-btn flex-1 rounded-xl border border-rose-200 bg-[#fff8f8] px-3 py-2 text-sm font-semibold text-rose-700" onClick={() => { void postTelegramLogout().then(async () => { setProfileOpen(false); await getTelegramAuthBootstrap().catch(() => ({ authenticated: false })); setTelegramUser(null); writeJson(LS_TELEGRAM_USER, null) }) }}>Выйти</button>
                       </div>
                     </div>
                   ) : (

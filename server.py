@@ -1423,6 +1423,10 @@ def _cookie_domain_attr(value: str) -> str:
     return f"Domain={domain}"
 
 
+def _cookie_samesite(handler: BaseHTTPRequestHandler) -> str:
+    return "None" if _cookie_secure(handler) else "Lax"
+
+
 def _build_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, max_age: int) -> str:
     secure = _cookie_secure(handler)
     cookie_domain = _cookie_domain_attr(AUTH_COOKIE_DOMAIN)
@@ -1430,7 +1434,7 @@ def _build_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, max_
         f"{SESSION_COOKIE_NAME}={session_id}",
         "Path=/",
         "HttpOnly",
-        "SameSite=Lax",
+        f"SameSite={_cookie_samesite(handler)}",
         f"Max-Age={max_age}",
     ]
     if cookie_domain:
@@ -1447,7 +1451,7 @@ def _build_clear_session_cookie(handler: BaseHTTPRequestHandler) -> str:
         f"{SESSION_COOKIE_NAME}=",
         "Path=/",
         "HttpOnly",
-        "SameSite=Lax",
+        f"SameSite={_cookie_samesite(handler)}",
         "Max-Age=0",
     ]
     if cookie_domain:
@@ -1464,7 +1468,7 @@ def _build_ton_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, 
         f"{TON_SESSION_COOKIE_NAME}={session_id}",
         "Path=/",
         "HttpOnly",
-        "SameSite=Lax",
+        f"SameSite={_cookie_samesite(handler)}",
         f"Max-Age={max_age}",
     ]
     if cookie_domain:
@@ -1481,7 +1485,7 @@ def _build_clear_ton_session_cookie(handler: BaseHTTPRequestHandler) -> str:
         f"{TON_SESSION_COOKIE_NAME}=",
         "Path=/",
         "HttpOnly",
-        "SameSite=Lax",
+        f"SameSite={_cookie_samesite(handler)}",
         "Max-Age=0",
     ]
     if cookie_domain:
