@@ -21,6 +21,7 @@ CHAT_ID = os.getenv("TG_CHAT_ID", "").strip()
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8080").strip()
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
 HTTP_TIMEOUT_SEC = int(os.getenv("BOT_HTTP_TIMEOUT_SEC", "90"))
+STATUS_HTTP_TIMEOUT_SEC = int(os.getenv("BOT_STATUS_HTTP_TIMEOUT_SEC", "12"))
 HTTP_RETRIES = int(os.getenv("BOT_HTTP_RETRIES", "3"))
 HTTP_BACKOFF_SEC = float(os.getenv("BOT_HTTP_BACKOFF_SEC", "1.5"))
 API_WARMUP_MAX_SEC = int(os.getenv("BOT_API_WARMUP_MAX_SEC", "120"))
@@ -202,15 +203,16 @@ def _find_variant_by_gift_input(raw_text: str) -> Dict | None:
     return variants[0]
 
 
-def _http_get(url: str) -> Dict:
+def _http_get(url: str, *, timeout_sec: int | None = None) -> Dict:
     last_error = None
+    timeout = int(timeout_sec or HTTP_TIMEOUT_SEC)
     for attempt in range(1, max(1, HTTP_RETRIES) + 1):
         try:
             req = urllib.request.Request(url, method="GET")
             req.add_header("Accept", "application/json")
             if API_AUTH_TOKEN:
                 req.add_header("Authorization", f"Bearer {API_AUTH_TOKEN}")
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except Exception as e:  # noqa: BLE001
             last_error = e
@@ -292,8 +294,8 @@ def _get_updates(offset: int | None = None, timeout_sec: int = 0) -> Dict:
         raise
 
 
-def _format_market_status(overview: Dict) -> str:
-    payload = {
+def _market_status_payload_from_overview(overview: Dict) -> Dict:
+    return {
         "updated_at": overview.get("updated_at"),
         "market_regime": overview.get("market_regime") or overview.get("regime") or "MEAN_REVERT",
         "data_conf_pct": overview.get("data_conf_pct") or overview.get("conf_pct") or 0,
@@ -335,7 +337,10 @@ def _format_market_status(overview: Dict) -> str:
         "data_health": overview.get("data_health") or ("DEGRADED" if overview.get("data_stale") else "OK"),
         "data_health_note": overview.get("data_health_note") or overview.get("signals_quality_reason") or overview.get("last_error") or "",
     }
-    return _renderer().render_market_status(payload)
+
+
+def _format_market_status(overview: Dict) -> str:
+    return _renderer().render_market_status(_market_status_payload_from_overview(overview))
 
 
 def _collect_recent_channel_signals(cache: Dict, window_sec: int) -> list[Dict]:
@@ -517,10 +522,25 @@ def _handle_commands(cache: Dict) -> None:
             cmd = text.split()[0].split("@")[0].lower()
             if cmd == "/status":
                 try:
-                    payload = _http_get(f"{API_BASE_URL}/v1/market/status?window=30m")
+                    payload = _http_get(
+                        f"{API_BASE_URL}/v1/market/status?window=30m",
+                        timeout_sec=STATUS_HTTP_TIMEOUT_SEC,
+                    )
                     _send_market_status_payload_to(chat_id, payload, command_response=True)
                 except Exception as e:  # noqa: BLE001
-                    send_message_to(chat_id, f"Ошибка получения статуса: {e}")
+                    try:
+                        overview = _http_get(
+                            f"{API_BASE_URL}/api/market/overview",
+                            timeout_sec=STATUS_HTTP_TIMEOUT_SEC,
+                        )
+                        payload = _market_status_payload_from_overview(overview)
+                        payload.setdefault("source", overview.get("runtime_source") or overview.get("source") or "market_overview")
+                        note = str(payload.get("data_health_note") or "").strip()
+                        fallback_note = f"status_fallback:{e.__class__.__name__}"
+                        payload["data_health_note"] = f"{note}; {fallback_note}".strip("; ")
+                        _send_market_status_payload_to(chat_id, payload, command_response=True)
+                    except Exception as fallback_error:  # noqa: BLE001
+                        send_message_to(chat_id, f"Ошибка получения статуса: {fallback_error}")
             elif cmd == "/signal":
                 now_ts = int(time.time())
                 key = str(chat_id)

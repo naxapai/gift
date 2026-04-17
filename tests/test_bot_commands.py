@@ -1,4 +1,5 @@
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 import bot
@@ -41,6 +42,34 @@ class TestBotCommands(unittest.TestCase):
         self.assertIn("GiftMarketZone • РЫНОК", sent[0])
         self.assertIn("Запрошено:", sent[0])
         self.assertIn("Источник:", sent[0])
+
+    def test_status_command_falls_back_to_market_overview(self) -> None:
+        cache = {}
+        updates = {"result": [{"update_id": 1, "message": {"text": "/status", "chat": {"id": 103}}}]}
+        sent: list[str] = []
+
+        def fake_http_get(url, **kwargs):
+            if "/v1/market/status" in url:
+                raise TimeoutError("timed out")
+            if "/api/market/overview" in url:
+                return {
+                    "updated_at": "2026-04-17T09:30:00Z",
+                    "market_state": "Падение",
+                    "buy_signals": 1,
+                    "sell_signals": 7,
+                    "total_for_sale": 1234,
+                    "runtime_source": "mtproto_api",
+                    "data_stale": False,
+                    "last_error": "",
+                }
+            raise AssertionError(url)
+
+        with patch.object(bot, "BOT_TOKEN", "token"), patch.object(bot, "_get_updates", return_value=updates), patch.object(bot, "_http_get", side_effect=fake_http_get), patch.object(bot, "send_message_to", side_effect=lambda chat_id, text, parse_mode=None: sent.append(text)):
+            bot._handle_commands(cache)
+
+        self.assertTrue(sent)
+        self.assertIn("GiftMarketZone • РЫНОК", sent[0])
+        self.assertIn("Источник: mtproto_api", sent[0])
 
     def test_bot_prefers_notifier_for_outbound_delivery(self) -> None:
         class StubNotifier:

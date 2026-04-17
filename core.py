@@ -9681,6 +9681,7 @@ class GiftAnalyticsService:
 
     def market_status_v1(self, window: str | None = None) -> dict:
         window_raw = str(window or "30m").strip().lower()
+        request_data_version = int(self._data_version)
         rt_ttl_sec = max(
             3.0,
             min(
@@ -9691,7 +9692,7 @@ class GiftAnalyticsService:
         rt_cache_key = (
             "market_status_v1",
             window_raw,
-            int(self._data_version),
+            request_data_version,
             str(self.listing_primary_source or "auto"),
             bool(self.listing_strict_primary),
         )
@@ -9874,6 +9875,18 @@ class GiftAnalyticsService:
             "source_error": source_error,
         }
         self._rt_cache_set(rt_cache_key, payload)
+        final_data_version = int(self._data_version)
+        if final_data_version != request_data_version:
+            self._rt_cache_set(
+                (
+                    "market_status_v1",
+                    window_raw,
+                    final_data_version,
+                    str(self.listing_primary_source or "auto"),
+                    bool(self.listing_strict_primary),
+                ),
+                payload,
+            )
         return payload
 
     def listings_new_v1(
