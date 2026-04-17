@@ -1160,8 +1160,9 @@ class AuthStore:
             return False, "auth_date_expired", None
 
         check_lines: list[str] = []
+        ignored_local_keys = {"redirect_to"}
         for key in sorted(payload.keys()):
-            if key == "hash":
+            if key == "hash" or key in ignored_local_keys:
                 continue
             value = payload.get(key)
             if value is None:
@@ -1286,6 +1287,20 @@ class AuthStore:
 
 
 AUTH = AuthStore()
+
+
+def _sanitize_post_auth_redirect(raw: str | None) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return "/"
+    parsed = urlparse(value)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    if not value.startswith("/"):
+        return "/"
+    if value.startswith("//"):
+        return "/"
+    return value
 
 
 class TonAuthStore:
@@ -1423,13 +1438,28 @@ def _cookie_domain_attr(value: str) -> str:
     return f"Domain={domain}"
 
 
+def _cookie_domain_attr_for_request(handler: BaseHTTPRequestHandler, value: str) -> str:
+    domain = str(value or "").strip().lower().lstrip(".")
+    if not domain or domain in {"localhost", "127.0.0.1", "::1"}:
+        return ""
+    host = (handler.headers.get("Host", "") or "").split(":", 1)[0].strip().lower().lstrip(".")
+    if not host or host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127."):
+        return ""
+    if host == domain or host.endswith(f".{domain}"):
+        return f"Domain={domain}"
+    # A mismatched Domain attribute makes browsers reject auth cookies entirely.
+    # Prefer a host-only cookie so Telegram/TON auth works on custom domains,
+    # Render preview domains, and local dev without requiring env rewrites.
+    return ""
+
+
 def _cookie_samesite(handler: BaseHTTPRequestHandler) -> str:
     return "None" if _cookie_secure(handler) else "Lax"
 
 
 def _build_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, max_age: int) -> str:
     secure = _cookie_secure(handler)
-    cookie_domain = _cookie_domain_attr(AUTH_COOKIE_DOMAIN)
+    cookie_domain = _cookie_domain_attr_for_request(handler, AUTH_COOKIE_DOMAIN)
     parts = [
         f"{SESSION_COOKIE_NAME}={session_id}",
         "Path=/",
@@ -1446,7 +1476,7 @@ def _build_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, max_
 
 def _build_clear_session_cookie(handler: BaseHTTPRequestHandler) -> str:
     secure = _cookie_secure(handler)
-    cookie_domain = _cookie_domain_attr(AUTH_COOKIE_DOMAIN)
+    cookie_domain = _cookie_domain_attr_for_request(handler, AUTH_COOKIE_DOMAIN)
     parts = [
         f"{SESSION_COOKIE_NAME}=",
         "Path=/",
@@ -1463,7 +1493,7 @@ def _build_clear_session_cookie(handler: BaseHTTPRequestHandler) -> str:
 
 def _build_ton_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, max_age: int) -> str:
     secure = _cookie_secure(handler)
-    cookie_domain = _cookie_domain_attr(TON_COOKIE_DOMAIN)
+    cookie_domain = _cookie_domain_attr_for_request(handler, TON_COOKIE_DOMAIN)
     parts = [
         f"{TON_SESSION_COOKIE_NAME}={session_id}",
         "Path=/",
@@ -1480,7 +1510,7 @@ def _build_ton_session_cookie(handler: BaseHTTPRequestHandler, session_id: str, 
 
 def _build_clear_ton_session_cookie(handler: BaseHTTPRequestHandler) -> str:
     secure = _cookie_secure(handler)
-    cookie_domain = _cookie_domain_attr(TON_COOKIE_DOMAIN)
+    cookie_domain = _cookie_domain_attr_for_request(handler, TON_COOKIE_DOMAIN)
     parts = [
         f"{TON_SESSION_COOKIE_NAME}=",
         "Path=/",
@@ -2173,18 +2203,19 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path == "/api/auth/telegram/callback":
             params = parse_qs(parsed.query)
             payload = {k: (v[0] if isinstance(v, list) and v else "") for k, v in params.items()}
+            redirect_to = _sanitize_post_auth_redirect(payload.get("redirect_to"))
             ok, reason, user = AUTH.verify_telegram_payload(payload)
             if not ok or not user:
                 _redirect(
                     self,
-                    f"/index.html?auth=telegram_failed&reason={reason}#overview",
+                    f"{redirect_to}?auth=telegram_failed&reason={reason}",
                     set_cookies=[_build_clear_session_cookie(self)],
                 )
                 return
             session = AUTH.create_session(user)
             _redirect(
                 self,
-                "/index.html?auth=telegram_ok#overview",
+                f"{redirect_to}?auth=telegram_ok",
                 set_cookies=[_build_session_cookie(self, session["sid"], AUTH_SESSION_TTL_SEC)],
             )
             return
@@ -4357,7 +4388,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                 types = set()
             variant_id_filter = (params.get("variant_id") or [None])[0]
             collection_id_filter = (params.get("collection_id") or [None])[0]
-            allowed_types = {"signal.created", "metric.updated", "listing.event", "market.status", "provider.health", "variant.updated", "collection.updated"}
+            allowed_types = {
+                "signal.created",
+                "metric.updated",
+                "listing.event",
+                "market.status",
+                "market.status.updated",
+                "provider.health",
+                "variant.updated",
+                "collection.updated",
+            }
             unknown_types = sorted([t for t in types if t not in allowed_types])
             if unknown_types:
                 _json_response(
@@ -5014,7 +5054,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/auth/telegram/webapp-login":
+        if parsed.path in {"/api/auth/telegram/webapp-login", "/api/auth/telegram/webapp/verify"}:
             payload = _read_json_body(self)
             init_data = payload.get("init_data") if isinstance(payload, dict) else ""
             ok, reason, user = AUTH.verify_telegram_webapp_init_data(str(init_data or ""))

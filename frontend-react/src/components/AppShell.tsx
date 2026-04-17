@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import clsx from 'clsx'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
-import { getAdminAccess, getTelegramAuthBootstrap, getTelegramAuthMe, getTelegramOwnedGifts, getTonAuthConfig, getTonAuthMe, getTonBalance, postTelegramAuthVerify, postTelegramLogout, postTelegramWebAppVerify, postTonChallenge, postTonLogout, postTonVerify, type TonWalletInfo } from '../lib/api'
+import { getTelegramAuthBootstrap, getTelegramAuthMe, getTelegramOwnedGifts, getTonAuthConfig, getTonAuthMe, getTonBalance, getTradingAccess, postTelegramLogout, postTelegramWebAppVerify, postTonChallenge, postTonLogout, postTonVerify, type TonWalletInfo } from '../lib/api'
 import type { OwnedGiftItem } from '../types/api'
 
 const navItems = [
@@ -11,9 +11,8 @@ const navItems = [
   { to: '/screeners', label: 'Скринеры' },
   { to: '/signals', label: 'Сигналы' },
   { to: '/listing', label: 'Листинг' },
-  { to: '/trades', label: 'Сделки' },
+  { to: '/trades', label: 'Сделки', tradeOnly: true },
   { to: '/favorites', label: 'Избранное' },
-  { to: '/admin', label: 'Админ', adminOnly: true },
   { to: '/settings', label: 'Настройки' },
 ]
 
@@ -95,6 +94,7 @@ async function ensureTonConnectSdk(): Promise<void> {
 }
 
 async function ensureTelegramWidgetSdk(): Promise<void> {
+  if ((window as typeof window & { TelegramLoginWidget?: unknown }).TelegramLoginWidget) return
   if (!telegramScriptPromise) {
     telegramScriptPromise = new Promise<void>((resolve, reject) => {
       const existing = document.querySelector<HTMLScriptElement>(`script[src^="${TELEGRAM_WIDGET_SRC}"]`)
@@ -136,7 +136,7 @@ function NavItem({ to, label }: { to: string; label: string }) {
 export function AppShell() {
   const initialTelegramUser = readJson<{ id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string }>(LS_TELEGRAM_USER)
   const initialTonWallet = readJson<TonWalletInfo>(LS_TON_WALLET)
-  const [adminAllowed, setAdminAllowed] = useState(false)
+  const [tradeAllowed, setTradeAllowed] = useState(false)
   const [telegramUser, setTelegramUser] = useState<{ id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string } | null>(initialTelegramUser)
   const [telegramAuthEnabled, setTelegramAuthEnabled] = useState(false)
   const [telegramBotUsername, setTelegramBotUsername] = useState('')
@@ -164,13 +164,27 @@ export function AppShell() {
   const tonMenuRef = useRef<HTMLDivElement | null>(null)
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
 
+  const refreshTradeAccess = useCallback(async () => {
+    try {
+      const access = await getTradingAccess()
+      setTradeAllowed(Boolean(access?.allowed))
+      return access
+    } catch {
+      setTradeAllowed(false)
+      return { allowed: false }
+    }
+  }, [])
+
   useEffect(() => {
     let stop = false
     ;(async () => {
       try {
-        const [access, authRaw] = await Promise.all([getAdminAccess(), getTelegramAuthBootstrap().catch(() => ({ authenticated: false, user: null }))])
+        const [authRaw, tradeAccess] = await Promise.all([
+          getTelegramAuthBootstrap().catch(() => ({ authenticated: false, user: null })),
+          getTradingAccess().catch(() => ({ allowed: false })),
+        ])
         const auth = authRaw && typeof authRaw === 'object' ? authRaw as { authenticated?: boolean; user?: { id?: number; username?: string; first_name?: string; last_name?: string; photo_url?: string } | null; enabled?: boolean; bot_username?: string } : {}
-        if (!stop) setAdminAllowed(Boolean(access?.is_admin))
+        if (!stop) setTradeAllowed(Boolean(tradeAccess?.allowed))
         if (!stop) {
           if (auth?.authenticated) {
             setTelegramUser(auth.user || null)
@@ -180,7 +194,7 @@ export function AppShell() {
           setTelegramBotUsername(String(auth?.bot_username || ''))
         }
       } catch {
-        if (!stop) setAdminAllowed(false)
+        if (!stop) setTradeAllowed(false)
         if (!stop) {
           setTelegramAuthEnabled(false)
           setTelegramBotUsername('')
@@ -196,11 +210,15 @@ export function AppShell() {
     let stop = false
     const load = async () => {
       try {
-        const auth = await getTelegramAuthMe()
+        const [auth, tradeAccess] = await Promise.all([
+          getTelegramAuthMe(),
+          getTradingAccess().catch(() => ({ allowed: false })),
+        ])
         if (!stop && auth?.authenticated) {
           setTelegramUser(auth.user || null)
           writeJson(LS_TELEGRAM_USER, auth.user || null)
         }
+        if (!stop) setTradeAllowed(Boolean(tradeAccess?.allowed))
       } catch {
         // keep cached telegram user on transient failure
       }
@@ -307,6 +325,7 @@ export function AppShell() {
         ton_proof: tonProof,
       })
       await refreshTonMe()
+      await refreshTradeAccess()
       setTonMenuOpen(true)
       await refreshTonBalance()
     } catch (e) {
@@ -315,7 +334,7 @@ export function AppShell() {
     } finally {
       setTonConnecting(false)
     }
-  }, [ensureTonUi, refreshTonBalance, refreshTonMe, tonConnecting])
+  }, [ensureTonUi, refreshTonBalance, refreshTonMe, refreshTradeAccess, tonConnecting])
 
   const disconnectTon = useCallback(async () => {
     setTonConnecting(true)
@@ -332,9 +351,10 @@ export function AppShell() {
       setTonMenuOpen(false)
       setTonBalance(null)
       writeJson(LS_TON_WALLET, null)
+      void refreshTradeAccess()
       setTonConnecting(false)
     }
-  }, [])
+  }, [refreshTradeAccess])
 
   useEffect(() => {
     void refreshTonMe()
@@ -382,6 +402,7 @@ export function AppShell() {
             if (mounted) {
               setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
               writeJson(LS_TELEGRAM_USER, auth?.authenticated ? (auth.user || null) : null)
+              void refreshTradeAccess()
             }
           } catch (e) {
             if (mounted) setTelegramAuthError(e instanceof Error ? e.message : 'telegram_webapp_auth_failed')
@@ -393,22 +414,6 @@ export function AppShell() {
         await ensureTelegramWidgetSdk()
         if (!mounted || !telegramWidgetRef.current) return
         telegramWidgetRef.current.innerHTML = ''
-        window.gmzTelegramAuth = async (telegramUserPayload: Record<string, unknown>) => {
-          setTelegramAuthBusy(true)
-          setTelegramAuthError('')
-          try {
-            await postTelegramAuthVerify(telegramUserPayload)
-            const auth = await getTelegramAuthBootstrap()
-            if (mounted) {
-              setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
-              writeJson(LS_TELEGRAM_USER, auth?.authenticated ? (auth.user || null) : null)
-            }
-          } catch (e) {
-            if (mounted) setTelegramAuthError(e instanceof Error ? e.message : 'telegram_auth_failed')
-          } finally {
-            if (mounted) setTelegramAuthBusy(false)
-          }
-        }
         const script = document.createElement('script')
         script.async = true
         script.src = TELEGRAM_WIDGET_SRC
@@ -417,7 +422,7 @@ export function AppShell() {
         script.setAttribute('data-radius', '14')
         script.setAttribute('data-request-access', 'write')
         script.setAttribute('data-userpic', 'false')
-        script.setAttribute('data-onauth', 'gmzTelegramAuth(user)')
+        script.setAttribute('data-auth-url', `${window.location.origin}/api/auth/telegram/callback?redirect_to=${encodeURIComponent(`${window.location.pathname}${window.location.search}${window.location.hash}` || '/')}`)
         telegramWidgetRef.current.appendChild(script)
       } catch (e) {
         if (mounted) setTelegramAuthError(e instanceof Error ? e.message : 'telegram_widget_failed')
@@ -426,9 +431,8 @@ export function AppShell() {
     void mount()
     return () => {
       mounted = false
-      window.gmzTelegramAuth = undefined
     }
-  }, [profileOpen, telegramUser, telegramAuthEnabled, telegramBotUsername])
+  }, [profileOpen, telegramUser, telegramAuthEnabled, telegramBotUsername, refreshTradeAccess])
 
   useEffect(() => {
     if (!tonMenuOpen) return
@@ -462,8 +466,8 @@ export function AppShell() {
   }, [tonMenuOpen, profileOpen])
 
   const visibleNavItems = useMemo(
-    () => navItems.filter((item) => !item.adminOnly || adminAllowed),
-    [adminAllowed],
+    () => navItems.filter((item) => !item.tradeOnly || tradeAllowed),
+    [tradeAllowed],
   )
 
   return (
@@ -496,7 +500,7 @@ export function AppShell() {
                 {telegramUser?.photo_url ? (
                   <img src={String(telegramUser.photo_url)} alt="" className="h-5 w-5 rounded-full object-cover" referrerPolicy="no-referrer" />
                 ) : (
-                  <span aria-hidden="true">✈️</span>
+                  <span aria-hidden="true" className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#eaf3ff] text-[10px] font-semibold text-[var(--accent)]">TG</span>
                 )}
                 <span>{telegramUser ? (telegramUser.username ? `@${telegramUser.username}` : (telegramUser.first_name || 'Профиль')) : 'Войти через Telegram'}</span>
               </button>
@@ -505,7 +509,7 @@ export function AppShell() {
                   {telegramUser ? (
                     <div className="space-y-3">
                       <div className="flex items-center gap-3">
-                        {telegramUser.photo_url ? <img src={String(telegramUser.photo_url)} alt="" className="h-10 w-10 rounded-full object-cover" referrerPolicy="no-referrer" /> : <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#eaf3ff] text-lg">✈️</div>}
+                        {telegramUser.photo_url ? <img src={String(telegramUser.photo_url)} alt="" className="h-10 w-10 rounded-full object-cover" referrerPolicy="no-referrer" /> : <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#eaf3ff] text-sm font-semibold text-[var(--accent)]">TG</div>}
                         <div>
                           <div className="text-sm font-semibold text-slate-900">{[telegramUser.first_name, telegramUser.last_name].filter(Boolean).join(' ') || 'Telegram user'}</div>
                           <div className="text-xs text-slate-500">{telegramUser.username ? `@${telegramUser.username}` : 'Без username'} · ID {telegramUser.id ?? '—'}</div>

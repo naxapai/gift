@@ -1,5 +1,7 @@
 import os
 import unittest
+import hashlib
+import hmac
 from datetime import datetime, timezone
 
 import server
@@ -27,6 +29,39 @@ class TestAuthAndMarketStatus(unittest.TestCase):
         restored = reloaded.get_session(session["sid"])
         self.assertTrue(isinstance(restored, dict))
         self.assertEqual(int((restored or {}).get("user", {}).get("id") or 0), 1)
+
+    def test_auth_store_ignores_redirect_to_when_verifying_telegram_payload(self) -> None:
+        old_bot_token = server.TELEGRAM_BOT_TOKEN
+        old_bot_username = server.TELEGRAM_BOT_USERNAME
+        try:
+            server.TELEGRAM_BOT_TOKEN = "test-bot-token"
+            server.TELEGRAM_BOT_USERNAME = "test_bot"
+            payload = {
+                "id": "144832201",
+                "first_name": "Ruslan",
+                "username": "nexapai",
+                "auth_date": str(int(datetime.now(timezone.utc).timestamp())),
+                "redirect_to": "/trades",
+            }
+            data_check_string = "\n".join(
+                f"{key}={payload[key]}"
+                for key in sorted(payload.keys())
+                if key != "redirect_to"
+            )
+            secret_key = hashlib.sha256(server.TELEGRAM_BOT_TOKEN.encode("utf-8")).digest()
+            payload["hash"] = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+            ok, reason, user = server.AUTH.verify_telegram_payload(payload)
+            self.assertTrue(ok, reason)
+            self.assertEqual(int((user or {}).get("id") or 0), 144832201)
+        finally:
+            server.TELEGRAM_BOT_TOKEN = old_bot_token
+            server.TELEGRAM_BOT_USERNAME = old_bot_username
+
+    def test_sanitize_post_auth_redirect_rejects_external_urls(self) -> None:
+        self.assertEqual(server._sanitize_post_auth_redirect("/trades?foo=1"), "/trades?foo=1")
+        self.assertEqual(server._sanitize_post_auth_redirect("https://evil.example/steal"), "/")
+        self.assertEqual(server._sanitize_post_auth_redirect("//evil.example/steal"), "/")
+        self.assertEqual(server._sanitize_post_auth_redirect("trades"), "/")
 
     def test_market_status_not_degraded_for_mtproto_rows_with_error_flag(self) -> None:
         svc = GiftAnalyticsService()
