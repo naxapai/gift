@@ -92,6 +92,43 @@ class TestTradingRuntime(unittest.TestCase):
             self.assertEqual(item['status'], 'BROADCAST')
             self.assertIsNone(rt.list_holdings('EQTEST')['items'][0:1] or None)
 
+    def test_duplicate_confirm_request_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'dup1', 'wallet_address': 'EQTEST', 'max_spend_ton': 3.0},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+            )
+            first = rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'sim_dup_ok'},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+            )
+            second = rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'sim_dup_ok'},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+            )
+            self.assertEqual(first['intent_id'], second['intent_id'])
+            self.assertEqual(len(rt.list_holdings('EQTEST')['items']), 1)
+
+    def test_pending_signature_expires_after_ttl_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'exp1', 'wallet_address': 'EQTEST', 'max_spend_ton': 2.0},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 2.0, 'fair_ton': 2.2},
+            )
+            intents = rt._read_list(rt.intents_file)
+            intents[0]['expires_at'] = '2000-01-01T00:00:00Z'
+            rt._write_list(rt.intents_file, intents)
+            rows = rt.list_trade_intents('EQTEST')['items']
+            self.assertEqual(rows[0]['status'], 'EXPIRED')
+
     def test_variant_a_buy_then_list_creates_child_intent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
