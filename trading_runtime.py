@@ -77,6 +77,8 @@ class TradeRuntime:
         redis_url: str | None = None,
         tx_verify_url: str | None = None,
         tx_verify_token: str | None = None,
+        environment: str = "sandbox",
+        marketplace_wallet_address: str | None = None,
     ) -> None:
         self.data_dir = data_dir
         self.quote_secret = str(quote_secret or "gmz-trade-quote-secret").encode("utf-8")
@@ -86,6 +88,11 @@ class TradeRuntime:
         self.redis_url = str(redis_url or "").strip()
         self.tx_verify_url = str(tx_verify_url or "").strip()
         self.tx_verify_token = str(tx_verify_token or "").strip()
+        env_raw = str(environment or "sandbox").strip().lower()
+        self.environment = env_raw if env_raw in {"sandbox", "production"} else "sandbox"
+        self.marketplace_wallet_address = str(
+            marketplace_wallet_address or "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c"
+        ).strip() or "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c"
         self.intents_file = data_dir / "trade_intents_store.json"
         self.positions_file = data_dir / "trade_positions_store.json"
         self.holdings_file = data_dir / "trade_holdings_store.json"
@@ -107,6 +114,14 @@ class TradeRuntime:
                 self._redis = redis_lib.Redis.from_url(self.redis_url, decode_responses=True)
             except Exception:
                 self._redis = None
+
+    def runtime_status(self) -> dict:
+        return {
+            "environment": self.environment,
+            "quote_ttl_sec": self.quote_ttl_sec,
+            "verification_mode": "provider" if self.tx_verify_url else ("stubbed_marketplace" if self.environment == "sandbox" else "unverified"),
+            "marketplace_wallet_address": self.marketplace_wallet_address,
+        }
 
     @property
     def _pg_store_map(self) -> dict[str, tuple[str, str, tuple[str, ...]]]:
@@ -654,7 +669,30 @@ class TradeRuntime:
                 return {"status": "FAILED" if exc.code in {400, 404, 409} else "PENDING", "reason": f"provider_http_{exc.code}", "source": "provider"}
             except Exception:
                 return {"status": "PENDING", "reason": "provider_unavailable", "source": "provider"}
-        return {"status": "CONFIRMED", "source": "simulated", "market_regime": "MEAN_REVERT"}
+        if self.environment == "sandbox":
+            return self._sandbox_tx_verdict(tx_hash=tx_hash, wallet_address=wallet_address, intent_id=intent_id)
+        return {"status": "PENDING", "reason": "tx_verifier_not_configured", "source": "runtime"}
+
+    def _sandbox_tx_verdict(self, *, tx_hash: str, wallet_address: str, intent_id: str) -> dict:
+        normalized = str(tx_hash or "").strip().lower()
+        if not normalized:
+            return {"status": "FAILED", "reason": "tx_hash_missing", "source": "sandbox_mock_marketplace"}
+        if normalized.startswith("fail_") or normalized.startswith("rejected_") or "fail" in normalized:
+            return {"status": "FAILED", "reason": "sandbox_tx_rejected", "source": "sandbox_mock_marketplace"}
+        if normalized.startswith("pending_") or normalized.startswith("wait_"):
+            return {"status": "PENDING", "reason": "sandbox_pending_confirmation", "source": "sandbox_mock_marketplace"}
+        return {
+            "status": "CONFIRMED",
+            "source": "sandbox_mock_marketplace",
+            "market_regime": "MEAN_REVERT",
+            "variant_snapshot": None,
+            "meta": {
+                "tx_hash": tx_hash,
+                "wallet_address": wallet_address,
+                "intent_id": intent_id,
+                "environment": self.environment,
+            },
+        }
 
     def _apply_confirmed_intent(self, intent: dict, *, market_regime: str, variant_snapshot: dict | None) -> None:
         intent_type = str(intent.get("intent_type") or "")
@@ -849,7 +887,7 @@ class TradeRuntime:
             "validUntil": int(time.time()) + 600,
             "messages": [
                 {
-                    "address": "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c",
+                    "address": self.marketplace_wallet_address,
                     "amount": str(int(max(amount, 0.01) * 1_000_000_000)),
                     "payload": f"gmz:{intent.get('intent_type')}:{intent.get('intent_id')}",
                 }
@@ -862,7 +900,7 @@ class TradeRuntime:
             "validUntil": int(time.time()) + self.quote_ttl_sec,
             "messages": [
                 {
-                    "address": "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c",
+                    "address": self.marketplace_wallet_address,
                     "amount": str(int(max(amount, 0.01) * 1_000_000_000)),
                     "payload": f"gmz:FAST_BUY:{quote.get('variant_id')}:{quote.get('nonce')}",
                 }

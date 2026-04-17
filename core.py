@@ -844,6 +844,12 @@ class GiftAnalyticsService:
             redis_url=str(os.getenv("TRADES_REDIS_URL", "") or "").strip() or None,
             tx_verify_url=str(os.getenv("TRADES_TX_VERIFY_URL", "") or "").strip() or None,
             tx_verify_token=str(os.getenv("TRADES_TX_VERIFY_TOKEN", "") or "").strip() or None,
+            environment=str(os.getenv("TRADES_ENV", os.getenv("TRADING_ENV", "sandbox")) or "sandbox"),
+            marketplace_wallet_address=str(
+                os.getenv("TRADES_MARKETPLACE_WALLET_ADDRESS", os.getenv("TRADES_SANDBOX_MARKETPLACE_WALLET_ADDRESS", ""))
+                or ""
+            ).strip()
+            or None,
         )
         self.metrics_strict_exact_max_variants = max(50, int(os.getenv("METRICS_STRICT_EXACT_MAX_VARIANTS", "500")))
         self.redis_collections_publish_limit = max(1, min(int(os.getenv("REDIS_COLLECTIONS_PUBLISH_LIMIT", "24")), 200))
@@ -3856,6 +3862,7 @@ class GiftAnalyticsService:
         return {
             "wallet_address": wallet_address,
             "market_regime": regime,
+            "runtime": self.trade_runtime.runtime_status(),
             "pnl": self.trade_runtime.get_pnl_summary(wallet_address, market_regime=regime),
             "positions": self.trade_runtime.list_positions(wallet_address).get("items") or [],
             "holdings": self.trade_runtime.list_holdings(wallet_address).get("items") or [],

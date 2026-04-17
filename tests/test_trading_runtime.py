@@ -12,6 +12,86 @@ from trading_runtime import TradeRuntime
 
 
 class TestTradingRuntime(unittest.TestCase):
+    def test_sandbox_standard_buy_confirms_via_stubbed_marketplace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(
+                Path(tmpdir),
+                quote_secret='secret',
+                quote_ttl_sec=5,
+                environment='sandbox',
+                marketplace_wallet_address='EQSANDBOXMARKETPLACE',
+            )
+            created = rt.create_trade_intent(
+                {
+                    'intent_type': 'BUY',
+                    'variant_id': 'sbx1',
+                    'wallet_address': 'EQTEST',
+                    'max_spend_ton': 4.0,
+                },
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 4.0, 'fair_ton': 4.4},
+            )
+            self.assertEqual(created['wallet_tx']['messages'][0]['address'], 'EQSANDBOXMARKETPLACE')
+            confirmed = rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'sim_buy_ok'},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 4.0, 'fair_ton': 4.4},
+            )
+            self.assertEqual(confirmed['status'], 'CONFIRMED')
+            self.assertEqual(confirmed['status_timeline'][-1]['source'], 'sandbox_mock_marketplace')
+
+    def test_sandbox_fast_buy_confirms_via_stubbed_marketplace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
+            quote = rt.issue_buy_quote(
+                variant_id='sbx2',
+                max_price_ton=3.3,
+                slippage_bps=100,
+                wallet_address='EQTEST',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.5},
+            )
+            item = rt.confirm_fast_buy(
+                {'buy_quote_token': quote['buy_quote_token'], 'tx_hash': 'sim_fast_ok', 'wallet_address': 'EQTEST'},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.5},
+            )
+            self.assertEqual(item['status'], 'CONFIRMED')
+            self.assertEqual(item['source'], 'FAST_BUY')
+
+    def test_sandbox_pending_tx_stays_broadcast(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'sbx3', 'wallet_address': 'EQTEST', 'max_spend_ton': 2.5},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 2.5, 'fair_ton': 2.7},
+            )
+            item = rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'pending_wait_001'},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 2.5, 'fair_ton': 2.7},
+            )
+            self.assertEqual(item['status'], 'BROADCAST')
+
+    def test_production_without_verifier_does_not_auto_confirm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='production')
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'prd1', 'wallet_address': 'EQTEST', 'max_spend_ton': 6.0},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 6.0, 'fair_ton': 6.5},
+            )
+            item = rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'real_tx_hash'},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 6.0, 'fair_ton': 6.5},
+            )
+            self.assertEqual(item['status'], 'BROADCAST')
+            self.assertIsNone(rt.list_holdings('EQTEST')['items'][0:1] or None)
+
     def test_variant_a_buy_then_list_creates_child_intent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
