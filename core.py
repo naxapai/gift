@@ -730,6 +730,7 @@ class GiftAnalyticsService:
         self._rt_view_cache: Dict[tuple, tuple[float, dict]] = {}
         self.rt_view_cache_ttl_sec = max(0.2, float(os.getenv("RT_VIEW_CACHE_TTL_SEC", "1.5")))
         self.rt_view_cache_max_items = max(32, min(int(os.getenv("RT_VIEW_CACHE_MAX_ITEMS", "512")), 4096))
+        self.market_status_cache_ttl_sec = max(3.0, float(os.getenv("MARKET_STATUS_CACHE_TTL_SEC", "20")))
         self.source_totals: Dict[str, int] = {
             "for_sale": 0,
             "sold": 0,
@@ -9680,10 +9681,17 @@ class GiftAnalyticsService:
 
     def market_status_v1(self, window: str | None = None) -> dict:
         window_raw = str(window or "30m").strip().lower()
-        rt_ttl_sec = min(3.0, max(0.2, float(self.listing_mt_cache_ttl_sec)))
+        rt_ttl_sec = max(
+            3.0,
+            min(
+                float(self.market_status_cache_ttl_sec),
+                max(float(self.listing_mt_cache_ttl_sec), float(self.listing_mt_error_cache_ttl_sec)),
+            ),
+        )
         rt_cache_key = (
             "market_status_v1",
             window_raw,
+            int(self._data_version),
             str(self.listing_primary_source or "auto"),
             bool(self.listing_strict_primary),
         )

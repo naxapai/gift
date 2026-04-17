@@ -920,9 +920,21 @@ class TestListingsV1(unittest.TestCase):
         svc = GiftAnalyticsService()
         with patch.object(svc, "_listing_source_rows_v1", wraps=svc._listing_source_rows_v1) as source_rows:
             first = svc.market_status_v1(window="30m")
+            first_call_count = source_rows.call_count
             second = svc.market_status_v1(window="30m")
-        self.assertEqual(source_rows.call_count, 1)
+        self.assertEqual(source_rows.call_count, first_call_count)
         self.assertEqual(first, second)
+
+    def test_market_status_v1_runtime_cache_invalidates_on_data_version_change(self) -> None:
+        svc = GiftAnalyticsService()
+        with patch.object(svc, "_listing_source_rows_v1", wraps=svc._listing_source_rows_v1) as source_rows:
+            first = svc.market_status_v1(window="30m")
+            first_call_count = source_rows.call_count
+            svc._data_version += 1
+            second = svc.market_status_v1(window="30m")
+        self.assertGreater(source_rows.call_count, first_call_count)
+        self.assertIn("market_regime", first)
+        self.assertIn("market_regime", second)
 
     def test_listings_summary_v1_runtime_cache_reuses_payload(self) -> None:
         svc = GiftAnalyticsService()
