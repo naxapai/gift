@@ -7264,7 +7264,16 @@ class GiftAnalyticsService:
         collection_id: str | None = None,
     ) -> list[dict]:
         wanted = set(types or [])
-        all_types = {"signal.created", "metric.updated", "listing.event", "market.status", "variant.updated", "collection.updated", "provider.health"}
+        all_types = {
+            "signal.created",
+            "metric.updated",
+            "listing.event",
+            "market.status",
+            "market.status.updated",
+            "variant.updated",
+            "collection.updated",
+            "provider.health",
+        }
         unsupported = sorted(str(x) for x in wanted if str(x) not in all_types)
         if unsupported:
             raise ValueError(f"unsupported_stream_event_type:{unsupported[0]}")
@@ -7368,8 +7377,12 @@ class GiftAnalyticsService:
             top = (overview.get("top_signals") or [])
             if top:
                 out.append(self.build_signal_created_event_v1(top[0], ts=now_iso))
-        if "market.status" in wanted:
-            out.append(self.build_market_status_event_v1(window="30m", ts=now_iso))
+        if "market.status" in wanted or "market.status.updated" in wanted:
+            market_event = self.build_market_status_event_v1(window="30m", ts=now_iso)
+            if "market.status" in wanted:
+                out.append(market_event)
+            if "market.status.updated" in wanted:
+                out.append({**market_event, "type": "market.status.updated"})
         if "listing.event" in wanted:
             listing_items = self.listings_events_v1(limit=1, include_relisted=True).get("items") or []
             if listing_items:
@@ -7447,6 +7460,7 @@ class GiftAnalyticsService:
             signals = self.actionable_signals_v1(limit=500, mode=mode).get("items") or []
             buy = [s for s in signals if str(s.get("type") or "") == "BUY"][:20]
             sell = [s for s in signals if str(s.get("type") or "") == "SELL"][:20]
+            telegram_signal_ids = {str(s.get("signal_id") or "") for s in (buy[:10] + sell[:10]) if isinstance(s, dict)}
             if store.enabled:
                 store.set_json("market:top_signals:BUY", buy, store.kv_signals_ttl_sec)
                 store.set_json("market:top_signals:SELL", sell, store.kv_signals_ttl_sec)
@@ -7485,16 +7499,20 @@ class GiftAnalyticsService:
                     if store.enabled:
                         store.xadd_event("stream:provider", etype, key, payload, version=version, trace_id=trace_id)
                         store.publish("pub:provider", ev)
-            for ev in self.stream_events_v1(types={"market.status"}, mode=mode):
+            for ev in self.stream_events_v1(types={"market.status", "market.status.updated"}, mode=mode):
                 key = str(ev.get("key") or "market:status")
                 payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
                 version = int(ev.get("version") or 1)
                 trace_id = str(ev.get("trace_id") or "")
+                etype = str(ev.get("type") or "market.status")
                 if store.enabled:
-                    store.xadd_event("stream:market.status", "market.status", key, payload, version=version, trace_id=trace_id)
-                    store.publish("pub:market.status", ev)
+                    stream_name = "stream:market.status.updated" if etype == "market.status.updated" else "stream:market.status"
+                    pub_name = "pub:market.status.updated" if etype == "market.status.updated" else "pub:market.status"
+                    store.xadd_event(stream_name, etype, key, payload, version=version, trace_id=trace_id)
+                    store.publish(pub_name, ev)
                 try:
-                    self.telegram_notifier.enqueue_market_status(ev)
+                    if etype == "market.status.updated":
+                        self.telegram_notifier.enqueue_market_status(ev)
                 except Exception:
                     pass
 
@@ -7531,7 +7549,8 @@ class GiftAnalyticsService:
                 if store.enabled:
                     store.set_json(f"variant:{variant_id}:agg", variant_agg, store.kv_variant_ttl_sec)
                 try:
-                    self.telegram_notifier.enqueue_gift_signal(self.build_signal_created_event_v2(sig))
+                    if str(sig.get("signal_id") or "") in telegram_signal_ids:
+                        self.telegram_notifier.enqueue_gift_signal(self.build_signal_created_event_v2(sig))
                 except Exception:
                     pass
 

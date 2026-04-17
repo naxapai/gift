@@ -136,6 +136,12 @@ class TestV1StreamSchema(unittest.TestCase):
         self.assertTrue(len(events) > 0)
         self.assertTrue(all(str(e.get("type")) == "metric.updated" for e in events))
 
+    def test_stream_events_support_market_status_updated_alias(self) -> None:
+        svc = GiftAnalyticsService()
+        events = svc.stream_events_v1(types={"market.status.updated"})
+        self.assertTrue(events)
+        self.assertTrue(all(str(e.get("type")) == "market.status.updated" for e in events))
+
     def test_stream_events_rejects_unsupported_type(self) -> None:
         svc = GiftAnalyticsService()
         with self.assertRaises(ValueError):

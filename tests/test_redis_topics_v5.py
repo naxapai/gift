@@ -12,9 +12,11 @@ class TestRedisTopicsV5(unittest.TestCase):
         self.assertIn("stream:metrics.updated", spec)
         self.assertIn("stream:signal.created", spec)
         self.assertIn("stream:market.status", spec)
+        self.assertIn("stream:market.status.updated", spec)
         self.assertIn("stream:metrics.updated", core)
         self.assertIn("stream:signal.created", core)
         self.assertIn("stream:market.status", core)
+        self.assertIn("stream:market.status.updated", core)
         self.assertIn("dedupe:tg:", core)
 
 

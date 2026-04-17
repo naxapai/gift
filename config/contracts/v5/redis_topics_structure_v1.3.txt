@@ -14,6 +14,11 @@
   key pattern: market:status
   payload: schema_market.status.v1.json
 
+- stream:market.status.updated
+  key pattern: market:status
+  payload: schema_market.status.v1.json
+  note: canonical Telegram notifier event alias
+
 ## Dedup Keys (Telegram notifier)
 - dedupe:tg:{sha1(action|variant_id|edgeRank100|price_ton|fair_ton)}
   TTL: 600s

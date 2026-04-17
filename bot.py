@@ -293,22 +293,49 @@ def _get_updates(offset: int | None = None, timeout_sec: int = 0) -> Dict:
 
 
 def _format_market_status(overview: Dict) -> str:
-    return "\n".join(
-        [
-            "<b>GiftMarketZone: Статус рынка :</b>",
-            f"Состояние: <b>{overview.get('market_state', '-')}</b>",
-            f"Подарков: {overview.get('gifts_count', 0)}",
-            f"Коллекций: {overview.get('base_count', 0)}",
-            f"Моделей: {overview.get('model_count', 0)}",
-            f"Мин цена: {overview.get('floor_ton_min', '-')} TON",
-            f"Медиана: {overview.get('floor_ton_median', '-')} TON",
-            f"Всего в продаже: {overview.get('total_for_sale', overview.get('active_listings', 0))}",
-            f"Всего продано: {overview.get('total_sold', 0)}",
-            f"Сигналы BUY/SELL: {overview.get('buy_signals', 0)}/{overview.get('sell_signals', 0)}",
-            f"Обновлено: {_to_msk_text(overview.get('updated_at'))}",
-            f"Время ответа: {_now_msk_text()}",
-        ]
-    )
+    payload = {
+        "updated_at": overview.get("updated_at"),
+        "market_regime": overview.get("market_regime") or overview.get("regime") or "MEAN_REVERT",
+        "data_conf_pct": overview.get("data_conf_pct") or overview.get("conf_pct") or 0,
+        "trend": overview.get("market_state") or overview.get("trend") or "флет",
+        "velocity_score": overview.get("velocity_score") or 0,
+        "vol_level": overview.get("vol_level") or overview.get("volatility") or "MED",
+        "flow": {
+            "volume_velocity": overview.get("volume_velocity") or overview.get("volume_velocity_x") or 0,
+            "absorption": overview.get("absorption") or overview.get("absorption_30m") or 0,
+            "listing_pressure": overview.get("listing_pressure") or overview.get("active_listings") or 0,
+        },
+        "liquidity": {
+            "liquidity_score": overview.get("liquidity_score") or 0,
+            "depth_5pct": {
+                "lots": overview.get("depth_5pct_lots") or overview.get("active_listings") or 0,
+                "ton": overview.get("depth_5pct_ton") or 0,
+            },
+        },
+        "supply": {
+            "active_lots": overview.get("total_for_sale") or overview.get("active_listings") or overview.get("gifts_count") or 0,
+            "delta_lots_1h": overview.get("delta_lots_1h") or 0,
+            "listing_velocity_10m": overview.get("new_listings_10m") or 0,
+            "listing_velocity_norm": overview.get("new_listings_10m_norm") or 0,
+        },
+        "whales": {
+            "whale_ratio_pct": overview.get("whale_ratio_pct") or 0,
+            "whale_impulse": overview.get("whale_impulse") or 0,
+        },
+        "signals_1h": {
+            "buy": overview.get("buy_signals") or overview.get("signals_1h_buy") or 0,
+            "sell": overview.get("sell_signals") or overview.get("signals_1h_sell") or 0,
+            "watch": overview.get("watch_signals") or overview.get("signals_1h_watch") or 0,
+            "skip": overview.get("skip_signals") or overview.get("signals_1h_skip") or 0,
+        },
+        "provider_health": {
+            "p95_ms": overview.get("p95_ms") or overview.get("latency_p95_ms") or 0,
+            "err_pct": overview.get("err_pct") or overview.get("error_pct") or 0,
+        },
+        "data_health": overview.get("data_health") or ("DEGRADED" if overview.get("data_stale") else "OK"),
+        "data_health_note": overview.get("data_health_note") or overview.get("signals_quality_reason") or overview.get("last_error") or "",
+    }
+    return _renderer().render_market_status(payload)
 
 
 def _collect_recent_channel_signals(cache: Dict, window_sec: int) -> list[Dict]:
@@ -333,7 +360,7 @@ def _collect_recent_delivery_signals(cache: Dict) -> list[Dict]:
     fetcher = _RECENT_SIGNAL_FETCHER
     if callable(fetcher):
         try:
-            payload = fetcher(limit=20)
+            payload = fetcher(limit=200)
             sent = payload.get("sent") if isinstance(payload, dict) else []
             out = []
             now_ts = int(time.time())
@@ -423,13 +450,24 @@ def _send_gift_signal_payload_to(chat_id: str | int, payload: Dict) -> None:
     send_message_to(chat_id, text)
 
 
-def _send_market_status_payload_to(chat_id: str | int, payload: Dict) -> None:
-    if _NOTIFIER is not None:
+def _send_market_status_payload_to(chat_id: str | int, payload: Dict, *, command_response: bool = False) -> None:
+    if _NOTIFIER is not None and not command_response:
         result = _NOTIFIER.send_now(kind="market_status", payload=payload, channel_id=str(chat_id), include_image=False, bypass_gates=True)
         if bool(result.get("ok")):
             return
     renderer = _renderer()
-    send_message_to(chat_id, renderer.render_market_status(payload))
+    text = renderer.render_market_status(payload)
+    if command_response:
+        source_error = str(payload.get("source_error") or payload.get("data_health_note") or "").strip()
+        suffix = [
+            "",
+            f"⏱ Запрошено: {_now_msk_text()}",
+            f"Источник: {payload.get('source', 'n/a')}",
+        ]
+        if source_error:
+            suffix.append(f"Состояние источника: {source_error}")
+        text = "\n".join([text, *suffix]).strip()
+    send_message_to(chat_id, text)
 
 
 def _handle_commands(cache: Dict) -> None:
@@ -480,7 +518,7 @@ def _handle_commands(cache: Dict) -> None:
             if cmd == "/status":
                 try:
                     payload = _http_get(f"{API_BASE_URL}/v1/market/status?window=30m")
-                    _send_market_status_payload_to(chat_id, payload)
+                    _send_market_status_payload_to(chat_id, payload, command_response=True)
                 except Exception as e:  # noqa: BLE001
                     send_message_to(chat_id, f"Ошибка получения статуса: {e}")
             elif cmd == "/signal":

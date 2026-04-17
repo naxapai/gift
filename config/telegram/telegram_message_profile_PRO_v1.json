@@ -109,13 +109,13 @@
           "id": "supply",
           "lines": [
             "📦 Предложение: {active_lots_market} лотов (Δ1ч {delta_lots_1h_sign}{delta_lots_1h})",
-            "🆕 Новые листинги 10м: {new_listings_10m} (норм {new_listings_10m_norm})",
+            "🆕 Новые листинги 10м: {new_listings_10m} (norm {new_listings_10m_norm})",
             "🐋 Киты: {whale_share_pct}% (impulse {whale_impulse})"
           ]
         },
         {
           "id": "tactics",
-          "title": "🎯 Тактика сейчас:",
+          "title": "🎯 Тактика (режим {market_regime}):",
           "lines": [
             "{tactic_line1}",
             "{tactic_line2}",
@@ -124,9 +124,9 @@
         },
         {
           "id": "top_signals",
-          "title": "🔥 Top сигналы (1ч):",
+          "title": "🔥 Сигналы (1ч):",
           "lines": [
-            "BUY: {signals_1h_buy} | SELL: {signals_1h_sell} | SKIP/WATCH: {signals_1h_skipwatch}"
+            "BUY: {signals_1h_buy} | SELL: {signals_1h_sell} | WATCH/SKIP: {signals_1h_skipwatch}"
           ]
         },
         {
@@ -155,7 +155,7 @@
         },
         {
           "id": "plan",
-          "title": "🎯 План:",
+          "title": "🎯 План сделки (по режиму {market_regime}):",
           "lines": [
             "{plan_entry_line}",
             "{plan_exit_line}"
@@ -163,7 +163,7 @@
         },
         {
           "id": "liq_exit",
-          "title": "💧 Выход/Ликвидность:",
+          "title": "💧 Ликвидность/выход:",
           "lines": [
             "• Liquidity: {liquidity_score}/100 | Absorption30m: {absorption_rate_30m}",
             "• Depth≤5%: {depth_5pct_lots} лота / {depth_5pct_ton} TON | Pressure: {listing_pressure} | VolumeVel: {volume_velocity_x}x"
@@ -171,14 +171,14 @@
         },
         {
           "id": "reasons",
-          "title": "🧠 Почему:",
+          "title": "🧠 Почему (reasons):",
           "lines": [
             "{reasons_block}"
           ]
         },
         {
           "id": "risks",
-          "title": "⚠ Риски:",
+          "title": "⚠ Риски (risk_flags):",
           "lines": [
             "{risks_block}"
           ]

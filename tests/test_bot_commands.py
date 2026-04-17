@@ -39,6 +39,8 @@ class TestBotCommands(unittest.TestCase):
             bot._handle_commands(cache)
         self.assertTrue(sent)
         self.assertIn("GiftMarketZone • РЫНОК", sent[0])
+        self.assertIn("Запрошено:", sent[0])
+        self.assertIn("Источник:", sent[0])
 
     def test_bot_prefers_notifier_for_outbound_delivery(self) -> None:
         class StubNotifier:

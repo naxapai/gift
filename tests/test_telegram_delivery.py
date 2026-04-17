@@ -77,13 +77,49 @@ class TestTelegramDelivery(unittest.TestCase):
             "risk_flags": [],
         })
         self.assertIn("GiftMarketZone • РЫНОК", market)
-        self.assertIn("🎯 Тактика сейчас:", market)
+        self.assertIn("🎯 Тактика (режим RISK-OFF):", market)
+        self.assertIn("🆕 Новые листинги 10м: 17 (norm 0.41)", market)
+        self.assertIn("🔥 Сигналы (1ч):", market)
+        self.assertIn("BUY: 2 | SELL: 8 | WATCH/SKIP: 16", market)
+        self.assertNotIn("RISK_OFF", market)
+        self.assertNotIn("🎯 Тактика сейчас:", market)
+        self.assertNotIn("🔥 Top сигналы", market)
+        self.assertNotIn("SKIP/WATCH", market)
+        self.assertNotIn("(норм ", market)
         self.assertIn("GiftMarketZone • WATCH", signal)
-        self.assertIn("🎯 План:", signal)
-        self.assertIn("🧠 Почему:", signal)
+        self.assertIn("🎯 План сделки (по режиму MEAN-REVERT):", signal)
+        self.assertIn("🧠 Почему (reasons):", signal)
         self.assertIn("🆕", market)
         self.assertIn("BUY-триггер", signal)
         self.assertIn("05.03.2026/15:00:00 МСК", signal)
+        self.assertIn("TON\n\n📦", market)
+        self.assertIn("🎁 snakebox / Bluebell / Cobalt Blue / Hourglass\n\n💰", signal)
+
+    def test_market_status_renders_low_reliability_note_for_degraded_low_conf(self) -> None:
+        renderer = MessageRenderer(
+            profile=__import__("json").loads(PROFILE_PATH.read_text(encoding="utf-8")),
+            rules_text=RULES_PATH.read_text(encoding="utf-8"),
+            signal_profiles=__import__("json").loads(SIGNAL_PROFILES_PATH.read_text(encoding="utf-8")),
+            edgerank_weights=__import__("json").loads(EDGE_WEIGHTS_PATH.read_text(encoding="utf-8")),
+        )
+        text = renderer.render_market_status({
+            "updated_at": "2026-03-05T12:00:00Z",
+            "market_regime": "RISK_OFF",
+            "data_conf_pct": 25,
+            "trend": "падение",
+            "velocity_score": 28,
+            "vol_level": "HIGH",
+            "flow": {"volume_velocity": 0.9, "absorption": 0.7, "listing_pressure": 5.2},
+            "liquidity": {"liquidity_score": 31, "depth_5pct": {"lots": 420, "ton": 1680}},
+            "supply": {"active_lots": 22885, "delta_lots_1h": 640, "listing_velocity_10m": 210, "listing_velocity_norm": 0.7},
+            "whales": {"whale_ratio_pct": 18, "whale_impulse": 0},
+            "signals_1h": {"buy": 0, "sell": 89, "watch": 120, "skip": 12},
+            "provider_health": {"p95_ms": 1200, "err_pct": 6.5},
+            "data_health": "DEGRADED",
+            "data_health_note": "продажи=0",
+        })
+        self.assertIn("GiftMarketZone • РЫНОК • RISK-OFF", text)
+        self.assertIn("⚠ Рынок низкой надёжности", text)
 
     def test_notifier_settings_are_sanitized_and_test_preview_works(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -191,6 +227,7 @@ class TestTelegramDelivery(unittest.TestCase):
             self.assertTrue(accepted)
             self.assertTrue(duplicate)
             self.assertEqual(mocked_post.call_count, 1)
+            self.assertEqual(mocked_post.call_args.args[0], "sendPhoto")
             self.assertTrue(journal.get("sent"))
             self.assertEqual(str((journal.get("sent") or [])[0].get("kind") or ""), "gift_signal")
             self.assertFalse(journal.get("failed"))
@@ -252,7 +289,23 @@ class TestTelegramDelivery(unittest.TestCase):
         self.assertTrue(result.get("ok"))
         self.assertEqual(result.get("exception"), "strong_sell_override")
 
-    def test_notifier_allows_sparse_sell_with_adaptive_fallback(self) -> None:
+    def test_gate_engine_allows_downside_sell_without_buy_profit_gate(self) -> None:
+        gate = GateEngine(
+            {"gift_signal_channel": {"all": [{"metric": "edgeRank100", "op": ">=", "value": 55}, {"metric": "conf_pct", "op": ">=", "value": 35}, {"metric": "expected_profit_pct", "op": ">=", "value": 8}]}}
+        )
+        result = gate.evaluate("gift_signal_channel", {
+            "action": "SELL",
+            "edgeRank100": 0.1,
+            "conf_pct": 14.9,
+            "expected_profit_pct": 0,
+            "forecast24h_pct_max": -27.1,
+            "listing_pressure": 83.5,
+            "absorption_30m": 0.05,
+        })
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("exception"), "sell_downside_override")
+
+    def test_notifier_allows_sparse_downside_sell_without_buy_profit_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             notifier = TelegramNotifier(
@@ -277,6 +330,7 @@ class TestTelegramDelivery(unittest.TestCase):
                         "score100": 7.5,
                         "conf_pct": 12.8,
                         "expected_profit_pct": 0.0,
+                        "forecast24h_pct_max": -12.0,
                         "collection": "rings",
                         "model": "Sovereign",
                         "background": "Black",
@@ -297,6 +351,58 @@ class TestTelegramDelivery(unittest.TestCase):
             self.assertTrue(accepted)
             journal = notifier.journal_snapshot(limit=10)
             self.assertTrue(journal.get("sent"))
+            notifier.close()
+
+    def test_market_status_dedupe_key_matches_tz_idempotency_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            notifier = TelegramNotifier(
+                profile_path=PROFILE_PATH,
+                rules_path=RULES_PATH,
+                signal_profiles_path=SIGNAL_PROFILES_PATH,
+                edgerank_weights_path=EDGE_WEIGHTS_PATH,
+                settings_path=tmp / "telegram_delivery_settings.json",
+                journal_path=tmp / "telegram_delivery_journal.json",
+                bot_token="token",
+                default_chat_id="-100",
+            )
+            with patch.object(notifier, "_enqueue", return_value=True) as mocked_enqueue:
+                accepted = notifier.enqueue_market_status({
+                    "payload": {
+                        "updated_at": "2026-03-05T12:00:00Z",
+                        "market_regime": "RISK_OFF",
+                        "data_health": "OK",
+                    }
+                })
+            self.assertTrue(accepted)
+            queued = mocked_enqueue.call_args.args[0]
+            self.assertIn(":2026-03-05T12:00:00Z:RISK_OFF", str(queued.get("dedupe_key") or ""))
+            notifier.close()
+
+    def test_market_status_delivery_accepts_degraded_for_hourly_channel_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            notifier = TelegramNotifier(
+                profile_path=PROFILE_PATH,
+                rules_path=RULES_PATH,
+                signal_profiles_path=SIGNAL_PROFILES_PATH,
+                edgerank_weights_path=EDGE_WEIGHTS_PATH,
+                settings_path=tmp / "telegram_delivery_settings.json",
+                journal_path=tmp / "telegram_delivery_journal.json",
+                bot_token="token",
+                default_chat_id="-100",
+            )
+            with patch.object(notifier, "_enqueue", return_value=True) as mocked_enqueue:
+                accepted = notifier.enqueue_market_status({
+                    "payload": {
+                        "updated_at": "2026-03-05T12:00:00Z",
+                        "market_regime": "RISK_OFF",
+                        "data_health": "DEGRADED",
+                        "data_health_note": "продажи=0",
+                    }
+                })
+            self.assertTrue(accepted)
+            self.assertTrue(mocked_enqueue.called)
             notifier.close()
 
     def test_renderer_computes_dynamic_edgerank_when_missing(self) -> None:

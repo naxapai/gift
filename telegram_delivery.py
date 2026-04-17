@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import queue
-import hashlib
 import threading
 import time
 import urllib.error
@@ -40,6 +39,22 @@ def _bool_env(value: Any, default: bool = False) -> bool:
     if not raw:
         return bool(default)
     return raw in {"1", "true", "yes", "on"}
+
+
+def _hour_bucket_utc(value: Any | None = None) -> str:
+    raw = str(value or "").strip()
+    dt: datetime
+    if raw:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            dt = datetime.now(timezone.utc)
+    else:
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    return dt.isoformat().replace("+00:00", "Z")
 
 
 def _load_json(path: Path, default):
@@ -108,10 +123,22 @@ class GateEngine:
             pressure = _safe_float(row.get("listing_pressure"), 0.0)
             absorption = _safe_float(row.get("absorption_30m"), 0.0)
             strength_tag = str(row.get("strength_tag") or "").upper()
+            undervalue_pct = _safe_float(row.get("undervalue_pct"), _safe_float(row.get("undervalue"), 0.0))
+            forecast_max = _safe_float(row.get("forecast24h_pct_max"), _safe_float(row.get("forecast_24h_pct_max"), 0.0))
             strong_sell = action == "SELL" and conf >= 40.0 and (pressure >= 6.0 or absorption <= 0.6)
             if strong_sell or strength_tag == "STRONG_SELL":
                 passed = True
                 exception = "strong_sell_override"
+            # SELL-сигнал нельзя фильтровать BUY-метрикой expected_profit_pct:
+            # в падающем режиме он часто равен 0, хотя downside/pressure уже валидны.
+            downside_sell = (
+                action == "SELL"
+                and conf >= 10.0
+                and (pressure >= 6.0 or absorption <= 0.6 or forecast_max <= -5.0 or undervalue_pct <= -5.0)
+            )
+            if downside_sell and exception is None:
+                passed = True
+                exception = "sell_downside_override"
         return {"ok": passed, "checks": checks, "exception": exception}
 
 
@@ -145,36 +172,46 @@ class MessageRenderer:
         templates = self.profile.get("templates") if isinstance(self.profile.get("templates"), dict) else {}
         template = templates.get("market_status") if isinstance(templates.get("market_status"), dict) else {}
         ctx = self._market_context(payload)
-        lines = [self._fmt(str(template.get("title") or ""), ctx)]
+        lines = [self._fmt(str(template.get("title") or ""), ctx), ""]
+        blank_after = {"liquidity", "supply", "tactics"}
         for section in template.get("sections") or []:
             if not isinstance(section, dict):
                 continue
+            section_id = str(section.get("id") or "").strip()
             title = str(section.get("title") or "").strip()
             if title:
-                lines.append(title)
+                lines.append(self._fmt(title, ctx))
             for row in section.get("lines") or []:
                 text = self._fmt(str(row or ""), ctx).strip()
                 if text:
                     lines.append(text)
-        return self.line_break.join([x for x in lines if str(x).strip()]).strip()
+            if section_id in blank_after:
+                lines.append("")
+        if ctx.get("low_reliability_note"):
+            lines.extend(["", str(ctx["low_reliability_note"])])
+        return self.line_break.join(lines).strip()
 
     def render_gift_signal(self, signal: dict) -> str:
         payload = signal if isinstance(signal, dict) else {}
         templates = self.profile.get("templates") if isinstance(self.profile.get("templates"), dict) else {}
         template = templates.get("gift_signal") if isinstance(templates.get("gift_signal"), dict) else {}
         ctx = self._signal_context(payload)
-        lines = [self._fmt(str(template.get("title") or ""), ctx)]
+        lines = [self._fmt(str(template.get("title") or ""), ctx), ""]
+        blank_after = {"variant", "price", "plan", "liq_exit", "reasons", "risks"}
         for section in template.get("sections") or []:
             if not isinstance(section, dict):
                 continue
+            section_id = str(section.get("id") or "").strip()
             title = str(section.get("title") or "").strip()
             if title:
-                lines.append(title)
+                lines.append(self._fmt(title, ctx))
             for row in section.get("lines") or []:
                 text = self._fmt(str(row or ""), ctx).strip()
                 if text:
                     lines.append(text)
-        return self.line_break.join([x for x in lines if str(x).strip()]).strip()
+            if section_id in blank_after:
+                lines.append("")
+        return self.line_break.join(lines).strip()
 
     def _market_context(self, payload: dict) -> dict[str, str]:
         flow = payload.get("flow") if isinstance(payload.get("flow"), dict) else {}
@@ -185,6 +222,7 @@ class MessageRenderer:
         signals_1h = payload.get("signals_1h") if isinstance(payload.get("signals_1h"), dict) else {}
         provider = payload.get("provider_health") if isinstance(payload.get("provider_health"), dict) else {}
         regime = str(payload.get("market_regime") or "MEAN_REVERT").upper()
+        regime_label = regime.replace("_", "-")
         tactics = self.tactics_map.get(regime) if isinstance(self.tactics_map.get(regime), list) else []
         tactics = [str(x or "").strip() for x in tactics][:3]
         while len(tactics) < 3:
@@ -194,7 +232,8 @@ class MessageRenderer:
         data_health = str(payload.get("data_health") or "OK")
         data_health_note = self._human_market_health_note(data_health, data_health_note_raw)
         return {
-            "market_regime": regime,
+            "market_regime": regime_label,
+            "market_regime_label": regime_label,
             "regime_emoji": str(self.regime_badges.get(regime) or ""),
             "market_conf_pct": str(_safe_int(payload.get("data_conf_pct"), 0)),
             "trend": str(payload.get("trend") or "флет"),
@@ -218,6 +257,11 @@ class MessageRenderer:
             "signals_1h_skipwatch": str(_safe_int(signals_1h.get("watch"), 0) + _safe_int(signals_1h.get("skip"), 0)),
             "data_health": data_health,
             "data_health_note": data_health_note,
+            "low_reliability_note": (
+                "⚠ Рынок низкой надёжности: сигналам требуется подтверждение продажами."
+                if data_health.upper() == "DEGRADED" and _safe_int(payload.get("data_conf_pct"), 0) <= 35
+                else ""
+            ),
             "updated_at": self._fmt_time(payload.get("updated_at") or payload.get("ts") or ""),
             "p95_ms": str(_safe_int(provider.get("p95_ms"), 0)),
             "err_pct": self._fmt_num(provider.get("err_pct"), 2),
@@ -228,6 +272,7 @@ class MessageRenderer:
 
     def _signal_context(self, payload: dict) -> dict[str, str]:
         regime = str(payload.get("market_regime") or "MEAN_REVERT").upper()
+        regime_label = regime.replace("_", "-")
         edge = self._resolved_edge(payload, regime)
         reasons = self._reasons(payload, regime)
         risks = self._risks(payload)
@@ -244,7 +289,8 @@ class MessageRenderer:
             "score100": self._fmt_num(payload.get("score100"), 0),
             "conf_pct": self._fmt_num(payload.get("conf_pct"), 0),
             "horizon": str(payload.get("horizon") or "30m"),
-            "market_regime": regime,
+            "market_regime": regime_label,
+            "market_regime_label": regime_label,
             "collection": str(payload.get("collection") or "Unknown"),
             "model": str(payload.get("model") or "Unknown"),
             "background": str(payload.get("background") or "Unknown"),
@@ -558,10 +604,7 @@ class TelegramNotifier:
                     "edgeRank100_gte": thresholds.get("edgeRank100", 55.0),
                     "conf_pct_gte": thresholds.get("conf_pct", 35.0),
                     "expected_profit_pct_gte": thresholds.get("expected_profit_pct", 8.0),
-                    "adaptive_sparse_fallback": True,
-                    "adaptive_sparse_edgeRank100_gte": 1.0,
-                    "adaptive_sparse_conf_pct_gte": 10.0,
-                    "adaptive_sparse_expected_profit_pct_gte": 0.0,
+                    "sell_downside_conf_pct_gte": 10.0,
                 }
             },
             "transport": {
@@ -637,23 +680,9 @@ class TelegramNotifier:
         if not bool(market_cfg.get("enabled")):
             return False
         payload = status.get("payload") if isinstance(status.get("payload"), dict) else status
-        if str((payload or {}).get("data_health") or "OK").upper() == "DEGRADED":
-            return False
-        stable_payload = {
-            "market_regime": (payload or {}).get("market_regime"),
-            "data_health": (payload or {}).get("data_health"),
-            "trend": (payload or {}).get("trend"),
-            "velocity_score": (payload or {}).get("velocity_score"),
-            "vol_level": (payload or {}).get("vol_level"),
-            "flow": (payload or {}).get("flow"),
-            "liquidity": (payload or {}).get("liquidity"),
-            "supply": (payload or {}).get("supply"),
-            "whales": (payload or {}).get("whales"),
-            "signals_1h": (payload or {}).get("signals_1h"),
-        }
-        digest = hashlib.sha1(json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
         regime = str((payload or {}).get("market_regime") or "MEAN_REVERT")
-        dedupe_key = f"market:{regime}:{digest}"
+        updated_at = str((payload or {}).get("updated_at") or (payload or {}).get("ts") or "").strip()
+        dedupe_key = f"market:{_hour_bucket_utc()}:{updated_at}:{regime}"
         item = {"kind": "market_status", "payload": payload, "channel_id": str(market_cfg.get("channel_id") or self.default_chat_id), "dedupe_key": dedupe_key}
         return self._enqueue(item)
 
@@ -677,23 +706,8 @@ class TelegramNotifier:
         }
         gate_result = GateEngine(gate_values).evaluate("gift_signal_channel", payload)
         if not bool(gate_result.get("ok")):
-            adaptive_sparse = bool(gate_cfg.get("adaptive_sparse_fallback", True))
-            action = str((payload or {}).get("action") or (payload or {}).get("type") or "").upper()
-            data_quality = str((payload or {}).get("data_quality") or "").lower()
-            if not (adaptive_sparse and data_quality == "sparse" and action == "SELL"):
-                return False
-            # In sparse production mode, SELL is already produced by the backend decision engine
-            # after regime/risk evaluation, while score/conf/profit can collapse to near-zero due to
-            # degraded analytics coverage. Allow those SELL signals through as a dedicated fallback.
-            return self._enqueue(
-                {
-                    "kind": "gift_signal",
-                    "payload": payload,
-                    "channel_id": str(signal_cfg.get("channel_id") or self.default_chat_id),
-                    "include_image": bool(signal_cfg.get("include_image", True)),
-                    "dedupe_key": f"signal:{str((payload or {}).get('signal_id') or '')}:{str((payload or {}).get('ts') or signal_event.get('ts') or '')}",
-                }
-            )
+            self._bump_stat("dropped_total", error="gift_signal_gate_blocked")
+            return False
         signal_id = str((payload or {}).get("signal_id") or "")
         ts = str((payload or {}).get("ts") or signal_event.get("ts") or "")
         dedupe_key = f"signal:{signal_id}:{ts}"
@@ -836,8 +850,6 @@ class TelegramNotifier:
                 return
         if kind == "market_status":
             text = self.renderer.render_market_status(payload)
-            if self._same_kind_preview_sent(kind, channel_id, text):
-                return
             include_image = False
             preview_url = ""
         else:
