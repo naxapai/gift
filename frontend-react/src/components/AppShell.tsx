@@ -189,6 +189,10 @@ export function AppShell() {
           if (auth?.authenticated) {
             setTelegramUser(auth.user || null)
             writeJson(LS_TELEGRAM_USER, auth.user || null)
+          } else {
+            setTelegramUser(null)
+            setProfileOpen(false)
+            writeJson(LS_TELEGRAM_USER, null)
           }
           setTelegramAuthEnabled(Boolean(auth?.enabled))
           setTelegramBotUsername(String(auth?.bot_username || ''))
@@ -214,9 +218,15 @@ export function AppShell() {
           getTelegramAuthMe(),
           getTradingAccess().catch(() => ({ allowed: false })),
         ])
-        if (!stop && auth?.authenticated) {
-          setTelegramUser(auth.user || null)
-          writeJson(LS_TELEGRAM_USER, auth.user || null)
+        if (!stop) {
+          if (auth?.authenticated) {
+            setTelegramUser(auth.user || null)
+            writeJson(LS_TELEGRAM_USER, auth.user || null)
+          } else {
+            setTelegramUser(null)
+            setProfileOpen(false)
+            writeJson(LS_TELEGRAM_USER, null)
+          }
         }
         if (!stop) setTradeAllowed(Boolean(tradeAccess?.allowed))
       } catch {
