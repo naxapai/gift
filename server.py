@@ -60,11 +60,13 @@ TELEGRAM_BOT_USERNAME = (
 ).lstrip("@")
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
 AUTH_SESSION_TTL_SEC = max(300, int(os.getenv("AUTH_SESSION_TTL_SEC", "86400")))
+AUTH_SESSION_TOUCH_PERSIST_INTERVAL_SEC = max(5.0, float(os.getenv("AUTH_SESSION_TOUCH_PERSIST_INTERVAL_SEC", "60")))
 TELEGRAM_AUTH_MAX_AGE_SEC = max(30, int(os.getenv("TELEGRAM_AUTH_MAX_AGE_SEC", "300")))
 SESSION_COOKIE_NAME = os.getenv("AUTH_SESSION_COOKIE", "gmz_session").strip() or "gmz_session"
 TON_SESSION_COOKIE_NAME = os.getenv("TON_SESSION_COOKIE", "gmz_ton_session").strip() or "gmz_ton_session"
 TON_AUTH_REQUIRED = os.getenv("TON_AUTH_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
 TON_AUTH_SESSION_TTL_SEC = max(300, int(os.getenv("TON_AUTH_SESSION_TTL_SEC", "86400")))
+TON_AUTH_TOUCH_PERSIST_INTERVAL_SEC = max(5.0, float(os.getenv("TON_AUTH_TOUCH_PERSIST_INTERVAL_SEC", "60")))
 TON_PROOF_MAX_AGE_SEC = max(60, int(os.getenv("TON_PROOF_MAX_AGE_SEC", "300")))
 TON_CHALLENGE_TTL_SEC = max(30, int(os.getenv("TON_CHALLENGE_TTL_SEC", "180")))
 TON_ALLOW_WEAK_VERIFY = os.getenv("TON_ALLOW_WEAK_VERIFY", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -1132,6 +1134,8 @@ class AuthStore:
 
     def _cleanup_locked(self, now: float) -> None:
         expired = [sid for sid, s in self._sessions.items() if float(s.get("expires_at", 0)) <= now]
+        if not expired:
+            return
         for sid in expired:
             self._sessions.pop(sid, None)
         self._persist_locked()
@@ -1273,9 +1277,17 @@ class AuthStore:
             session = self._sessions.get(sid)
             if not session:
                 return None
+            previous_updated_at = float(session.get("updated_at", 0) or 0)
+            previous_expires_at = float(session.get("expires_at", 0) or 0)
             session["updated_at"] = now
             session["expires_at"] = now + AUTH_SESSION_TTL_SEC
-            self._persist_locked()
+            should_persist_touch = (
+                previous_updated_at <= 0
+                or now - previous_updated_at >= AUTH_SESSION_TOUCH_PERSIST_INTERVAL_SEC
+                or previous_expires_at <= now
+            )
+            if should_persist_touch:
+                self._persist_locked()
             return dict(session)
 
     def destroy_session(self, sid: str) -> None:
@@ -1311,12 +1323,15 @@ class TonAuthStore:
 
     def _cleanup_locked(self, now: float) -> None:
         expired_s = [sid for sid, s in self._sessions.items() if float(s.get("expires_at", 0)) <= now]
+        expired_c = [nonce for nonce, c in self._challenges.items() if float(c.get("expires_at", 0)) <= now]
+        if not expired_s and not expired_c:
+            return
         for sid in expired_s:
             self._sessions.pop(sid, None)
-        expired_c = [nonce for nonce, c in self._challenges.items() if float(c.get("expires_at", 0)) <= now]
         for nonce in expired_c:
             self._challenges.pop(nonce, None)
-        self._persist_locked()
+        if expired_s:
+            self._persist_locked()
 
     def _persist_locked(self) -> None:
         _save_json_file(TON_AUTH_SESSIONS_FILE, self._sessions)
@@ -1380,9 +1395,17 @@ class TonAuthStore:
             session = self._sessions.get(sid)
             if not session:
                 return None
+            previous_updated_at = float(session.get("updated_at", 0) or 0)
+            previous_expires_at = float(session.get("expires_at", 0) or 0)
             session["updated_at"] = now
             session["expires_at"] = now + TON_AUTH_SESSION_TTL_SEC
-            self._persist_locked()
+            should_persist_touch = (
+                previous_updated_at <= 0
+                or now - previous_updated_at >= TON_AUTH_TOUCH_PERSIST_INTERVAL_SEC
+                or previous_expires_at <= now
+            )
+            if should_persist_touch:
+                self._persist_locked()
             return dict(session)
 
     def destroy_session(self, sid: str) -> None:

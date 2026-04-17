@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest import mock
 import hashlib
 import hmac
 from datetime import datetime, timezone
@@ -29,6 +30,18 @@ class TestAuthAndMarketStatus(unittest.TestCase):
         restored = reloaded.get_session(session["sid"])
         self.assertTrue(isinstance(restored, dict))
         self.assertEqual(int((restored or {}).get("user", {}).get("id") or 0), 1)
+
+    def test_auth_store_get_session_does_not_persist_on_every_read(self) -> None:
+        store = server.AuthStore()
+        with mock.patch("server.time.time", return_value=1000.0):
+            session = store.create_session({"id": 2, "username": "bob"})
+        with mock.patch.object(store, "_persist_locked") as persist_mock, \
+             mock.patch("server.time.time", side_effect=[1061.0, 1065.0]):
+            first = store.get_session(session["sid"])
+            second = store.get_session(session["sid"])
+        self.assertTrue(isinstance(first, dict))
+        self.assertTrue(isinstance(second, dict))
+        persist_mock.assert_called_once()
 
     def test_auth_store_ignores_redirect_to_when_verifying_telegram_payload(self) -> None:
         old_bot_token = server.TELEGRAM_BOT_TOKEN
@@ -66,7 +79,7 @@ class TestAuthAndMarketStatus(unittest.TestCase):
     def test_market_status_not_degraded_for_mtproto_rows_with_error_flag(self) -> None:
         svc = GiftAnalyticsService()
         svc.state["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        with unittest.mock.patch.object(svc, "market_overview", return_value={"updated_at": svc.state["updated_at"], "active_listings": 10, "floor_ton_min": 4.0, "provider_health": [{"provider": "mtproto_warmup", "p95_ms": 0, "err_pct": 100.0}]}), unittest.mock.patch.object(svc, "_listing_source_rows_v1", return_value=([{"listing_key": "a", "ts_detected": "2026-04-03T19:38:48.229105Z"}], {"source": "mtproto_api", "error": "mtproto_http_401_unauthorized", "updated_at": svc.state["updated_at"]})), unittest.mock.patch.object(svc, "_trades_in_window_multi", return_value=(0, 0.0)), unittest.mock.patch.object(svc, "signals_v1", return_value={"items": []}), unittest.mock.patch.object(svc, "_market_depth_for_variants", return_value=(1, 4.0)), unittest.mock.patch.object(svc, "_whale_ratio_and_impulse", return_value=(0.0, 0.0, {})):
+        with mock.patch.object(svc, "market_overview", return_value={"updated_at": svc.state["updated_at"], "active_listings": 10, "floor_ton_min": 4.0, "provider_health": [{"provider": "mtproto_warmup", "p95_ms": 0, "err_pct": 100.0}]}), mock.patch.object(svc, "_listing_source_rows_v1", return_value=([{"listing_key": "a", "ts_detected": "2026-04-03T19:38:48.229105Z"}], {"source": "mtproto_api", "error": "mtproto_http_401_unauthorized", "updated_at": svc.state["updated_at"]})), mock.patch.object(svc, "_trades_in_window_multi", return_value=(0, 0.0)), mock.patch.object(svc, "signals_v1", return_value={"items": []}), mock.patch.object(svc, "_market_depth_for_variants", return_value=(1, 4.0)), mock.patch.object(svc, "_whale_ratio_and_impulse", return_value=(0.0, 0.0, {})):
             payload = svc.market_status_v1(window="30m")
         self.assertEqual(payload.get("data_health"), "OK")
         provider = payload.get("provider_health") or {}
