@@ -316,15 +316,24 @@ class TradeRuntime:
         return target
 
     def issue_buy_quote(self, *, variant_id: str, max_price_ton: float, slippage_bps: int, wallet_address: str | None, variant_snapshot: dict | None) -> dict:
+        variant_id = str(variant_id or "").strip()
+        max_price = _as_float(max_price_ton, 0.0)
+        slip = _as_int(slippage_bps, 100)
+        if not variant_id:
+            raise ValueError("variant_id_required")
+        if max_price <= 0.0:
+            raise ValueError("max_price_ton_required")
+        if slip < 0 or slip > 10000:
+            raise ValueError("slippage_bps_out_of_range")
         snapshot = variant_snapshot or {}
         nonce = secrets.token_hex(10)
         now = _now_utc()
-        fee_budget = max(0.03, round(max_price_ton * 0.01, 4))
+        fee_budget = max(0.03, round(max_price * 0.01, 4))
         quote = {
             "variant_id": variant_id,
             "listing_id": snapshot.get("listing_id"),
-            "max_price_ton": round(float(max_price_ton), 6),
-            "slippage_bps": int(slippage_bps),
+            "max_price_ton": round(float(max_price), 6),
+            "slippage_bps": int(slip),
             "fee_budget_ton": fee_budget,
             "wallet_address_hash": hashlib.sha256(str(wallet_address or "").encode("utf-8")).hexdigest() if wallet_address else None,
             "nonce": nonce,

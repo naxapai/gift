@@ -41,6 +41,19 @@ class TestTradingRuntime(unittest.TestCase):
             self.assertEqual(confirmed['status'], 'CONFIRMED')
             self.assertEqual(confirmed['status_timeline'][-1]['source'], 'sandbox_mock_marketplace')
 
+    def test_fast_buy_quote_validates_price_slippage_and_variant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
+            with self.assertRaises(ValueError) as missing_variant:
+                rt.issue_buy_quote(variant_id='', max_price_ton=3.3, slippage_bps=100, wallet_address='EQTEST', variant_snapshot={'floor_ton': 3.0})
+            self.assertEqual(str(missing_variant.exception), 'variant_id_required')
+            with self.assertRaises(ValueError) as bad_price:
+                rt.issue_buy_quote(variant_id='sbx2', max_price_ton=0.0, slippage_bps=100, wallet_address='EQTEST', variant_snapshot={'floor_ton': 3.0})
+            self.assertEqual(str(bad_price.exception), 'max_price_ton_required')
+            with self.assertRaises(ValueError) as bad_slippage:
+                rt.issue_buy_quote(variant_id='sbx2', max_price_ton=3.3, slippage_bps=10001, wallet_address='EQTEST', variant_snapshot={'floor_ton': 3.0})
+            self.assertEqual(str(bad_slippage.exception), 'slippage_bps_out_of_range')
+
     def test_sandbox_fast_buy_confirms_via_stubbed_marketplace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
