@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BentoCard } from '../components/BentoCard'
 import { GmzSelect } from '../components/GmzSelect'
@@ -36,6 +36,8 @@ import type {
 
 const TONCONNECT_BUTTON_ROOT_ID = 'gmz-tonconnect-anchor'
 type TradesUiIntent = TradeIntent & { optimistic?: boolean; failure_reason?: string | null }
+type TradesWorkspace = Awaited<ReturnType<typeof getTradesWorkspace>>
+type TradesStreamEvent = { event?: string; ts?: string; payload?: Record<string, unknown> }
 
 function ton(v?: number | null): string {
   const n = Number(v)
@@ -141,6 +143,26 @@ export function TradesPage() {
   const [expandedHoldingId, setExpandedHoldingId] = useState('')
   const [holdingDrafts, setHoldingDrafts] = useState<Record<string, { listPriceTon: string; transferUserId: string }>>({})
   const [mobileActionHoldingId, setMobileActionHoldingId] = useState('')
+  const seenSseKeysRef = useRef<Map<string, number>>(new Map())
+  const sseRefreshTimerRef = useRef<number | null>(null)
+
+  const applyWorkspace = useCallback((workspace: TradesWorkspace) => {
+    setPnl(workspace.pnl || null)
+    setPositions(Array.isArray(workspace.positions) ? workspace.positions : [])
+    setHoldings(Array.isArray(workspace.holdings) ? workspace.holdings : [])
+    setHistory(Array.isArray(workspace.history) ? workspace.history : [])
+    setActivity(Array.isArray(workspace.wallet_activity) ? workspace.wallet_activity : [])
+    setRules(Array.isArray(workspace.autosell_rules) ? workspace.autosell_rules : [])
+  }, [])
+
+  const clearWorkspace = useCallback(() => {
+    setPnl(null)
+    setPositions([])
+    setHoldings([])
+    setHistory([])
+    setActivity([])
+    setRules([])
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -158,28 +180,56 @@ export function TradesPage() {
       setAllowed(isAllowed)
       setWalletResolved(true)
       if (!isAllowed || !wa) {
-        setPnl(null)
-        setPositions([])
-        setHoldings([])
-        setHistory([])
-        setActivity([])
-        setRules([])
+        clearWorkspace()
         return
       }
       const workspace = await getTradesWorkspace(wa)
-      setPnl(workspace.pnl || null)
-      setPositions(Array.isArray(workspace.positions) ? workspace.positions : [])
-      setHoldings(Array.isArray(workspace.holdings) ? workspace.holdings : [])
-      setHistory(Array.isArray(workspace.history) ? workspace.history : [])
-      setActivity(Array.isArray(workspace.wallet_activity) ? workspace.wallet_activity : [])
-      setRules(Array.isArray(workspace.autosell_rules) ? workspace.autosell_rules : [])
+      applyWorkspace(workspace)
     } catch (e) {
       setWalletResolved(true)
       setLoadError(e instanceof Error ? e.message : 'trades_load_failed')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [applyWorkspace, clearWorkspace])
+
+  const refreshWorkspace = useCallback(async () => {
+    if (!walletAddress) return
+    try {
+      const workspace = await getTradesWorkspace(walletAddress)
+      applyWorkspace(workspace)
+      setLoadError('')
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : 'trades_workspace_refresh_failed')
+    }
+  }, [applyWorkspace, walletAddress])
+
+  const scheduleSseRefresh = useCallback((event?: TradesStreamEvent) => {
+    const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {}
+    const id = String(
+      payload.intent_id ||
+      payload.position_id ||
+      payload.holding_id ||
+      payload.activity_id ||
+      payload.rule_id ||
+      payload.tx_hash ||
+      '',
+    )
+    const key = id ? `${event?.event || 'event'}:${id}` : ''
+    const now = Date.now()
+    for (const [seenKey, seenAt] of seenSseKeysRef.current) {
+      if (now - seenAt > 60000) seenSseKeysRef.current.delete(seenKey)
+    }
+    if (key) {
+      if (seenSseKeysRef.current.has(key)) return
+      seenSseKeysRef.current.set(key, now)
+    }
+    if (sseRefreshTimerRef.current) window.clearTimeout(sseRefreshTimerRef.current)
+    sseRefreshTimerRef.current = window.setTimeout(() => {
+      sseRefreshTimerRef.current = null
+      void refreshWorkspace()
+    }, 150)
+  }, [refreshWorkspace])
 
   useEffect(() => {
     void load()
@@ -252,10 +302,10 @@ export function TradesPage() {
     }
     const connect = () => {
       closeAll()
-      tradesEs = subscribeTradesStream(walletAddress, () => {
+      tradesEs = subscribeTradesStream(walletAddress, (event) => {
         retryIndex = 0
         disconnectedAt = 0
-        void load()
+        scheduleSseRefresh(event)
       }, () => {
         closeAll()
         if (stopped) return
@@ -264,14 +314,14 @@ export function TradesPage() {
         retryIndex += 1
         if (retryTimer) window.clearTimeout(retryTimer)
         retryTimer = window.setTimeout(() => {
-          if ((Date.now() - disconnectedAt) > 60000) void load()
+          if ((Date.now() - disconnectedAt) > 60000) void refreshWorkspace()
           connect()
         }, delay)
       })
-      pnlEs = subscribePnlStream(walletAddress, () => {
+      pnlEs = subscribePnlStream(walletAddress, (event) => {
         retryIndex = 0
         disconnectedAt = 0
-        void load()
+        scheduleSseRefresh(event)
       }, () => {
         closeAll()
         if (stopped) return
@@ -280,7 +330,7 @@ export function TradesPage() {
         retryIndex += 1
         if (retryTimer) window.clearTimeout(retryTimer)
         retryTimer = window.setTimeout(() => {
-          if ((Date.now() - disconnectedAt) > 60000) void load()
+          if ((Date.now() - disconnectedAt) > 60000) void refreshWorkspace()
           connect()
         }, delay)
       })
@@ -290,8 +340,11 @@ export function TradesPage() {
       stopped = true
       closeAll()
       if (retryTimer) window.clearTimeout(retryTimer)
+      if (sseRefreshTimerRef.current) window.clearTimeout(sseRefreshTimerRef.current)
+      sseRefreshTimerRef.current = null
+      seenSseKeysRef.current.clear()
     }
-  }, [allowed, walletAddress, load])
+  }, [allowed, walletAddress, refreshWorkspace, scheduleSseRefresh])
 
   useEffect(() => {
     if (!toast) return
