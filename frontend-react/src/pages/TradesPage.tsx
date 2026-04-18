@@ -102,6 +102,13 @@ async function sendTonWalletTx(walletTx: Record<string, unknown>): Promise<{ txH
 }
 
 export function TradesPage() {
+  const openTonConnect = useCallback(() => {
+    const root = document.getElementById(TONCONNECT_BUTTON_ROOT_ID)
+    root?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const button = root?.querySelector('button') as HTMLButtonElement | null
+    button?.click()
+  }, [])
+
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [toast, setToast] = useState('')
@@ -489,7 +496,8 @@ export function TradesPage() {
       ) : !walletAddress ? (
         <BentoCard title="Подключите кошелек">
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
-            Для покупки и продажи подарков нужен подключенный TON wallet.
+            <div>Для покупки и продажи подарков нужен подключенный TON wallet.</div>
+            <button type="button" className="gmz-btn gmz-btn-primary mt-3 px-4 py-2 text-sm" onClick={openTonConnect}>Подключить TON wallet</button>
           </div>
         </BentoCard>
       ) : loading ? (
@@ -654,7 +662,7 @@ export function TradesPage() {
           </BentoCard>
 
           <BentoCard title="Holdings" className="xl:col-span-12">
-            {!holdings.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">Нет holdings. После подтвержденной покупки подарок появится здесь.</div> : null}
+            {!holdings.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">Нет holdings. После подтвержденной покупки подарок появится здесь. <Link to="/catalog" className="font-semibold text-[var(--accent)] hover:underline">Перейти в каталог</Link>.</div> : null}
             <div className="grid gap-3 md:hidden">
               {holdings.map((row) => (
                 <article key={row.holding_id} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
@@ -704,7 +712,7 @@ export function TradesPage() {
           </BentoCard>
 
           <BentoCard title="History" className="xl:col-span-12">
-            {!mergedHistory.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">История сделок пуста. Создайте первый BUY или FAST BUY.</div> : null}
+            {!mergedHistory.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">История сделок пуста. Создайте первый BUY или FAST BUY. <Link to="/catalog" className="font-semibold text-[var(--accent)] hover:underline">Выбрать подарок</Link>.</div> : null}
             <div className="grid gap-3 md:hidden">
               {mergedHistory.map((row) => (
                 <article key={row.intent_id} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
@@ -763,7 +771,17 @@ export function TradesPage() {
           </BentoCard>
 
           <BentoCard title="Wallet activity" className="xl:col-span-12">
-            <div className="overflow-x-auto">
+            {!activity.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">Активность кошелька пока пуста. После первой сделки здесь появятся списания и подтверждения.</div> : null}
+            <div className="grid gap-3 md:hidden">
+              {activity.map((row) => (
+                <article key={`${row.tx_hash}-${row.ts}`} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
+                  <div className="flex items-center justify-between"><strong>{row.direction}</strong><span>{ton(row.amount_ton)}</span></div>
+                  <div className="mt-2 text-xs text-slate-600">{new Date(row.ts).toLocaleString('ru-RU')}</div>
+                  <div className="mt-1 break-all text-xs text-slate-500">{row.tx_hash}</div>
+                </article>
+              ))}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
               <table className="min-w-full text-sm">
                 <thead>
                   <tr className="text-left text-slate-500"><th>Time</th><th>Direction</th><th>Amount</th><th>Tx</th></tr>
