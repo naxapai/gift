@@ -3796,8 +3796,31 @@ class GiftAnalyticsService:
             "reason": None if uid in TRADE_ALLOWED_USERS else "restricted_test_access",
         }
 
+    def _resolve_trade_variant_id_v1(self, variant_id: str) -> str:
+        raw = str(variant_id or "").strip()
+        if not raw:
+            raise KeyError("variant_not_found")
+        if raw in self.variants:
+            return raw
+        normalized = raw.replace("\u2022", "/")
+        parts = [str(part or "").strip() for part in normalized.split("/") if str(part or "").strip()]
+        if len(parts) >= 2:
+            resolved = self.variant_resolve_v1(
+                collection=parts[0],
+                model=parts[1],
+                background=parts[2] if len(parts) >= 3 else None,
+                pattern=parts[3] if len(parts) >= 4 else None,
+                active_only=False,
+                mode="tz",
+            )
+            rid = str((resolved or {}).get("variant_id") or "").strip() if isinstance(resolved, dict) else ""
+            if rid:
+                return rid
+        raise KeyError("variant_not_found")
+
     def trade_variant_snapshot_v1(self, variant_id: str) -> dict:
-        snap = self.catalog_variant_v1(str(variant_id or "")) or {}
+        resolved_variant_id = self._resolve_trade_variant_id_v1(str(variant_id or ""))
+        snap = self.catalog_variant_v1(resolved_variant_id) or {}
         return snap if isinstance(snap, dict) else {}
 
     def trades_issue_buy_quote_v1(self, *, variant_id: str, max_price_ton: float, slippage_bps: int = 100, wallet_address: str | None = None) -> dict:

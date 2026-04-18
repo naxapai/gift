@@ -2453,6 +2453,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 payload = _state().trades_issue_buy_quote_v1(variant_id=variant_id, max_price_ton=max_price_ton, slippage_bps=slippage_bps, wallet_address=wallet_address)
                 _json_response(self, payload, cache_control="no-store")
+            except KeyError as exc:
+                reason = str(exc) or "variant_not_found"
+                _json_response(self, {"code": "bad_request", "message": f"quote_issue_failed:{reason}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             except Exception as exc:
                 _json_response(self, {"code": "bad_request", "message": f"quote_issue_failed:{exc.__class__.__name__}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             return

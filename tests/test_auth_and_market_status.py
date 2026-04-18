@@ -43,6 +43,14 @@ class TestAuthAndMarketStatus(unittest.TestCase):
         self.assertTrue(isinstance(second, dict))
         persist_mock.assert_called_once()
 
+    def test_trade_variant_snapshot_resolves_slash_format(self) -> None:
+        svc = GiftAnalyticsService()
+        with mock.patch.object(svc, 'variant_resolve_v1', return_value={'variant_id': 'resolved|model|bg|pattern'}), \
+             mock.patch.object(svc, 'catalog_variant_v1', return_value={'variant_id': 'resolved|model|bg|pattern', 'floor_ton': 7.0}) as catalog_mock:
+            snap = svc.trade_variant_snapshot_v1('Money Pots/Porridge/Grape/Paper Crane')
+        self.assertEqual(str(snap.get('variant_id') or ''), 'resolved|model|bg|pattern')
+        catalog_mock.assert_called_once_with('resolved|model|bg|pattern')
+
     def test_auth_store_ignores_redirect_to_when_verifying_telegram_payload(self) -> None:
         old_bot_token = server.TELEGRAM_BOT_TOKEN
         old_bot_username = server.TELEGRAM_BOT_USERNAME

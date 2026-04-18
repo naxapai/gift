@@ -38,11 +38,11 @@ class TestFrontendReactStack(unittest.TestCase):
 
     def test_shell_has_bento_navigation_labels(self):
         shell = (FRONT / 'src' / 'components' / 'AppShell.tsx').read_text(encoding='utf-8')
-        for label in ['Обзор', 'Каталог', 'Скринеры', 'Сигналы', 'Листинг', 'Сделки', 'Избранное', 'Админ', 'Настройки']:
+        for label in ['Обзор', 'Каталог', 'Скринеры', 'Сигналы', 'Листинг', 'Сделки', 'Избранное', 'Настройки']:
             self.assertIn(label, shell)
-        self.assertIn('adminOnly: true', shell)
+        self.assertNotIn("{ to: '/admin', label: 'Админ'", shell)
         self.assertIn('visibleNavItems', shell)
-        self.assertIn('getAdminAccess', shell)
+        self.assertNotIn('getAdminAccess', shell)
         self.assertNotIn('gmz-logo-mark.png', shell)
         self.assertNotIn('gmz-logo-wordmark.png', shell)
         self.assertIn('/logo.png', shell)
@@ -131,6 +131,9 @@ class TestFrontendReactStack(unittest.TestCase):
             self.assertIn(col, page)
         self.assertIn('firstLoadRef', page)
         self.assertIn('refreshing', page)
+        self.assertIn("const SCREENERS_CACHE_KEY = 'gmz.screeners.cache.v1'", page)
+        self.assertIn('sessionStorage.getItem(SCREENERS_CACHE_KEY)', page)
+        self.assertIn('sessionStorage.setItem(SCREENERS_CACHE_KEY, JSON.stringify(payload))', page)
 
     def test_settings_page_contains_alerts_v1_controls(self):
         page = (FRONT / 'src' / 'pages' / 'SettingsPage.tsx').read_text(encoding='utf-8')
@@ -139,6 +142,12 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('upsertAlertV1', page)
         self.assertIn('rule_json', page)
         self.assertIn('Telegram delivery', page)
+        self.assertIn("type SettingsTab = 'general' | 'telegram' | 'admin'", page)
+        self.assertIn("const TELEGRAM_DELIVERY_ALLOWED_USER_ID = '144832201'", page)
+        self.assertIn("const SETTINGS_ADMIN_ALLOWED_USER_ID = '44832201'", page)
+        self.assertIn('AdminPage', page)
+        self.assertIn("activeTab === 'telegram' && telegramDeliveryAllowed", page)
+        self.assertIn("activeTab === 'admin' && adminTabAllowed", page)
         self.assertIn('getAdminTelegramDeliveryConfig', page)
         self.assertIn('getAdminTelegramDeliveryStatus', page)
         self.assertIn('getAdminTelegramDeliveryJournal', page)
@@ -148,13 +157,13 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('postAdminTelegramDeliveryTest', page)
         for token in ['EdgeRank ≥', 'Conf ≥', 'Profit % ≥', 'Изображение подарка в сигнале', 'Тест gift_signal', 'Тест market_status', 'Журнал отправок', 'Ошибки доставки', 'Market channel_id', 'Gift channel_id', 'Timeout sec', 'Dedupe TTL sec', 'Current gate pass', 'Recommended pass', 'Применить recommended gate']:
             self.assertIn(token, page)
-        self.assertIn('Telegram delivery доступен только для Telegram user ID `144832201`.', page)
+        self.assertNotIn('Telegram delivery доступен только для Telegram user ID `144832201`.', page)
         for token in ['AutoSell PRO', 'Сохранить AutoSell rule', 'Trading / AutoSell сейчас открыт только для тестовой Telegram учетной записи `144832201`', 'SIGNAL_EXIT', 'AUTO_LIST', 'AUTO_SELL_NOW', 'Take Profit %', 'Stop Loss %', 'Trailing %', 'Regime list (CSV)']:
             self.assertIn(token, page)
 
     def test_trades_page_contains_trading_workspace_blocks(self):
         page = (FRONT / 'src' / 'pages' / 'TradesPage.tsx').read_text(encoding='utf-8')
-        for token in ['FAST BUY', 'BUY+LIST', 'PnL PRO', 'Positions', 'Holdings', 'History', 'Wallet activity', 'AutoSell rules', 'LIST', 'CANCEL', 'SELL', 'TRANSFER', 'Повторить выставление', 'optimisticHistory', 'subscribeTradesStream', 'subscribePnlStream', 'decision_trace', 'reasons:', 'risk_flags:', 'sendTransaction', 'payload_hash', 'Holding не найден для выбранного варианта.', 'Подключите TON wallet перед отправкой транзакции.', 'expandedPositionId', 'expandedHoldingId', 'listing_meta:', 'transfer_meta:']:
+        for token in ['FAST BUY', 'BUY+LIST', 'PnL PRO', 'Positions', 'Holdings', 'History', 'Wallet activity', 'AutoSell rules', 'LIST', 'CANCEL', 'SELL', 'TRANSFER', 'Повторить выставление', 'optimisticHistory', 'subscribeTradesStream', 'subscribePnlStream', 'decision_trace', 'reasons:', 'risk_flags:', 'sendTransaction', 'payload_hash', 'Holding не найден для выбранного варианта.', 'Подключите TON wallet перед отправкой транзакции.', 'expandedPositionId', 'expandedHoldingId', 'listing_meta:', 'transfer_meta:', 'Коллекция', 'Модель', 'Фон', 'Узор', 'variant_id будет выбран автоматически', 'resolveVariantByTraits', 'getCollections', 'getVariants', 'GmzSelect']:
             self.assertIn(token, page)
 
     def test_favorites_page_uses_non_blocking_refresh(self):
@@ -175,6 +184,9 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('GmzSelect', page)
         self.assertIn('firstLoadRef', page)
         self.assertIn('refreshing', page)
+        self.assertIn("const CATALOG_CACHE_KEY = 'gmz.catalog.cache.v1'", page)
+        self.assertIn('sessionStorage.getItem(CATALOG_CACHE_KEY)', page)
+        self.assertIn('sessionStorage.setItem(CATALOG_CACHE_KEY, JSON.stringify(payload))', page)
         self.assertIn('subscribeRealtime', page)
         self.assertIn("types: ['market.status']", page)
         required_cols = [

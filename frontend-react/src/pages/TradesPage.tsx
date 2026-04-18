@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BentoCard } from '../components/BentoCard'
+import { GmzSelect } from '../components/GmzSelect'
 import { BentoGrid } from '../components/BentoGrid'
 import { DecisionTraceCard } from '../components/DecisionTraceCard'
 import { LoadingBlock } from '../components/LoadingBlock'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
-import { getBuyQuote, getTelegramAuthMe, getTonAuthMe, getTradesWorkspace, getTradingAccess, postFastBuyConfirm, postRetryListIntent, postTradeIntent, postTradeIntentConfirm, subscribePnlStream, subscribeTradesStream } from '../lib/api'
-import type { AutoSellRule, HoldingPro, PositionPro, PnlSummaryPro, TradeIntent, WalletActivityItem } from '../types/api'
+import { getBuyQuote, getCollections, getTelegramAuthMe, getTonAuthMe, getTradesWorkspace, getTradingAccess, getVariants, postFastBuyConfirm, postRetryListIntent, postTradeIntent, postTradeIntentConfirm, resolveVariantByTraits, subscribePnlStream, subscribeTradesStream } from '../lib/api'
+import type { AutoSellRule, CollectionItem, HoldingPro, PositionPro, PnlSummaryPro, TradeIntent, VariantItem, WalletActivityItem } from '../types/api'
 
 const TONCONNECT_BUTTON_ROOT_ID = 'gmz-tonconnect-anchor'
 
@@ -88,6 +89,13 @@ export function TradesPage() {
   const [activity, setActivity] = useState<WalletActivityItem[]>([])
   const [rules, setRules] = useState<AutoSellRule[]>([])
   const [variantId, setVariantId] = useState('')
+  const [collections, setCollections] = useState<CollectionItem[]>([])
+  const [tradeVariants, setTradeVariants] = useState<VariantItem[]>([])
+  const [selectorLoading, setSelectorLoading] = useState(false)
+  const [selectedCollectionId, setSelectedCollectionId] = useState('')
+  const [selectedModel, setSelectedModel] = useState('')
+  const [selectedBackground, setSelectedBackground] = useState('')
+  const [selectedPattern, setSelectedPattern] = useState('')
   const [maxPriceTon, setMaxPriceTon] = useState('')
   const [slippageBps, setSlippageBps] = useState('100')
   const [buyAndListPriceTon, setBuyAndListPriceTon] = useState('')
@@ -139,6 +147,56 @@ export function TradesPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!allowed) return
+    let cancelled = false
+    const run = async () => {
+      setSelectorLoading(true)
+      try {
+        const [collectionsPayload, variantsPayload] = await Promise.all([
+          getCollections(1000).catch(() => []),
+          getVariants({ sort: 'floor_ton.asc', cap: 5000 }).catch(() => []),
+        ])
+        if (cancelled) return
+        setCollections(Array.isArray(collectionsPayload) ? collectionsPayload : [])
+        setTradeVariants(Array.isArray(variantsPayload) ? variantsPayload : [])
+      } finally {
+        if (!cancelled) setSelectorLoading(false)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [allowed])
+
+  useEffect(() => {
+    if (!selectedCollectionId || !selectedModel) {
+      setVariantId('')
+      return
+    }
+    let cancelled = false
+    const run = async () => {
+      try {
+        const resolved = await resolveVariantByTraits({
+          collectionId: selectedCollectionId,
+          model: selectedModel,
+          background: selectedBackground || undefined,
+          pattern: selectedPattern || undefined,
+          activeOnly: false,
+          mode: 'tz',
+        })
+        if (!cancelled) setVariantId(String(resolved?.variant_id || '').trim())
+      } catch {
+        if (!cancelled) setVariantId('')
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedCollectionId, selectedModel, selectedBackground, selectedPattern])
 
   useEffect(() => {
     if (!allowed || !walletAddress) return
@@ -291,6 +349,26 @@ export function TradesPage() {
     }
   }, [load])
 
+  const collectionOptions = useMemo(() => (collections || []).map((row) => ({
+    value: String(row.collection_id || ''),
+    label: String(row.name || row.collection_id || ''),
+  })).filter((row) => row.value && row.label), [collections])
+
+  const collectionVariants = useMemo(() => (tradeVariants || []).filter((row) => !selectedCollectionId || String(row.collection_id || '') === selectedCollectionId), [tradeVariants, selectedCollectionId])
+
+  const modelOptions = useMemo(() => Array.from(new Set(collectionVariants.map((row) => String(row.model || '').trim()).filter(Boolean))).map((value) => ({ value, label: value })), [collectionVariants])
+
+  const backgroundOptions = useMemo(() => Array.from(new Set(collectionVariants.filter((row) => !selectedModel || String(row.model || '').trim() === selectedModel).map((row) => String(row.background || '').trim()).filter(Boolean))).map((value) => ({ value, label: value })), [collectionVariants, selectedModel])
+
+  const patternOptions = useMemo(() => Array.from(new Set(collectionVariants.filter((row) => (!selectedModel || String(row.model || '').trim() === selectedModel) && (!selectedBackground || String(row.background || '').trim() === selectedBackground)).map((row) => String(row.pattern || '').trim()).filter(Boolean))).map((value) => ({ value, label: value })), [collectionVariants, selectedModel, selectedBackground])
+
+  const selectedVariantLabel = useMemo(() => {
+    if (!variantId) return ''
+    const row = (tradeVariants || []).find((item) => String(item.variant_id || '') === variantId)
+    if (!row) return variantId
+    return [row.collection_name, row.model, row.background, row.pattern].filter(Boolean).join(' • ') || variantId
+  }, [tradeVariants, variantId])
+
   const policyText = useMemo(() => 'Variant A only: BUY -> CONFIRMED -> LIST. FAST BUY enabled. Backend never stores private keys.', [])
   const mergedHistory = useMemo(() => {
     const items = [...optimisticHistory, ...history]
@@ -328,14 +406,75 @@ export function TradesPage() {
           </BentoCard>
           <BentoCard title="Fast Buy / Buy / Buy+List" className="xl:col-span-12">
             <div className="grid gap-3 md:grid-cols-4">
-              <input value={variantId} onChange={(e) => setVariantId(e.target.value)} placeholder="variant_id" className="gmz-input" />
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">Коллекция</span>
+                <GmzSelect
+                  value={selectedCollectionId}
+                  onChange={(value) => {
+                    setSelectedCollectionId(value)
+                    setSelectedModel('')
+                    setSelectedBackground('')
+                    setSelectedPattern('')
+                    setVariantId('')
+                  }}
+                  options={collectionOptions}
+                  placeholder={selectorLoading ? 'Загрузка…' : 'Выберите коллекцию'}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">Модель</span>
+                <GmzSelect
+                  value={selectedModel}
+                  onChange={(value) => {
+                    setSelectedModel(value)
+                    setSelectedBackground('')
+                    setSelectedPattern('')
+                    setVariantId('')
+                  }}
+                  options={modelOptions}
+                  placeholder="Выберите модель"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">Фон</span>
+                <GmzSelect
+                  value={selectedBackground}
+                  onChange={(value) => {
+                    setSelectedBackground(value)
+                    setSelectedPattern('')
+                    setVariantId('')
+                  }}
+                  options={backgroundOptions}
+                  placeholder="Выберите фон"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">Узор</span>
+                <GmzSelect
+                  value={selectedPattern}
+                  onChange={(value) => {
+                    setSelectedPattern(value)
+                    setVariantId('')
+                  }}
+                  options={patternOptions}
+                  placeholder="Выберите узор"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">Выбранный variant_id</span>
+                <input value={variantId} readOnly placeholder="variant_id будет выбран автоматически" className="gmz-input bg-slate-50" />
+              </label>
+              <label className="block md:col-span-3">
+                <span className="mb-1 block text-sm font-medium text-slate-700">Вариант</span>
+                <input value={selectedVariantLabel} readOnly placeholder="Выберите коллекцию / модель / фон / узор" className="gmz-input bg-slate-50" />
+              </label>
               <input value={maxPriceTon} onChange={(e) => setMaxPriceTon(e.target.value)} placeholder="max price TON" className="gmz-input" />
               <input value={slippageBps} onChange={(e) => setSlippageBps(e.target.value)} placeholder="slippage bps" className="gmz-input" />
               <input value={buyAndListPriceTon} onChange={(e) => setBuyAndListPriceTon(e.target.value)} placeholder="BUY+LIST price TON" className="gmz-input" />
               <div className="flex flex-wrap gap-2">
-                <button type="button" className="gmz-btn gmz-btn-primary px-4 py-2 text-sm" disabled={creating} onClick={() => { void createBuy('FAST_BUY') }}>FAST BUY</button>
-                <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating} onClick={() => { void createBuy('BUY') }}>BUY</button>
-                <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating} onClick={() => { void createBuy('BUY_AND_LIST') }}>BUY+LIST</button>
+                <button type="button" className="gmz-btn gmz-btn-primary px-4 py-2 text-sm" disabled={creating || !variantId} onClick={() => { void createBuy('FAST_BUY') }}>FAST BUY</button>
+                <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating || !variantId} onClick={() => { void createBuy('BUY') }}>BUY</button>
+                <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating || !variantId} onClick={() => { void createBuy('BUY_AND_LIST') }}>BUY+LIST</button>
               </div>
             </div>
             <div className="mt-2 text-xs text-slate-500">Кнопка “Купить и выставить” создает 2 шага: BUY → CONFIRMED → LIST.</div>
