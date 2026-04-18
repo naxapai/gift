@@ -477,6 +477,11 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertEqual(status_confirm, 200)
             self.assertEqual(str(payload_confirm.get("status") or ""), "CONFIRMED")
 
+            status_single, payload_single = self._get_json(f"/v1/trades/intents/{intent_id}")
+            self.assertEqual(status_single, 200)
+            self.assertEqual(str(payload_single.get("intent_id") or ""), intent_id)
+            self.assertTrue(isinstance(payload_single.get("executions"), list))
+
             status_positions, payload_positions = self._get_json(f"/v1/trades/positions?wallet_address={ton_wallet['address']}")
             self.assertEqual(status_positions, 200)
             self.assertTrue(isinstance(payload_positions.get("items"), list))
