@@ -59,6 +59,24 @@ class TestTradingRuntime(unittest.TestCase):
             self.assertEqual(item['status'], 'CONFIRMED')
             self.assertEqual(item['source'], 'FAST_BUY')
 
+    def test_sandbox_wallet_reject_marks_intent_failed_without_holding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'sbx_reject', 'wallet_address': 'EQTEST', 'max_spend_ton': 2.5},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 2.5, 'fair_ton': 2.7},
+            )
+            item = rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'rejected_wallet_001'},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 2.5, 'fair_ton': 2.7},
+            )
+            self.assertEqual(item['status'], 'FAILED')
+            self.assertEqual(str(item.get('error_code') or ''), 'sandbox_tx_rejected')
+            self.assertEqual(rt.list_holdings('EQTEST')['items'], [])
+
     def test_sandbox_pending_tx_stays_broadcast(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
@@ -148,6 +166,40 @@ class TestTradingRuntime(unittest.TestCase):
             self.assertTrue(isinstance(child, dict))
             self.assertEqual(child.get('intent_type'), 'LIST')
             self.assertEqual(child.get('step_index'), 2)
+
+    def test_autosell_signal_exit_auto_sell_now_creates_pending_sell(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            rt.upsert_autosell_rule({
+                'rule_id': 'signal-exit-sell',
+                'wallet_address': 'EQTEST',
+                'enabled': True,
+                'scope': '*',
+                'trigger_type': 'SIGNAL_EXIT',
+                'params': {'edgeRank100_min': 55, 'conf_pct_min': 35, 'expected_profit_pct_min': 8},
+                'mode': 'AUTO_SELL_NOW',
+                'cooldown_sec': 0,
+                'priority': 1,
+            })
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'v_signal_exit', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0},
+                market_regime='RISK_OFF',
+                variant_snapshot={'variant_label': 'Variant Signal Exit', 'floor_ton': 5.0, 'fair_ton': 4.2, 'action': 'SELL', 'edgeRank100': 22, 'conf_pct': 18, 'expected_profit_pct': -4.5},
+            )
+            rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'tx_signal_exit'},
+                market_regime='RISK_OFF',
+                variant_snapshot={'variant_label': 'Variant Signal Exit', 'floor_ton': 5.0, 'fair_ton': 4.2, 'action': 'SELL', 'edgeRank100': 22, 'conf_pct': 18, 'expected_profit_pct': -4.5},
+            )
+            intents = rt.list_trade_intents('EQTEST')['items']
+            auto_sell = next((x for x in intents if x.get('intent_type') == 'SELL'), None)
+            self.assertTrue(isinstance(auto_sell, dict))
+            self.assertEqual(auto_sell.get('status'), 'PENDING_SIGNATURE')
+            events = rt.stream_events('EQTEST', kinds={'autosell.triggered'}, limit=20)
+            self.assertTrue(events)
+            payload = (events[0] or {}).get('payload') if isinstance((events[0] or {}).get('payload'), dict) else (events[0] or {})
+            self.assertEqual(str((payload or {}).get('mode') or ''), 'AUTO_SELL_NOW')
 
     def test_autosell_take_profit_auto_list_creates_pending_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -244,6 +296,25 @@ class TestTradingRuntime(unittest.TestCase):
                 rt.confirm_fast_buy({'buy_quote_token': tampered, 'tx_hash': 'tx7', 'wallet_address': 'EQTEST'}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 2.0, 'fair_ton': 2.7})
             state = rt._get_quote_state(raw['quote']['nonce'])
             self.assertEqual(state.get('state'), 'EXPIRED')
+
+    def test_provider_unavailable_keeps_intent_in_broadcast(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, tx_verify_url='https://provider/tx')
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'v_provider_timeout', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5},
+            )
+            with patch('urllib.request.urlopen', side_effect=RuntimeError('provider timeout')):
+                item = rt.confirm_intent_signature(
+                    created['intent']['intent_id'],
+                    {'tx_hash': 'tx_provider_timeout'},
+                    market_regime='MEAN_REVERT',
+                    variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.5},
+                )
+            self.assertEqual(item.get('status'), 'BROADCAST')
+            self.assertEqual(str(item.get('tx_hash') or ''), 'tx_provider_timeout')
+            self.assertEqual(rt.list_holdings('EQTEST')['items'], [])
 
     def test_provider_pending_keeps_intent_in_broadcast(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
