@@ -239,6 +239,37 @@ class TestTradingRuntime(unittest.TestCase):
             self.assertEqual(child.get('intent_type'), 'LIST')
             self.assertEqual(child.get('step_index'), 2)
 
+    def test_file_audit_log_records_intent_and_autosell_generated_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            rt.upsert_autosell_rule({
+                'rule_id': 'audit-signal-exit',
+                'wallet_address': 'EQTEST',
+                'enabled': True,
+                'scope': '*',
+                'trigger_type': 'SIGNAL_EXIT',
+                'params': {'edgeRank100_min': 55, 'conf_pct_min': 35, 'expected_profit_pct_min': 8},
+                'mode': 'AUTO_SELL_NOW',
+                'cooldown_sec': 0,
+                'priority': 1,
+            })
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'audit_variant', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0},
+                market_regime='RISK_OFF',
+                variant_snapshot={'floor_ton': 5.0, 'fair_ton': 4.2, 'action': 'SELL', 'edgeRank100': 22, 'conf_pct': 18, 'expected_profit_pct': -4.5},
+            )
+            rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'tx_audit_signal_exit'},
+                market_regime='RISK_OFF',
+                variant_snapshot={'floor_ton': 5.0, 'fair_ton': 4.2, 'action': 'SELL', 'edgeRank100': 22, 'conf_pct': 18, 'expected_profit_pct': -4.5},
+            )
+            rows = rt._read_list(rt.audit_file)
+            self.assertTrue(rows)
+            self.assertTrue(all({'entity', 'entity_id', 'action', 'payload', 'created_at'} <= set(row.keys()) for row in rows))
+            self.assertTrue(any(row.get('entity') == 'autosell_rule' and row.get('action') == 'upserted' for row in rows))
+            self.assertTrue(any(row.get('entity') == 'trade_intent' and row.get('action') == 'created' and (row.get('payload') or {}).get('intent_type') == 'SELL' for row in rows))
+
     def test_autosell_signal_exit_auto_sell_now_creates_pending_sell(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)

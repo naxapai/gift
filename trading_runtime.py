@@ -102,6 +102,7 @@ class TradeRuntime:
         self.wallet_activity_file = data_dir / "trade_wallet_activity_store.json"
         self.events_file = data_dir / "trade_events_store.json"
         self.quotes_file = data_dir / "trade_quotes_store.json"
+        self.audit_file = data_dir / "trade_audit_log_store.json"
         self.used_quotes: dict[str, float] = {}
         self._pg_enabled = bool(self.postgres_dsn and psycopg is not None)
         self._redis = None
@@ -1280,6 +1281,16 @@ class TradeRuntime:
             return
 
     def _append_audit_log(self, entity: str, entity_id: str, action: str, payload: dict) -> None:
+        row = {
+            "entity": str(entity or ""),
+            "entity_id": str(entity_id or ""),
+            "action": str(action or ""),
+            "payload": payload if isinstance(payload, dict) else {},
+            "created_at": _iso(),
+        }
+        rows = self._read_list(self.audit_file)
+        rows.append(row)
+        self._write_list(self.audit_file, rows[-4000:])
         if not self._pg_enabled:
             return
         try:
