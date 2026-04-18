@@ -149,6 +149,8 @@ _SSE_METRICS_OPENS: dict[str, int] = defaultdict(int)
 _SSE_METRICS_ABRUPT_CLOSES: dict[str, int] = defaultdict(int)
 _ADMIN_RT_CACHE_LOCK = threading.Lock()
 _ADMIN_RT_CACHE: dict[tuple, tuple[float, object]] = {}
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -169,6 +171,63 @@ def _save_json_file(path: Path, payload) -> None:
     tmp = path.with_name(f".{path.name}.tmp.{int(time.time() * 1000)}")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     tmp.replace(path)
+
+
+def _client_ip(handler: BaseHTTPRequestHandler) -> str:
+    forwarded = str(handler.headers.get("X-Forwarded-For") or "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip() or "unknown"
+    peer = getattr(handler, "client_address", None)
+    if isinstance(peer, tuple) and peer:
+        return str(peer[0] or "unknown")
+    return "unknown"
+
+
+def _rate_limit_check(bucket: str, *, limit: int, window_sec: float) -> tuple[bool, int]:
+    now = time.time()
+    key = str(bucket or "global")
+    window = max(0.25, float(window_sec))
+    with _RATE_LIMIT_LOCK:
+        q = _RATE_LIMIT_BUCKETS[key]
+        while q and (now - float(q[0])) >= window:
+            q.popleft()
+        if len(q) >= max(1, int(limit)):
+            retry_after = max(1, int(math.ceil(window - (now - float(q[0])))))
+            return False, retry_after
+        q.append(now)
+        if len(q) <= 0:
+            _RATE_LIMIT_BUCKETS.pop(key, None)
+        return True, 0
+
+
+def _apply_trade_rate_limit(
+    handler: BaseHTTPRequestHandler,
+    *,
+    action: str,
+    wallet_address: str | None = None,
+    limit: int,
+    window_sec: float = 1.0,
+) -> bool:
+    subject = str(wallet_address or "").strip() or _client_ip(handler)
+    bucket = f"trade:{str(action or 'unknown').strip().lower()}:{subject}"
+    ok, retry_after = _rate_limit_check(bucket, limit=limit, window_sec=window_sec)
+    if ok:
+        return True
+    body = json.dumps(
+        {
+            "code": "rate_limited",
+            "message": f"rate_limited:{action}",
+            "retry_after_sec": retry_after,
+        }
+    ).encode("utf-8")
+    handler.send_response(HTTPStatus.TOO_MANY_REQUESTS)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Retry-After", str(retry_after))
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+    return False
 
 
 CORS_ALLOWED_ORIGINS = {item.rstrip("/") for item in _split_csv(CORS_ALLOWED_ORIGINS_RAW)}
@@ -2463,6 +2522,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             ok_wallet, reason = _validate_wallet_match(wallet, wallet_address)
             if not ok_wallet:
                 _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if not _apply_trade_rate_limit(self, action="quotes_buy", wallet_address=wallet_address, limit=10):
                 return
             try:
                 payload = _state().trades_issue_buy_quote_v1(variant_id=variant_id, max_price_ton=max_price_ton, slippage_bps=slippage_bps, wallet_address=wallet_address)
@@ -5227,6 +5288,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not ok_wallet:
                 _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
                 return
+            if not _apply_trade_rate_limit(self, action="fast_confirm", wallet_address=str(payload.get("wallet_address") or ""), limit=5):
+                return
             try:
                 item = _state().trades_fast_confirm_v1(payload)
                 _json_response(self, item, cache_control="no-store")
@@ -5245,6 +5308,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             ok_wallet, reason = _validate_wallet_match(wallet, payload.get("wallet_address"))
             if not ok_wallet:
                 _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+                return
+            if not _apply_trade_rate_limit(self, action="intents_create", wallet_address=str(payload.get("wallet_address") or ""), limit=5):
                 return
             try:
                 _json_response(self, _state().trades_create_intent_v1(payload), cache_control="no-store")

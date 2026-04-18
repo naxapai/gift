@@ -204,6 +204,11 @@ body {
   border-color: #9fbef1;
 }
 
+.gmz-select-trigger.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .gmz-select-trigger.is-open {
   border-color: var(--accent);
   box-shadow:
@@ -255,6 +260,51 @@ body {
   background: #eaf3ff;
   color: var(--accent);
   font-weight: 700;
+}
+
+.gmz-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 80;
+  max-width: min(420px, calc(100vw - 32px));
+  border-radius: 14px;
+  border: 1px solid #f5c2c7;
+  background: rgba(255, 247, 247, 0.98);
+  color: #9f1239;
+  padding: 12px 14px;
+  box-shadow: var(--shadow-lift);
+}
+
+.gmz-bottom-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(15, 23, 42, 0.44);
+}
+
+.gmz-bottom-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 71;
+  border-top-left-radius: 24px;
+  border-top-right-radius: 24px;
+  border: 1px solid #d6deed;
+  background: linear-gradient(180deg, rgba(255,255,255,0.99) 0%, rgba(247,250,255,0.98) 100%);
+  box-shadow: 0 -18px 40px rgba(15, 23, 42, 0.18);
+  padding: 16px;
+  max-height: 78vh;
+  overflow: auto;
+}
+
+.gmz-bottom-sheet-handle {
+  width: 56px;
+  height: 5px;
+  border-radius: 999px;
+  margin: 0 auto 14px;
+  background: #cbd5e1;
 }
 
 .gmz-panel input:not([type="checkbox"]),

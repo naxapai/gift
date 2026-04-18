@@ -89,6 +89,7 @@ class TestV1HttpContract(unittest.TestCase):
         FAVORITES_FILE.write_text("{}", encoding="utf-8")
         ALERTS_FILE.write_text("[]", encoding="utf-8")
         server._ADMIN_RT_CACHE.clear()
+        server._RATE_LIMIT_BUCKETS.clear()
         svc = server._STATE
         if isinstance(svc, GiftAnalyticsService):
             svc.alert_rules = []
@@ -379,6 +380,74 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertTrue(isinstance(fast_buy, dict))
             holdings = payload_workspace.get("holdings") or []
             self.assertTrue(isinstance(holdings, list) and holdings)
+
+    def test_trades_quotes_buy_rate_limit_returns_429(self) -> None:
+        allowed_user = {"id": 144832201, "username": "tester"}
+        ton_wallet = {"address": "EQTESTWALLET000000000000000000000000000000000"}
+        variant_id = str(next(iter((server._STATE.variants or {}).keys()), ""))
+        self.assertTrue(variant_id)
+        with patch.object(server, "_auth_user_from_request", return_value=allowed_user), patch.object(server, "_ton_wallet_from_request", return_value=ton_wallet), patch.object(server, "_rate_limit_check", return_value=(False, 1)):
+            with self.assertRaises(HTTPError) as ctx:
+                urlopen(
+                    f"http://127.0.0.1:{self.port}/v1/trades/quotes/buy?variant_id={quote(variant_id)}&max_price_ton=8.5&wallet_address={ton_wallet['address']}",
+                    timeout=10,
+                )
+            self.assertEqual(ctx.exception.code, 429)
+            payload = json.loads(ctx.exception.read().decode("utf-8"))
+            self.assertEqual(str(payload.get("code") or ""), "rate_limited")
+            self.assertIn("quotes_buy", str(payload.get("message") or ""))
+            self.assertEqual(int(payload.get("retry_after_sec") or 0), 1)
+
+    def test_trades_fast_confirm_rate_limit_returns_429(self) -> None:
+        allowed_user = {"id": 144832201, "username": "tester"}
+        ton_wallet = {"address": "EQTESTWALLET000000000000000000000000000000000"}
+        with patch.object(server, "_auth_user_from_request", return_value=allowed_user), patch.object(server, "_ton_wallet_from_request", return_value=ton_wallet), patch.object(server, "_rate_limit_check", return_value=(False, 1)):
+            req = Request(
+                f"http://127.0.0.1:{self.port}/v1/trades/fast/confirm",
+                data=json.dumps(
+                    {
+                        "buy_quote_token": "quote_any",
+                        "tx_hash": "sim_fast_rl_limit",
+                        "wallet_address": ton_wallet["address"],
+                    }
+                ).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with self.assertRaises(HTTPError) as ctx:
+                urlopen(req, timeout=10)
+            self.assertEqual(ctx.exception.code, 429)
+            payload = json.loads(ctx.exception.read().decode("utf-8"))
+            self.assertEqual(str(payload.get("code") or ""), "rate_limited")
+            self.assertIn("fast_confirm", str(payload.get("message") or ""))
+            self.assertEqual(int(payload.get("retry_after_sec") or 0), 1)
+
+    def test_trades_intents_create_rate_limit_returns_429(self) -> None:
+        allowed_user = {"id": 144832201, "username": "tester"}
+        ton_wallet = {"address": "EQTESTWALLET000000000000000000000000000000000"}
+        variant_id = str(next(iter((server._STATE.variants or {}).keys()), ""))
+        self.assertTrue(variant_id)
+        with patch.object(server, "_auth_user_from_request", return_value=allowed_user), patch.object(server, "_ton_wallet_from_request", return_value=ton_wallet), patch.object(server, "_rate_limit_check", return_value=(False, 1)):
+            req = Request(
+                f"http://127.0.0.1:{self.port}/v1/trades/intents",
+                data=json.dumps(
+                    {
+                        "intent_type": "BUY",
+                        "variant_id": variant_id,
+                        "wallet_address": ton_wallet["address"],
+                        "max_spend_ton": 99.9,
+                    }
+                ).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with self.assertRaises(HTTPError) as ctx:
+                urlopen(req, timeout=10)
+            self.assertEqual(ctx.exception.code, 429)
+            payload = json.loads(ctx.exception.read().decode("utf-8"))
+            self.assertEqual(str(payload.get("code") or ""), "rate_limited")
+            self.assertIn("intents_create", str(payload.get("message") or ""))
+            self.assertEqual(int(payload.get("retry_after_sec") or 0), 1)
 
     def test_trades_endpoints_roundtrip_for_allowed_test_user(self) -> None:
         allowed_user = {"id": 144832201, "username": "tester"}

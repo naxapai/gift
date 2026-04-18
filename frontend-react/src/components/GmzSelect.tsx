@@ -12,9 +12,10 @@ interface GmzSelectProps {
   onChange: (value: string) => void
   placeholder?: string
   className?: string
+  disabled?: boolean
 }
 
-export function GmzSelect({ value, options, onChange, placeholder = 'Выберите', className }: GmzSelectProps) {
+export function GmzSelect({ value, options, onChange, placeholder = 'Выберите', className, disabled = false }: GmzSelectProps) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
 
@@ -45,10 +46,14 @@ export function GmzSelect({ value, options, onChange, placeholder = 'Выбер�
     <div ref={rootRef} className={clsx('gmz-select-wrap', className)}>
       <button
         type="button"
-        className={clsx('gmz-select-trigger', open && 'is-open')}
+        className={clsx('gmz-select-trigger', open && 'is-open', disabled && 'is-disabled')}
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        onClick={() => {
+          if (disabled) return
+          setOpen((v) => !v)
+        }}
       >
         <span className={selected ? 'text-[#14151a]' : 'text-[#9aa4b2]'}>{selected?.label || placeholder}</span>
         <span className={clsx('gmz-select-caret', open && 'is-open')} aria-hidden="true">

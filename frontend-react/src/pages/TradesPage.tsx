@@ -7,10 +7,35 @@ import { DecisionTraceCard } from '../components/DecisionTraceCard'
 import { LoadingBlock } from '../components/LoadingBlock'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
-import { getBuyQuote, getCollections, getTelegramAuthMe, getTonAuthMe, getTradesWorkspace, getTradingAccess, getVariants, postFastBuyConfirm, postRetryListIntent, postTradeIntent, postTradeIntentConfirm, resolveVariantByTraits, subscribePnlStream, subscribeTradesStream } from '../lib/api'
-import type { AutoSellRule, CollectionItem, HoldingPro, PositionPro, PnlSummaryPro, TradeIntent, VariantItem, WalletActivityItem } from '../types/api'
+import {
+  getBuyQuote,
+  getCollections,
+  getTelegramAuthMe,
+  getTonAuthMe,
+  getTradesWorkspace,
+  getTradingAccess,
+  getVariants,
+  postFastBuyConfirm,
+  postRetryListIntent,
+  postTradeIntent,
+  postTradeIntentConfirm,
+  resolveVariantByTraits,
+  subscribePnlStream,
+  subscribeTradesStream,
+} from '../lib/api'
+import type {
+  AutoSellRule,
+  CollectionItem,
+  HoldingPro,
+  PnlSummaryPro,
+  PositionPro,
+  TradeIntent,
+  VariantItem,
+  WalletActivityItem,
+} from '../types/api'
 
 const TONCONNECT_BUTTON_ROOT_ID = 'gmz-tonconnect-anchor'
+type TradesUiIntent = TradeIntent & { optimistic?: boolean; failure_reason?: string | null }
 
 function ton(v?: number | null): string {
   const n = Number(v)
@@ -78,10 +103,12 @@ async function sendTonWalletTx(walletTx: Record<string, unknown>): Promise<{ txH
 
 export function TradesPage() {
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [toast, setToast] = useState('')
   const [telegramUserId, setTelegramUserId] = useState('')
   const [walletAddress, setWalletAddress] = useState('')
   const [allowed, setAllowed] = useState(false)
+  const [walletResolved, setWalletResolved] = useState(false)
   const [pnl, setPnl] = useState<PnlSummaryPro | null>(null)
   const [positions, setPositions] = useState<PositionPro[]>([])
   const [holdings, setHoldings] = useState<HoldingPro[]>([])
@@ -101,15 +128,16 @@ export function TradesPage() {
   const [buyAndListPriceTon, setBuyAndListPriceTon] = useState('')
   const [creating, setCreating] = useState(false)
   const [actionBusyId, setActionBusyId] = useState('')
-  const [optimisticHistory, setOptimisticHistory] = useState<TradeIntent[]>([])
+  const [optimisticHistory, setOptimisticHistory] = useState<TradesUiIntent[]>([])
   const [expandedIntentId, setExpandedIntentId] = useState('')
   const [expandedPositionId, setExpandedPositionId] = useState('')
   const [expandedHoldingId, setExpandedHoldingId] = useState('')
   const [holdingDrafts, setHoldingDrafts] = useState<Record<string, { listPriceTon: string; transferUserId: string }>>({})
+  const [mobileActionHoldingId, setMobileActionHoldingId] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
-    setError('')
+    setLoadError('')
     try {
       const [auth, tonAuth, access] = await Promise.all([
         getTelegramAuthMe(),
@@ -121,6 +149,7 @@ export function TradesPage() {
       setWalletAddress(wa)
       const isAllowed = Boolean(access.allowed)
       setAllowed(isAllowed)
+      setWalletResolved(true)
       if (!isAllowed || !wa) {
         setPnl(null)
         setPositions([])
@@ -138,7 +167,8 @@ export function TradesPage() {
       setActivity(Array.isArray(workspace.wallet_activity) ? workspace.wallet_activity : [])
       setRules(Array.isArray(workspace.autosell_rules) ? workspace.autosell_rules : [])
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'trades_load_failed')
+      setWalletResolved(true)
+      setLoadError(e instanceof Error ? e.message : 'trades_load_failed')
     } finally {
       setLoading(false)
     }
@@ -256,13 +286,42 @@ export function TradesPage() {
     }
   }, [allowed, walletAddress, load])
 
+  useEffect(() => {
+    if (!toast) return
+    const timer = window.setTimeout(() => setToast(''), 4200)
+    return () => window.clearTimeout(timer)
+  }, [toast])
+
+  useEffect(() => {
+    if (!mobileActionHoldingId) return
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileActionHoldingId('')
+    }
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+  }, [mobileActionHoldingId])
+
   const createBuy = useCallback(async (intentType: 'BUY' | 'BUY_AND_LIST' | 'FAST_BUY') => {
     if (!walletAddress || !variantId.trim()) return
     setCreating(true)
-    setError('')
+    setToast('')
+    let optimisticId = ''
     try {
-      const optimisticId = `optimistic_${Date.now()}`
-      setOptimisticHistory((prev) => [{ intent_id: optimisticId, intent_type: intentType === 'FAST_BUY' ? 'BUY' : intentType, variant_id: variantId.trim(), wallet_address: walletAddress, status: 'PENDING_SIGNATURE', created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 600000).toISOString(), source: intentType === 'FAST_BUY' ? 'FAST_BUY' : 'STANDARD' }, ...prev].slice(0, 30))
+      optimisticId = `optimistic_${Date.now()}`
+      setOptimisticHistory((prev) => [
+        {
+          intent_id: optimisticId,
+          intent_type: intentType === 'FAST_BUY' ? 'BUY' : intentType,
+          variant_id: variantId.trim(),
+          wallet_address: walletAddress,
+          status: 'PENDING_SIGNATURE',
+          created_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 600000).toISOString(),
+          source: intentType === 'FAST_BUY' ? 'FAST_BUY' : 'STANDARD',
+          optimistic: true,
+        },
+        ...prev,
+      ].slice(0, 30))
       if (intentType === 'FAST_BUY') {
         const quote = await getBuyQuote({ variantId: variantId.trim(), maxPriceTon: Number(maxPriceTon || 0), slippageBps: Number(slippageBps || 100), walletAddress })
         const tx = await sendTonWalletTx((quote as unknown as { wallet_tx?: Record<string, unknown> }).wallet_tx || {})
@@ -286,10 +345,12 @@ export function TradesPage() {
       setMaxPriceTon('')
       setBuyAndListPriceTon('')
       await load()
+      setOptimisticHistory((prev) => prev.filter((row) => row.intent_id !== optimisticId))
     } catch (e) {
-      setError(readableTradeError(e instanceof Error ? e.message : 'trade_create_failed'))
+      const message = readableTradeError(e instanceof Error ? e.message : 'trade_create_failed')
+      setToast(message)
+      setOptimisticHistory((prev) => prev.map((row) => row.intent_id === optimisticId ? { ...row, status: 'FAILED', failure_reason: message } : row))
     } finally {
-      setOptimisticHistory([])
       setCreating(false)
     }
   }, [walletAddress, variantId, maxPriceTon, slippageBps, buyAndListPriceTon, load])
@@ -297,7 +358,7 @@ export function TradesPage() {
   const runHoldingAction = useCallback(async (holding: HoldingPro, action: 'LIST' | 'CANCEL_LISTING' | 'SELL' | 'TRANSFER') => {
     if (!walletAddress) return
     setActionBusyId(`${holding.holding_id}:${action}`)
-    setError('')
+    setToast('')
     try {
       const draft = holdingDrafts[holding.holding_id] || { listPriceTon: '', transferUserId: '' }
       const payload: Record<string, unknown> = {
@@ -319,9 +380,10 @@ export function TradesPage() {
       await postTradeIntentConfirm(created.intent.intent_id, { tx_hash: tx.txHash, wallet_address: walletAddress, signature_meta: { payload_hash: tx.payloadHash } })
       await load()
     } catch (e) {
-      setError(readableTradeError(e instanceof Error ? e.message : 'holding_action_failed'))
+      setToast(readableTradeError(e instanceof Error ? e.message : 'holding_action_failed'))
     } finally {
       setActionBusyId('')
+      setMobileActionHoldingId('')
     }
   }, [walletAddress, load, holdingDrafts])
 
@@ -338,12 +400,12 @@ export function TradesPage() {
 
   const retryChildList = useCallback(async (parentIntentId: string) => {
     setActionBusyId(`retry:${parentIntentId}`)
-    setError('')
+    setToast('')
     try {
       await postRetryListIntent(parentIntentId)
       await load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'retry_list_failed')
+      setToast(e instanceof Error ? e.message : 'retry_list_failed')
     } finally {
       setActionBusyId('')
     }
@@ -354,13 +416,27 @@ export function TradesPage() {
     label: String(row.name || row.collection_id || ''),
   })).filter((row) => row.value && row.label), [collections])
 
-  const collectionVariants = useMemo(() => (tradeVariants || []).filter((row) => !selectedCollectionId || String(row.collection_id || '') === selectedCollectionId), [tradeVariants, selectedCollectionId])
+  const collectionVariants = useMemo(() => (
+    (tradeVariants || []).filter((row) => !selectedCollectionId || String(row.collection_id || '') === selectedCollectionId)
+  ), [tradeVariants, selectedCollectionId])
 
-  const modelOptions = useMemo(() => Array.from(new Set(collectionVariants.map((row) => String(row.model || '').trim()).filter(Boolean))).map((value) => ({ value, label: value })), [collectionVariants])
+  const modelOptions = useMemo(() => Array.from(new Set(
+    collectionVariants.map((row) => String(row.model || '').trim()).filter(Boolean),
+  )).map((value) => ({ value, label: value })), [collectionVariants])
 
-  const backgroundOptions = useMemo(() => Array.from(new Set(collectionVariants.filter((row) => !selectedModel || String(row.model || '').trim() === selectedModel).map((row) => String(row.background || '').trim()).filter(Boolean))).map((value) => ({ value, label: value })), [collectionVariants, selectedModel])
+  const backgroundOptions = useMemo(() => Array.from(new Set(
+    collectionVariants
+      .filter((row) => !selectedModel || String(row.model || '').trim() === selectedModel)
+      .map((row) => String(row.background || '').trim())
+      .filter(Boolean),
+  )).map((value) => ({ value, label: value })), [collectionVariants, selectedModel])
 
-  const patternOptions = useMemo(() => Array.from(new Set(collectionVariants.filter((row) => (!selectedModel || String(row.model || '').trim() === selectedModel) && (!selectedBackground || String(row.background || '').trim() === selectedBackground)).map((row) => String(row.pattern || '').trim()).filter(Boolean))).map((value) => ({ value, label: value })), [collectionVariants, selectedModel, selectedBackground])
+  const patternOptions = useMemo(() => Array.from(new Set(
+    collectionVariants
+      .filter((row) => (!selectedModel || String(row.model || '').trim() === selectedModel) && (!selectedBackground || String(row.background || '').trim() === selectedBackground))
+      .map((row) => String(row.pattern || '').trim())
+      .filter(Boolean),
+  )).map((value) => ({ value, label: value })), [collectionVariants, selectedModel, selectedBackground])
 
   const selectedVariantLabel = useMemo(() => {
     if (!variantId) return ''
@@ -370,7 +446,7 @@ export function TradesPage() {
   }, [tradeVariants, variantId])
 
   const policyText = useMemo(() => 'Variant A only: BUY -> CONFIRMED -> LIST. FAST BUY enabled. Backend never stores private keys.', [])
-  const mergedHistory = useMemo(() => {
+  const mergedHistory = useMemo<TradesUiIntent[]>(() => {
     const items = [...optimisticHistory, ...history]
     const seen = new Set<string>()
     return items.filter((row) => {
@@ -378,8 +454,27 @@ export function TradesPage() {
       if (!key || seen.has(key)) return false
       seen.add(key)
       return true
-    })
+    }) as TradesUiIntent[]
   }, [history, optimisticHistory])
+
+  const walletStatePending = loading || !walletResolved
+  const mobileActionHolding = useMemo(
+    () => holdings.find((row) => row.holding_id === mobileActionHoldingId) || null,
+    [holdings, mobileActionHoldingId],
+  )
+
+  const renderHoldingActions = useCallback((row: HoldingPro, compact = false) => {
+    const busy = actionBusyId.startsWith(`${row.holding_id}:`)
+    return (
+      <div className={compact ? 'space-y-2' : 'flex flex-wrap gap-2 py-2'}>
+        {row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={busy || walletStatePending} onClick={() => { void runHoldingAction(row, 'LIST') }}>LIST</button> : null}
+        {row.status === 'LISTED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={busy || walletStatePending} onClick={() => { void runHoldingAction(row, 'CANCEL_LISTING') }}>CANCEL</button> : null}
+        {row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={busy || walletStatePending} onClick={() => { void runHoldingAction(row, 'SELL') }}>SELL</button> : null}
+        {row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={busy || walletStatePending} onClick={() => { void runHoldingAction(row, 'TRANSFER') }}>TRANSFER</button> : null}
+        {busy ? <div className="text-xs text-slate-500">{compact ? 'Операция выполняется…' : 'pending…'}</div> : null}
+      </div>
+    )
+  }, [actionBusyId, runHoldingAction, walletStatePending])
 
   return (
     <section>
@@ -401,9 +496,19 @@ export function TradesPage() {
         <LoadingBlock />
       ) : (
         <BentoGrid>
+          {loadError ? (
+            <BentoCard title="Ошибка загрузки" className="xl:col-span-12">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-700">
+                <div>{loadError}</div>
+                <button type="button" className="gmz-btn gmz-btn-primary px-4 py-2 text-sm" onClick={() => { void load() }}>Повторить</button>
+              </div>
+            </BentoCard>
+          ) : null}
+
           <BentoCard title="Policy" className="xl:col-span-12">
             <div className="text-sm text-slate-700">{policyText}</div>
           </BentoCard>
+
           <BentoCard title="Fast Buy / Buy / Buy+List" className="xl:col-span-12">
             <div className="grid gap-3 md:grid-cols-4">
               <label className="block">
@@ -419,6 +524,7 @@ export function TradesPage() {
                   }}
                   options={collectionOptions}
                   placeholder={selectorLoading ? 'Загрузка…' : 'Выберите коллекцию'}
+                  disabled={selectorLoading || walletStatePending}
                 />
               </label>
               <label className="block">
@@ -433,6 +539,7 @@ export function TradesPage() {
                   }}
                   options={modelOptions}
                   placeholder="Выберите модель"
+                  disabled={selectorLoading || walletStatePending || !selectedCollectionId}
                 />
               </label>
               <label className="block">
@@ -446,6 +553,7 @@ export function TradesPage() {
                   }}
                   options={backgroundOptions}
                   placeholder="Выберите фон"
+                  disabled={selectorLoading || walletStatePending || !selectedCollectionId || !selectedModel}
                 />
               </label>
               <label className="block">
@@ -458,6 +566,7 @@ export function TradesPage() {
                   }}
                   options={patternOptions}
                   placeholder="Выберите узор"
+                  disabled={selectorLoading || walletStatePending || !selectedCollectionId || !selectedModel}
                 />
               </label>
               <label className="block">
@@ -468,18 +577,18 @@ export function TradesPage() {
                 <span className="mb-1 block text-sm font-medium text-slate-700">Вариант</span>
                 <input value={selectedVariantLabel} readOnly placeholder="Выберите коллекцию / модель / фон / узор" className="gmz-input bg-slate-50" />
               </label>
-              <input value={maxPriceTon} onChange={(e) => setMaxPriceTon(e.target.value)} placeholder="max price TON" className="gmz-input" />
-              <input value={slippageBps} onChange={(e) => setSlippageBps(e.target.value)} placeholder="slippage bps" className="gmz-input" />
-              <input value={buyAndListPriceTon} onChange={(e) => setBuyAndListPriceTon(e.target.value)} placeholder="BUY+LIST price TON" className="gmz-input" />
+              <input value={maxPriceTon} onChange={(e) => setMaxPriceTon(e.target.value)} placeholder="max price TON" className="gmz-input" disabled={walletStatePending} />
+              <input value={slippageBps} onChange={(e) => setSlippageBps(e.target.value)} placeholder="slippage bps" className="gmz-input" disabled={walletStatePending} />
+              <input value={buyAndListPriceTon} onChange={(e) => setBuyAndListPriceTon(e.target.value)} placeholder="BUY+LIST price TON" className="gmz-input" disabled={walletStatePending} />
               <div className="flex flex-wrap gap-2">
-                <button type="button" className="gmz-btn gmz-btn-primary px-4 py-2 text-sm" disabled={creating || !variantId} onClick={() => { void createBuy('FAST_BUY') }}>FAST BUY</button>
-                <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating || !variantId} onClick={() => { void createBuy('BUY') }}>BUY</button>
-                <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating || !variantId} onClick={() => { void createBuy('BUY_AND_LIST') }}>BUY+LIST</button>
+                <button type="button" className="gmz-btn gmz-btn-primary px-4 py-2 text-sm" disabled={creating || !variantId || walletStatePending} onClick={() => { void createBuy('FAST_BUY') }}>FAST BUY</button>
+                <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating || !variantId || walletStatePending} onClick={() => { void createBuy('BUY') }}>BUY</button>
+                <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating || !variantId || walletStatePending} onClick={() => { void createBuy('BUY_AND_LIST') }}>BUY+LIST</button>
               </div>
             </div>
             <div className="mt-2 text-xs text-slate-500">Кнопка “Купить и выставить” создает 2 шага: BUY → CONFIRMED → LIST.</div>
-            {error ? <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div> : null}
           </BentoCard>
+
           <BentoCard title="PnL PRO" className="xl:col-span-12">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
               <MetricTile label="PnL today" value={ton(pnl?.pnl_today_ton)} />
@@ -489,20 +598,61 @@ export function TradesPage() {
               <MetricTile label="Regime" value={String(pnl?.market_regime || '—')} />
             </div>
           </BentoCard>
+
           <BentoCard title="Positions" className="xl:col-span-12">
-            {!positions.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">Нет открытых позиций. <Link to="/catalog" className="font-semibold text-[var(--accent)] hover:underline">Откройте каталог</Link> и купите первый подарок.</div> : null}
+            {!positions.length ? (
+              <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">
+                Нет открытых позиций. <Link to="/catalog" className="font-semibold text-[var(--accent)] hover:underline">Откройте каталог</Link> и купите первый подарок.
+              </div>
+            ) : null}
             <div className="grid gap-3 md:hidden">
               {positions.map((row) => (
                 <article key={row.position_id} className="rounded-2xl border border-[var(--line)] bg-white/75 p-4 text-sm shadow-soft">
                   <div className="flex items-center justify-between"><strong>{row.variant_id}</strong><span>{row.action || '—'}</span></div>
-                  <div className="mt-2 grid gap-2 text-xs text-slate-600"><div>Qty: {row.qty}</div><div>Avg buy: {ton(row.avg_buy_price_ton)}</div><div>Mark: {ton(row.mark_price_ton)}</div><div>UPnL: {ton(row.unrealized_pnl_ton)}</div></div>
+                  <div className="mt-2 grid gap-2 text-xs text-slate-600">
+                    <div>Qty: {row.qty}</div>
+                    <div>Avg buy: {ton(row.avg_buy_price_ton)}</div>
+                    <div>Mark: {ton(row.mark_price_ton)}</div>
+                    <div>UPnL: {ton(row.unrealized_pnl_ton)}</div>
+                  </div>
                   {Array.isArray(row.reasons) && row.reasons.length ? <div className="mt-2 text-xs text-slate-500">Причины: {row.reasons.join(' • ')}</div> : null}
                   {Array.isArray(row.risk_flags) && row.risk_flags.length ? <div className="mt-2 text-xs text-slate-500">Риски: {row.risk_flags.join(' • ')}</div> : null}
                 </article>
               ))}
             </div>
-            <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Variant</th><th>Qty</th><th>Avg buy</th><th>Mark</th><th>UPnL</th><th>Action</th><th>Details</th></tr></thead><tbody>{positions.map((row) => <><tr key={row.position_id} className="border-t border-slate-100"><td className="py-2">{row.variant_id}</td><td>{row.qty}</td><td>{ton(row.avg_buy_price_ton)}</td><td>{ton(row.mark_price_ton)}</td><td>{ton(row.unrealized_pnl_ton)}</td><td>{row.action || '—'}</td><td><button type="button" className="gmz-btn px-3 py-1 text-xs" onClick={() => setExpandedPositionId((prev) => prev === row.position_id ? '' : row.position_id)}>{expandedPositionId === row.position_id ? 'Скрыть' : 'Детали'}</button></td></tr>{expandedPositionId === row.position_id ? <tr className="bg-slate-50"><td colSpan={7} className="px-3 py-3 text-xs text-slate-700"><div><strong>reasons:</strong> {Array.isArray(row.reasons) && row.reasons.length ? row.reasons.join(' | ') : '—'}</div><div className="mt-1"><strong>risk_flags:</strong> {Array.isArray(row.risk_flags) && row.risk_flags.length ? row.risk_flags.join(' | ') : '—'}</div><div className="mt-2"><DecisionTraceCard trace={row.decision_trace} title="Decision Trace" /></div></td></tr> : null}</>)}</tbody></table></div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500"><th>Variant</th><th>Qty</th><th>Avg buy</th><th>Mark</th><th>UPnL</th><th>Action</th><th>Details</th></tr>
+                </thead>
+                <tbody>
+                  {positions.map((row) => (
+                    <>
+                      <tr key={row.position_id} className="border-t border-slate-100">
+                        <td className="py-2">{row.variant_id}</td>
+                        <td>{row.qty}</td>
+                        <td>{ton(row.avg_buy_price_ton)}</td>
+                        <td>{ton(row.mark_price_ton)}</td>
+                        <td>{ton(row.unrealized_pnl_ton)}</td>
+                        <td>{row.action || '—'}</td>
+                        <td><button type="button" className="gmz-btn px-3 py-1 text-xs" onClick={() => setExpandedPositionId((prev) => prev === row.position_id ? '' : row.position_id)}>{expandedPositionId === row.position_id ? 'Скрыть' : 'Детали'}</button></td>
+                      </tr>
+                      {expandedPositionId === row.position_id ? (
+                        <tr className="bg-slate-50">
+                          <td colSpan={7} className="px-3 py-3 text-xs text-slate-700">
+                            <div><strong>reasons:</strong> {Array.isArray(row.reasons) && row.reasons.length ? row.reasons.join(' | ') : '—'}</div>
+                            <div className="mt-1"><strong>risk_flags:</strong> {Array.isArray(row.risk_flags) && row.risk_flags.length ? row.risk_flags.join(' | ') : '—'}</div>
+                            <div className="mt-2"><DecisionTraceCard trace={row.decision_trace} title="Decision Trace" /></div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </BentoCard>
+
           <BentoCard title="Holdings" className="xl:col-span-12">
             {!holdings.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">Нет holdings. После подтвержденной покупки подарок появится здесь.</div> : null}
             <div className="grid gap-3 md:hidden">
@@ -512,14 +662,47 @@ export function TradesPage() {
                   <div className="mt-2 grid gap-2 text-xs text-slate-600"><div>Gift: {row.gift_unique_id}</div><div>Acquired: {ton(row.acquired_price_ton)}</div><div>Listed: {ton(row.listed_price_ton)}</div></div>
                   {row.listing_meta ? <div className="mt-2 text-xs text-slate-500">Listing: {JSON.stringify(row.listing_meta)}</div> : null}
                   {row.transfer_meta ? <div className="mt-2 text-xs text-slate-500">Transfer: {JSON.stringify(row.transfer_meta)}</div> : null}
-                  {row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.listPriceTon || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { listPriceTon: e.target.value })} placeholder="Цена листинга TON" className="gmz-input mt-3 text-xs" /> : null}
-                  {row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.transferUserId || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { transferUserId: e.target.value })} placeholder="Telegram user id для TRANSFER" className="gmz-input mt-2 text-xs" /> : null}
-                  <div className="mt-3 flex flex-wrap gap-2">{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:LIST`} onClick={() => { void runHoldingAction(row, 'LIST') }}>LIST</button> : null}{row.status === 'LISTED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:CANCEL_LISTING`} onClick={() => { void runHoldingAction(row, 'CANCEL_LISTING') }}>CANCEL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:SELL`} onClick={() => { void runHoldingAction(row, 'SELL') }}>SELL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:TRANSFER`} onClick={() => { void runHoldingAction(row, 'TRANSFER') }}>TRANSFER</button> : null}</div>
+                  <div className="mt-3">
+                    <button type="button" className="gmz-btn w-full px-3 py-2 text-xs" onClick={() => setMobileActionHoldingId(row.holding_id)}>Действия</button>
+                  </div>
                 </article>
               ))}
             </div>
-            <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Gift</th><th>Variant</th><th>Status</th><th>Acquired</th><th>Listed</th><th>List price</th><th>Transfer</th><th>Meta</th><th>Actions</th><th>Details</th></tr></thead><tbody>{holdings.map((row) => <><tr key={row.holding_id} className="border-t border-slate-100"><td className="py-2">{row.gift_unique_id}</td><td>{row.variant_id}</td><td>{row.status}</td><td>{ton(row.acquired_price_ton)}</td><td>{ton(row.listed_price_ton)}</td><td>{row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.listPriceTon || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { listPriceTon: e.target.value })} placeholder={String(Number((row.acquired_price_ton || 0) * 1.12).toFixed(2))} className="gmz-input text-xs" /> : '—'}</td><td>{row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.transferUserId || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { transferUserId: e.target.value })} placeholder="144832201" className="gmz-input text-xs" /> : '—'}</td><td className="max-w-[220px] py-2 text-xs text-slate-500">{row.listing_meta ? <div>Listing: {JSON.stringify(row.listing_meta)}</div> : null}{row.transfer_meta ? <div className="mt-1">Transfer: {JSON.stringify(row.transfer_meta)}</div> : null}{!row.listing_meta && !row.transfer_meta ? '—' : null}</td><td><div className="flex flex-wrap gap-2 py-2">{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:LIST`} onClick={() => { void runHoldingAction(row, 'LIST') }}>LIST</button> : null}{row.status === 'LISTED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:CANCEL_LISTING`} onClick={() => { void runHoldingAction(row, 'CANCEL_LISTING') }}>CANCEL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:SELL`} onClick={() => { void runHoldingAction(row, 'SELL') }}>SELL</button> : null}{row.status === 'OWNED' ? <button type="button" className="gmz-btn px-3 py-1 text-xs" disabled={actionBusyId === `${row.holding_id}:TRANSFER`} onClick={() => { void runHoldingAction(row, 'TRANSFER') }}>TRANSFER</button> : null}</div></td><td><button type="button" className="gmz-btn px-3 py-1 text-xs" onClick={() => setExpandedHoldingId((prev) => prev === row.holding_id ? '' : row.holding_id)}>{expandedHoldingId === row.holding_id ? 'Скрыть' : 'Детали'}</button></td></tr>{expandedHoldingId === row.holding_id ? <tr className="bg-slate-50"><td colSpan={10} className="px-3 py-3 text-xs text-slate-700"><div><strong>listing_meta:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.listing_meta || {}, null, 2)}</pre></div><div className="mt-2"><strong>transfer_meta:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.transfer_meta || {}, null, 2)}</pre></div></td></tr> : null}</>)}</tbody></table></div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500"><th>Gift</th><th>Variant</th><th>Status</th><th>Acquired</th><th>Listed</th><th>List price</th><th>Transfer</th><th>Meta</th><th>Actions</th><th>Details</th></tr>
+                </thead>
+                <tbody>
+                  {holdings.map((row) => (
+                    <>
+                      <tr key={row.holding_id} className="border-t border-slate-100">
+                        <td className="py-2">{row.gift_unique_id}</td>
+                        <td>{row.variant_id}</td>
+                        <td>{row.status}{actionBusyId.startsWith(`${row.holding_id}:`) ? <div className="text-xs text-slate-500">pending…</div> : null}</td>
+                        <td>{ton(row.acquired_price_ton)}</td>
+                        <td>{ton(row.listed_price_ton)}</td>
+                        <td>{row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.listPriceTon || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { listPriceTon: e.target.value })} placeholder={String(Number((row.acquired_price_ton || 0) * 1.12).toFixed(2))} className="gmz-input text-xs" /> : '—'}</td>
+                        <td>{row.status === 'OWNED' ? <input value={holdingDrafts[row.holding_id]?.transferUserId || ''} onChange={(e) => updateHoldingDraft(row.holding_id, { transferUserId: e.target.value })} placeholder="144832201" className="gmz-input text-xs" /> : '—'}</td>
+                        <td className="max-w-[220px] py-2 text-xs text-slate-500">{row.listing_meta ? <div>Listing: {JSON.stringify(row.listing_meta)}</div> : null}{row.transfer_meta ? <div className="mt-1">Transfer: {JSON.stringify(row.transfer_meta)}</div> : null}{!row.listing_meta && !row.transfer_meta ? '—' : null}</td>
+                        <td>{renderHoldingActions(row)}</td>
+                        <td><button type="button" className="gmz-btn px-3 py-1 text-xs" onClick={() => setExpandedHoldingId((prev) => prev === row.holding_id ? '' : row.holding_id)}>{expandedHoldingId === row.holding_id ? 'Скрыть' : 'Детали'}</button></td>
+                      </tr>
+                      {expandedHoldingId === row.holding_id ? (
+                        <tr className="bg-slate-50">
+                          <td colSpan={10} className="px-3 py-3 text-xs text-slate-700">
+                            <div><strong>listing_meta:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.listing_meta || {}, null, 2)}</pre></div>
+                            <div className="mt-2"><strong>transfer_meta:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.transfer_meta || {}, null, 2)}</pre></div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </BentoCard>
+
           <BentoCard title="History" className="xl:col-span-12">
             {!mergedHistory.length ? <div className="mb-3 rounded-xl border border-dashed border-[var(--line)] bg-white/60 px-4 py-4 text-sm text-slate-600">История сделок пуста. Создайте первый BUY или FAST BUY.</div> : null}
             <div className="grid gap-3 md:hidden">
@@ -528,6 +711,7 @@ export function TradesPage() {
                   <div className="flex items-center justify-between"><strong>{row.intent_type}</strong><span>{row.status}</span></div>
                   <div className="mt-2 text-xs text-slate-600">{row.variant_id}</div>
                   <div className="mt-1 text-xs text-slate-500">{new Date(row.created_at).toLocaleString('ru-RU')}</div>
+                  {row.failure_reason ? <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-2 py-2 text-xs text-rose-700">{row.failure_reason}</div> : null}
                   <div className="mt-2 space-y-1 text-xs text-slate-600">
                     {timelineSteps((row as { status_timeline?: unknown }).status_timeline).map((step, idx) => (
                       <div key={`${row.intent_id}-step-${idx}`}>{step.status} · {step.ts ? new Date(step.ts).toLocaleString('ru-RU') : '—'}{step.reason ? ` · ${step.reason}` : ''}</div>
@@ -537,16 +721,94 @@ export function TradesPage() {
                 </article>
               ))}
             </div>
-            <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Intent</th><th>Type</th><th>Status</th><th>Variant</th><th>Created</th><th>Chain</th><th>Actions</th></tr></thead><tbody>{mergedHistory.map((row) => <><tr key={row.intent_id} className="border-t border-slate-100 align-top"><td className="py-2">{row.intent_id}</td><td>{row.intent_type}</td><td>{row.status}</td><td>{row.variant_id}</td><td>{new Date(row.created_at).toLocaleString('ru-RU')}</td><td>{row.chain_id || '—'}{row.parent_intent_id ? <div className="text-xs text-slate-500">parent: {row.parent_intent_id}</div> : null}</td><td><button type="button" className="gmz-btn px-3 py-1 text-xs" onClick={() => setExpandedIntentId((prev) => prev === row.intent_id ? '' : row.intent_id)}>{expandedIntentId === row.intent_id ? 'Скрыть' : 'Детали'}</button>{row.intent_type === 'BUY_AND_LIST' || (row.chain_policy === 'BUY_THEN_LIST' && !row.parent_intent_id) ? <button type="button" className="gmz-btn ml-2 px-3 py-1 text-xs" disabled={actionBusyId === `retry:${row.intent_id}`} onClick={() => { void retryChildList(row.intent_id) }}>Повторить выставление</button> : null}<div className="mt-1 text-xs text-slate-500">{timelineSteps((row as { status_timeline?: unknown }).status_timeline).length ? `${timelineSteps((row as { status_timeline?: unknown }).status_timeline).length} steps` : 'timeline pending'}</div></td></tr>{expandedIntentId === row.intent_id ? <tr className="bg-slate-50"><td colSpan={7} className="px-3 py-3 text-xs text-slate-700"><div><strong>reasons:</strong> {Array.isArray(row.reasons) && row.reasons.length ? row.reasons.join(' | ') : '—'}</div><div className="mt-1"><strong>risk_flags:</strong> {Array.isArray(row.risk_flags) && row.risk_flags.length ? row.risk_flags.join(' | ') : '—'}</div><div className="mt-1"><strong>status_timeline:</strong> <div className="mt-1 space-y-1">{timelineSteps((row as { status_timeline?: unknown }).status_timeline).map((step, idx) => <div key={`${row.intent_id}-timeline-${idx}`}>{step.status} · {step.ts ? new Date(step.ts).toLocaleString('ru-RU') : '—'}{step.source ? ` · ${step.source}` : ''}{step.reason ? ` · ${step.reason}` : ''}</div>)}</div></div>{Array.isArray(row.executions) && row.executions.length ? <div className="mt-2"><strong>executions:</strong> <div className="mt-1 space-y-1">{row.executions.map((exec, idx) => <div key={`${row.intent_id}-exec-${idx}`}>{String(exec.result || '—')} · {String(exec.tx_hash || '—')}{exec.error_code ? ` · ${String(exec.error_code)}` : ''}</div>)}</div></div> : null}{row.post_action ? <div className="mt-2"><strong>post_action:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.post_action, null, 2)}</pre></div> : null}{row.transfer_params ? <div className="mt-2"><strong>transfer_params:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.transfer_params, null, 2)}</pre></div> : null}<div className="mt-2"><strong>decision_trace:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.decision_trace || {}, null, 2)}</pre></div></td></tr> : null}</>)}</tbody></table></div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500"><th>Intent</th><th>Type</th><th>Status</th><th>Variant</th><th>Created</th><th>Chain</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                  {mergedHistory.map((row) => (
+                    <>
+                      <tr key={row.intent_id} className="border-t border-slate-100 align-top">
+                        <td className="py-2">{row.intent_id}</td>
+                        <td>{row.intent_type}</td>
+                        <td>{row.status}{row.failure_reason ? <div className="mt-1 text-xs text-rose-600">{row.failure_reason}</div> : null}</td>
+                        <td>{row.variant_id}</td>
+                        <td>{new Date(row.created_at).toLocaleString('ru-RU')}</td>
+                        <td>{row.chain_id || '—'}{row.parent_intent_id ? <div className="text-xs text-slate-500">parent: {row.parent_intent_id}</div> : null}</td>
+                        <td>
+                          <button type="button" className="gmz-btn px-3 py-1 text-xs" onClick={() => setExpandedIntentId((prev) => prev === row.intent_id ? '' : row.intent_id)}>{expandedIntentId === row.intent_id ? 'Скрыть' : 'Детали'}</button>
+                          {row.intent_type === 'BUY_AND_LIST' || (row.chain_policy === 'BUY_THEN_LIST' && !row.parent_intent_id) ? <button type="button" className="gmz-btn ml-2 px-3 py-1 text-xs" disabled={actionBusyId === `retry:${row.intent_id}`} onClick={() => { void retryChildList(row.intent_id) }}>Повторить выставление</button> : null}
+                          <div className="mt-1 text-xs text-slate-500">{timelineSteps((row as { status_timeline?: unknown }).status_timeline).length ? `${timelineSteps((row as { status_timeline?: unknown }).status_timeline).length} steps` : 'timeline pending'}</div>
+                        </td>
+                      </tr>
+                      {expandedIntentId === row.intent_id ? (
+                        <tr className="bg-slate-50">
+                          <td colSpan={7} className="px-3 py-3 text-xs text-slate-700">
+                            <div><strong>reasons:</strong> {Array.isArray(row.reasons) && row.reasons.length ? row.reasons.join(' | ') : '—'}</div>
+                            <div className="mt-1"><strong>risk_flags:</strong> {Array.isArray(row.risk_flags) && row.risk_flags.length ? row.risk_flags.join(' | ') : '—'}</div>
+                            <div className="mt-1"><strong>status_timeline:</strong> <div className="mt-1 space-y-1">{timelineSteps((row as { status_timeline?: unknown }).status_timeline).map((step, idx) => <div key={`${row.intent_id}-timeline-${idx}`}>{step.status} · {step.ts ? new Date(step.ts).toLocaleString('ru-RU') : '—'}{step.source ? ` · ${step.source}` : ''}{step.reason ? ` · ${step.reason}` : ''}</div>)}</div></div>
+                            {Array.isArray(row.executions) && row.executions.length ? <div className="mt-2"><strong>executions:</strong> <div className="mt-1 space-y-1">{row.executions.map((exec, idx) => <div key={`${row.intent_id}-exec-${idx}`}>{String(exec.result || '—')} · {String(exec.tx_hash || '—')}{exec.error_code ? ` · ${String(exec.error_code)}` : ''}</div>)}</div></div> : null}
+                            {row.post_action ? <div className="mt-2"><strong>post_action:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.post_action, null, 2)}</pre></div> : null}
+                            {row.transfer_params ? <div className="mt-2"><strong>transfer_params:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.transfer_params, null, 2)}</pre></div> : null}
+                            <div className="mt-2"><strong>decision_trace:</strong> <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(row.decision_trace || {}, null, 2)}</pre></div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </BentoCard>
+
           <BentoCard title="Wallet activity" className="xl:col-span-12">
-            <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500"><th>Time</th><th>Direction</th><th>Amount</th><th>Tx</th></tr></thead><tbody>{activity.map((row) => <tr key={`${row.tx_hash}-${row.ts}`} className="border-t border-slate-100"><td className="py-2">{new Date(row.ts).toLocaleString('ru-RU')}</td><td>{row.direction}</td><td>{ton(row.amount_ton)}</td><td>{row.tx_hash}</td></tr>)}</tbody></table></div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500"><th>Time</th><th>Direction</th><th>Amount</th><th>Tx</th></tr>
+                </thead>
+                <tbody>
+                  {activity.map((row) => (
+                    <tr key={`${row.tx_hash}-${row.ts}`} className="border-t border-slate-100"><td className="py-2">{new Date(row.ts).toLocaleString('ru-RU')}</td><td>{row.direction}</td><td>{ton(row.amount_ton)}</td><td>{row.tx_hash}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </BentoCard>
+
           <BentoCard title="AutoSell rules" className="xl:col-span-12">
             <div className="text-sm text-slate-600">Активных правил: {rules.length}. Редактор доступен в разделе Настройки.</div>
           </BentoCard>
         </BentoGrid>
       )}
+
+      {toast ? (
+        <div className="gmz-toast" role="status" aria-live="polite">
+          {toast}
+        </div>
+      ) : null}
+
+      {mobileActionHolding ? (
+        <>
+          <button type="button" className="gmz-bottom-sheet-backdrop md:hidden" aria-label="Закрыть действия" onClick={() => setMobileActionHoldingId('')} />
+          <div className="gmz-bottom-sheet md:hidden">
+            <div className="gmz-bottom-sheet-handle" />
+            <div className="mb-3">
+              <div className="text-base font-semibold text-slate-900">Действия по holding</div>
+              <div className="mt-1 text-xs text-slate-500">{mobileActionHolding.variant_id}</div>
+            </div>
+            {mobileActionHolding.status === 'OWNED' ? (
+              <div className="space-y-2">
+                <input value={holdingDrafts[mobileActionHolding.holding_id]?.listPriceTon || ''} onChange={(e) => updateHoldingDraft(mobileActionHolding.holding_id, { listPriceTon: e.target.value })} placeholder={String(Number((mobileActionHolding.acquired_price_ton || 0) * 1.12).toFixed(2))} className="gmz-input text-sm" />
+                <input value={holdingDrafts[mobileActionHolding.holding_id]?.transferUserId || ''} onChange={(e) => updateHoldingDraft(mobileActionHolding.holding_id, { transferUserId: e.target.value })} placeholder="Telegram user id для TRANSFER" className="gmz-input text-sm" />
+              </div>
+            ) : null}
+            <div className="mt-4">{renderHoldingActions(mobileActionHolding, true)}</div>
+            <button type="button" className="gmz-btn mt-3 w-full px-4 py-2 text-sm" onClick={() => setMobileActionHoldingId('')}>Закрыть</button>
+          </div>
+        </>
+      ) : null}
     </section>
   )
 }
