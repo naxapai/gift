@@ -420,7 +420,7 @@ export function TradesPage() {
       setVariantId('')
       setMaxPriceTon('')
       setBuyAndListPriceTon('')
-      await load()
+      await refreshWorkspace()
       setOptimisticHistory((prev) => prev.filter((row) => row.intent_id !== optimisticId))
     } catch (e) {
       const message = readableTradeError(e instanceof Error ? e.message : 'trade_create_failed')
@@ -429,7 +429,7 @@ export function TradesPage() {
     } finally {
       setCreating(false)
     }
-  }, [walletAddress, variantId, maxPriceTon, slippageBps, buyAndListPriceTon, load])
+  }, [walletAddress, variantId, maxPriceTon, slippageBps, buyAndListPriceTon, refreshWorkspace])
 
   const runHoldingAction = useCallback(async (holding: HoldingPro, action: 'LIST' | 'CANCEL_LISTING' | 'SELL' | 'TRANSFER') => {
     if (!walletAddress) return
@@ -454,14 +454,14 @@ export function TradesPage() {
       const created = await postTradeIntent(payload)
       const tx = await sendTonWalletTx(created.wallet_tx || {})
       await postTradeIntentConfirm(created.intent.intent_id, { tx_hash: tx.txHash, wallet_address: walletAddress, signature_meta: { payload_hash: tx.payloadHash } })
-      await load()
+      await refreshWorkspace()
     } catch (e) {
       setToast(readableTradeError(e instanceof Error ? e.message : 'holding_action_failed'))
     } finally {
       setActionBusyId('')
       setMobileActionHoldingId('')
     }
-  }, [walletAddress, load, holdingDrafts])
+  }, [walletAddress, refreshWorkspace, holdingDrafts])
 
   const updateHoldingDraft = useCallback((holdingId: string, patch: Partial<{ listPriceTon: string; transferUserId: string }>) => {
     setHoldingDrafts((prev) => ({
@@ -479,13 +479,13 @@ export function TradesPage() {
     setToast('')
     try {
       await postRetryListIntent(parentIntentId)
-      await load()
+      await refreshWorkspace()
     } catch (e) {
       setToast(e instanceof Error ? e.message : 'retry_list_failed')
     } finally {
       setActionBusyId('')
     }
-  }, [load])
+  }, [refreshWorkspace])
 
   const collectionOptions = useMemo(() => (collections || []).map((row) => ({
     value: String(row.collection_id || ''),
