@@ -485,6 +485,71 @@ class TestTradingRuntime(unittest.TestCase):
             self.assertEqual(holding.get('status'), 'SOLD')
             self.assertEqual(str((holding.get('transfer_meta') or {}).get('result') or ''), 'TRANSFERRED')
 
+    def test_pnl_mark_price_precedence_uses_market_mark_before_fair_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'v_mark', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0},
+                market_regime='RISK_OFF',
+                variant_snapshot={'floor_ton': 6.0, 'fair_ton': 9.0, 'mark_price_ton': 7.0},
+            )
+            rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'tx-mark-buy'},
+                market_regime='RISK_OFF',
+                variant_snapshot={'floor_ton': 6.0, 'fair_ton': 9.0, 'mark_price_ton': 7.0},
+            )
+            position = rt.list_positions('EQTEST')['items'][0]
+            self.assertEqual(position.get('mark_price_ton'), 7.0)
+            self.assertEqual(position.get('unrealized_pnl_ton'), 2.0)
+
+            created_floor = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'v_floor_mark', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0},
+                market_regime='RISK_OFF',
+                variant_snapshot={'floor_ton': 6.0, 'fair_ton': 10.0},
+            )
+            rt.confirm_intent_signature(
+                created_floor['intent']['intent_id'],
+                {'tx_hash': 'tx-floor-mark-buy'},
+                market_regime='RISK_OFF',
+                variant_snapshot={'floor_ton': 6.0, 'fair_ton': 10.0},
+            )
+            floor_position = next(x for x in rt.list_positions('EQTEST')['items'] if x.get('variant_id') == 'v_floor_mark')
+            self.assertEqual(floor_position.get('mark_price_ton'), 6.0)
+            self.assertEqual(floor_position.get('unrealized_pnl_ton'), 1.0)
+
+    def test_sell_realizes_pnl_at_execution_price_not_fair_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5)
+            buy = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'v_sell_mark', 'wallet_address': 'EQTEST', 'max_spend_ton': 5.0},
+                market_regime='RISK_OFF',
+                variant_snapshot={'floor_ton': 5.0, 'fair_ton': 10.0},
+            )
+            rt.confirm_intent_signature(
+                buy['intent']['intent_id'],
+                {'tx_hash': 'tx-sell-mark-buy'},
+                market_regime='RISK_OFF',
+                variant_snapshot={'floor_ton': 5.0, 'fair_ton': 10.0},
+            )
+            sell = rt.create_trade_intent(
+                {'intent_type': 'SELL', 'variant_id': 'v_sell_mark', 'wallet_address': 'EQTEST', 'price_ton': 6.0},
+                market_regime='RISK_OFF',
+                variant_snapshot={'floor_ton': 9.0, 'fair_ton': 12.0},
+            )
+            rt.confirm_intent_signature(
+                sell['intent']['intent_id'],
+                {'tx_hash': 'tx-sell-mark-sell'},
+                market_regime='RISK_OFF',
+                variant_snapshot={'floor_ton': 9.0, 'fair_ton': 12.0},
+            )
+            history = rt.list_trade_intents('EQTEST')['items']
+            confirmed_sell = next(x for x in history if x.get('intent_type') == 'SELL')
+            self.assertEqual(confirmed_sell.get('status'), 'CONFIRMED')
+            self.assertEqual(rt.list_positions('EQTEST')['items'], [])
+            pnl = rt.get_pnl_summary('EQTEST', market_regime='RISK_OFF')
+            self.assertEqual(pnl.get('pnl_7d_ton'), 1.0)
+
     def test_failed_intent_keeps_error_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, tx_verify_url='https://provider/tx')

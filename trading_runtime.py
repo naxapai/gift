@@ -442,7 +442,10 @@ class TradeRuntime:
         return item
 
     def list_positions(self, wallet_address: str) -> dict:
-        items = [x for x in self._read_list(self.positions_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
+        items = [
+            x for x in self._read_list(self.positions_file)
+            if str(x.get("wallet_address") or "") == str(wallet_address or "") and _as_float(x.get("qty"), 0.0) > 0
+        ]
         items.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
         return {"items": items}
 
@@ -452,7 +455,7 @@ class TradeRuntime:
         return {"items": items}
 
     def get_pnl_summary(self, wallet_address: str, *, market_regime: str) -> dict:
-        positions = self.list_positions(wallet_address).get("items") or []
+        positions = [x for x in self._read_list(self.positions_file) if str(x.get("wallet_address") or "") == str(wallet_address or "")]
         realized_ton = sum(_as_float(x.get("realized_pnl_ton"), 0.0) for x in positions)
         unrealized_ton = sum(_as_float(x.get("unrealized_pnl_ton"), 0.0) for x in positions)
         exposure_ton = sum(_as_float(x.get("mark_price_ton"), 0.0) * _as_float(x.get("qty"), 0.0) for x in positions)
@@ -717,7 +720,7 @@ class TradeRuntime:
         positions = self._read_list(self.positions_file)
         now_iso = _iso()
         price_ton = _as_float(intent.get("price_ton"), _as_float(intent.get("max_spend_ton"), _as_float((variant_snapshot or {}).get("price_ton"), _as_float((variant_snapshot or {}).get("floor_ton"), 0.0))))
-        fair_ton = _as_float((variant_snapshot or {}).get("fair_ton"), _as_float((variant_snapshot or {}).get("floor_ton"), price_ton))
+        mark_ton = self._mark_price_ton(intent, variant_snapshot, fallback_price=price_ton)
         if intent_type in {"BUY", "BUY_AND_LIST"}:
             holding_id = f"hld_{secrets.token_hex(6)}"
             gift_unique_id = str(intent.get("gift_unique_id") or f"{variant_id}:{holding_id}")
@@ -735,7 +738,7 @@ class TradeRuntime:
                 "transfer_meta": None,
                 "updated_at": now_iso,
             })
-            self._touch_position(positions, wallet_address, variant_id, qty_delta=1.0, buy_price=price_ton, mark_price=fair_ton, variant_snapshot=variant_snapshot)
+            self._touch_position(positions, wallet_address, variant_id, qty_delta=1.0, buy_price=price_ton, mark_price=mark_ton, variant_snapshot=variant_snapshot)
             self._append_wallet_activity(wallet_address, amount_ton=-price_ton, tx_hash=str(intent.get("tx_hash") or ""), direction="OUT")
             if str(intent.get("chain_policy") or "") == "BUY_THEN_LIST":
                 post_action = intent.get("post_action") if isinstance(intent.get("post_action"), dict) else {}
@@ -746,7 +749,7 @@ class TradeRuntime:
                 if str(row.get("wallet_address") or "") == wallet_address and str(row.get("variant_id") or "") == variant_id and str(row.get("status") or "") == "OWNED":
                     row["status"] = "LISTED"
                     row["marketplace_listing_id"] = str(intent.get("listing_id") or f"ml_{secrets.token_hex(5)}")
-                    row["listed_price_ton"] = _as_float((intent.get("post_action") or {}).get("listing_params", {}).get("list_price_ton"), _as_float(intent.get("price_ton"), fair_ton))
+                    row["listed_price_ton"] = _as_float((intent.get("post_action") or {}).get("listing_params", {}).get("list_price_ton"), _as_float(intent.get("price_ton"), mark_ton))
                     row["listing_meta"] = {
                         "list_price_ton": row["listed_price_ton"],
                         "listing_id": row["marketplace_listing_id"],
@@ -771,7 +774,7 @@ class TradeRuntime:
                     row["transfer_meta"] = None
                     row["updated_at"] = now_iso
                     break
-            self._touch_position(positions, wallet_address, variant_id, qty_delta=-1.0, buy_price=price_ton, mark_price=fair_ton, variant_snapshot=variant_snapshot)
+            self._touch_position(positions, wallet_address, variant_id, qty_delta=-1.0, buy_price=price_ton, mark_price=price_ton, variant_snapshot=variant_snapshot)
             self._append_wallet_activity(wallet_address, amount_ton=price_ton, tx_hash=str(intent.get("tx_hash") or ""), direction="IN")
         elif intent_type == "TRANSFER":
             transfer_params = intent.get("transfer_params") if isinstance(intent.get("transfer_params"), dict) else {}
@@ -795,6 +798,17 @@ class TradeRuntime:
         self._append_event("holding.updated", {**self._latest_holding_for_wallet(holdings, wallet_address, variant_id), "wallet_address": wallet_address})
         self._append_event("pnl.updated", {**pnl, "wallet_address": wallet_address})
         self._evaluate_autosell(wallet_address=wallet_address, variant_id=variant_id, market_regime=market_regime, positions=positions, holdings=holdings, variant_snapshot=variant_snapshot)
+
+    def _mark_price_ton(self, intent: dict, variant_snapshot: dict | None, *, fallback_price: float) -> float:
+        snap = variant_snapshot if isinstance(variant_snapshot, dict) else {}
+        for key in ("mark_price_ton", "current_price_ton", "floor_ton", "price_ton", "fair_ton"):
+            value = _as_float(snap.get(key), 0.0)
+            if value > 0:
+                return value
+        value = _as_float(intent.get("price_ton"), 0.0)
+        if value > 0:
+            return value
+        return max(0.0, float(fallback_price or 0.0))
 
     def _create_followup_list_intent(self, *, parent_intent: dict, listing_params: dict) -> None:
         intents = self._read_list(self.intents_file)
@@ -894,7 +908,7 @@ class TradeRuntime:
         target["decision_trace"] = (variant_snapshot or {}).get("decision_trace") if isinstance((variant_snapshot or {}).get("decision_trace"), dict) else target.get("decision_trace") or {}
         target["updated_at"] = now_iso
         if _as_float(target.get("qty"), 0.0) <= 0:
-            positions[:] = [x for x in positions if x is not target]
+            target["closed_at"] = now_iso
 
     def _wallet_tx_for_intent(self, intent: dict) -> dict:
         amount = _as_float(intent.get("max_spend_ton"), _as_float(intent.get("price_ton"), 0.0))
