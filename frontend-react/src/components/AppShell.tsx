@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import clsx from 'clsx'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
-import { getTelegramAuthBootstrap, getTelegramAuthMe, getTelegramOwnedGifts, getTonAuthConfig, getTonAuthMe, getTonBalance, getTradingAccess, postTelegramLogout, postTelegramWebAppVerify, postTonChallenge, postTonLogout, postTonVerify, type TonWalletInfo } from '../lib/api'
+import { getTelegramAuthBootstrap, getTelegramAuthMe, getTelegramOwnedGifts, getTonAuthConfig, getTonAuthMe, getTonBalance, getTradingAccess, postTelegramAuthVerify, postTelegramLogout, postTelegramWebAppVerify, postTonChallenge, postTonLogout, postTonVerify, type TonWalletInfo } from '../lib/api'
 import type { OwnedGiftItem } from '../types/api'
 
 const navItems = [
@@ -21,6 +21,12 @@ const TELEGRAM_WIDGET_SRC = 'https://telegram.org/js/telegram-widget.js?22'
 const TONCONNECT_BUTTON_ROOT_ID = 'gmz-tonconnect-anchor'
 const LS_TELEGRAM_USER = 'gmz:telegram:user'
 const LS_TON_WALLET = 'gmz:ton:wallet'
+
+declare global {
+  interface Window {
+    gmzTelegramAuthShell?: (user: Record<string, unknown>) => void
+  }
+}
 
 function fmtTon(value?: number | null): string {
   const n = Number(value)
@@ -424,6 +430,23 @@ export function AppShell() {
         await ensureTelegramWidgetSdk()
         if (!mounted || !telegramWidgetRef.current) return
         telegramWidgetRef.current.innerHTML = ''
+        window.gmzTelegramAuthShell = async (telegramUser: Record<string, unknown>) => {
+          setTelegramAuthBusy(true)
+          setTelegramAuthError('')
+          try {
+            await postTelegramAuthVerify(telegramUser)
+            const auth = await getTelegramAuthBootstrap()
+            if (mounted) {
+              setTelegramUser(auth?.authenticated ? (auth.user || null) : null)
+              writeJson(LS_TELEGRAM_USER, auth?.authenticated ? (auth.user || null) : null)
+              void refreshTradeAccess()
+            }
+          } catch (e) {
+            if (mounted) setTelegramAuthError(e instanceof Error ? e.message : 'telegram_auth_failed')
+          } finally {
+            if (mounted) setTelegramAuthBusy(false)
+          }
+        }
         const script = document.createElement('script')
         script.async = true
         script.src = TELEGRAM_WIDGET_SRC
@@ -432,6 +455,7 @@ export function AppShell() {
         script.setAttribute('data-radius', '14')
         script.setAttribute('data-request-access', 'write')
         script.setAttribute('data-userpic', 'false')
+        script.setAttribute('data-onauth', 'gmzTelegramAuthShell(user)')
         script.setAttribute('data-auth-url', `${window.location.origin}/api/auth/telegram/callback?redirect_to=${encodeURIComponent(`${window.location.pathname}${window.location.search}${window.location.hash}` || '/')}`)
         telegramWidgetRef.current.appendChild(script)
       } catch (e) {
@@ -441,6 +465,7 @@ export function AppShell() {
     void mount()
     return () => {
       mounted = false
+      window.gmzTelegramAuthShell = undefined
     }
   }, [profileOpen, telegramUser, telegramAuthEnabled, telegramBotUsername, refreshTradeAccess])
 

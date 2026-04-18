@@ -314,6 +314,25 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertTrue(payload_owned.get("authenticated"))
             self.assertEqual(str((payload_owned.get("items") or [])[0].get("gift_id") or ""), "g1")
 
+    def test_telegram_webapp_verify_alias_sets_session_cookie(self) -> None:
+        opener = self._cookie_opener()
+        with patch.object(server.AUTH, "verify_telegram_webapp_init_data", return_value=(True, "ok", {"id": 144832201, "username": "tester", "auth_date": 1700000000})):
+            req = Request(
+                f"http://127.0.0.1:{self.port}/api/auth/telegram/webapp/verify",
+                data=json.dumps({"init_data": "query_id=x"}).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with opener.open(req, timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            self.assertTrue(payload.get("ok"))
+            self.assertTrue(payload.get("authenticated"))
+
+            with opener.open(f"http://127.0.0.1:{self.port}/api/auth/me", timeout=10) as resp_me:
+                payload_me = json.loads(resp_me.read().decode("utf-8"))
+            self.assertTrue(payload_me.get("authenticated"))
+            self.assertEqual(int((payload_me.get("user") or {}).get("id") or 0), 144832201)
+
     def test_owned_gifts_endpoint_passes_wallet_context_to_backend(self) -> None:
         with patch.object(server, "_auth_user_from_request", return_value={"id": 144832201, "username": "alice"}), patch.object(server, "_ton_wallet_from_request", return_value={"address": "EQWALLET"}), patch.object(server._STATE, "telegram_owned_gifts_v1", return_value={"ok": True, "authenticated": True, "items": [], "source": "wallet_holdings_empty"}) as mocked:
             status, payload = self._get_json("/api/auth/telegram/owned-gifts")
@@ -329,6 +348,37 @@ class TestV1HttpContract(unittest.TestCase):
         self.assertTrue(payload.get("ok"))
         self.assertFalse(payload.get("authenticated"))
         self.assertEqual(payload.get("items"), [])
+
+    def test_trades_fast_buy_sandbox_roundtrip_updates_workspace(self) -> None:
+        allowed_user = {"id": 144832201, "username": "tester"}
+        ton_wallet = {"address": "EQTESTWALLET000000000000000000000000000000000"}
+        variant_id = str(next(iter((server._STATE.variants or {}).keys()), ""))
+        self.assertTrue(variant_id)
+        with patch.object(server, "_auth_user_from_request", return_value=allowed_user), patch.object(server, "_ton_wallet_from_request", return_value=ton_wallet):
+            status_quote, payload_quote = self._get_json(f"/v1/trades/quotes/buy?variant_id={quote(variant_id)}&max_price_ton=8.5&wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_quote, 200)
+            quote_token = str(payload_quote.get("buy_quote_token") or "")
+            self.assertTrue(quote_token)
+
+            status_confirm, payload_confirm = self._post_json("/v1/trades/fast/confirm", {
+                "buy_quote_token": quote_token,
+                "tx_hash": "sim_fast_ok",
+                "wallet_address": ton_wallet["address"],
+            })
+            self.assertEqual(status_confirm, 200)
+            self.assertEqual(str(payload_confirm.get("status") or ""), "CONFIRMED")
+
+            status_workspace, payload_workspace = self._get_json(f"/v1/trades/workspace?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_workspace, 200)
+            runtime = payload_workspace.get("runtime") or {}
+            self.assertEqual(str(runtime.get("environment") or ""), "sandbox")
+            self.assertEqual(str(runtime.get("verification_mode") or ""), "stubbed_marketplace")
+            history = payload_workspace.get("history") or []
+            self.assertTrue(isinstance(history, list) and history)
+            fast_buy = next((x for x in history if str((x or {}).get("source") or "") == "FAST_BUY"), None)
+            self.assertTrue(isinstance(fast_buy, dict))
+            holdings = payload_workspace.get("holdings") or []
+            self.assertTrue(isinstance(holdings, list) and holdings)
 
     def test_trades_endpoints_roundtrip_for_allowed_test_user(self) -> None:
         allowed_user = {"id": 144832201, "username": "tester"}
@@ -388,6 +438,15 @@ class TestV1HttpContract(unittest.TestCase):
             child = next((x for x in rows if str((x or {}).get("parent_intent_id") or "") == chain_intent_id), None)
             self.assertTrue(isinstance(child, dict))
             self.assertEqual(str((child or {}).get("intent_type") or ""), "LIST")
+
+            status_workspace, payload_workspace = self._get_json(f"/v1/trades/workspace?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_workspace, 200)
+            runtime = payload_workspace.get("runtime") or {}
+            self.assertEqual(str(runtime.get("environment") or ""), "sandbox")
+            self.assertEqual(str(runtime.get("verification_mode") or ""), "stubbed_marketplace")
+            self.assertTrue(isinstance(payload_workspace.get("positions"), list))
+            self.assertTrue(isinstance(payload_workspace.get("holdings"), list))
+            self.assertTrue(isinstance(payload_workspace.get("history"), list))
 
             status_rules_before, payload_rules_before = self._get_json(f"/v1/trades/autosell/rules?wallet_address={ton_wallet['address']}")
             self.assertEqual(status_rules_before, 200)
