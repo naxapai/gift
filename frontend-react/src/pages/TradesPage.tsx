@@ -156,7 +156,7 @@ export function TradesPage() {
       try {
         const [collectionsPayload, variantsPayload] = await Promise.all([
           getCollections(1000).catch(() => []),
-          getVariants({ sort: 'floor_ton.asc', cap: 5000 }).catch(() => []),
+          getVariants({ sort: 'score_desc', cap: 5000 }).catch(() => []),
         ])
         if (cancelled) return
         setCollections(Array.isArray(collectionsPayload) ? collectionsPayload : [])

@@ -38,12 +38,24 @@ _STATE: GiftAnalyticsService | None = None
 _STATE_LOCK = threading.Lock()
 
 
+def _configure_web_runtime_defaults() -> None:
+    # Render Free web dyno is memory-constrained; keep heavy background workers
+    # out of the HTTP process unless explicitly enabled.
+    if os.getenv("INGEST_AUTO_LOOP") is None:
+        os.environ["INGEST_AUTO_LOOP"] = "false"
+    if os.getenv("WEB_ENABLE_SIGNAL_BOT") is None:
+        os.environ["WEB_ENABLE_SIGNAL_BOT"] = "false"
+    if os.getenv("WEB_STATE_WARMUP") is None:
+        os.environ["WEB_STATE_WARMUP"] = "true"
+
+
 def _state() -> GiftAnalyticsService:
     global _STATE
     if _STATE is not None:
         return _STATE
     with _STATE_LOCK:
         if _STATE is None:
+            _configure_web_runtime_defaults()
             _STATE = GiftAnalyticsService()
     return _STATE
 
@@ -78,6 +90,8 @@ BOT_AUTORUN = os.getenv("BOT_AUTORUN", "false").strip().lower() in {"1", "true",
 BOT_INTERVAL_SEC = max(15, int(os.getenv("BOT_POLL_INTERVAL", "30")))
 BOT_API_BASE_URL = os.getenv("BOT_API_BASE_URL", "").strip()
 BOT_API_AUTH_TOKEN = os.getenv("BOT_API_AUTH_TOKEN", "").strip() or API_AUTH_TOKEN
+WEB_ENABLE_SIGNAL_BOT = os.getenv("WEB_ENABLE_SIGNAL_BOT", "false").strip().lower() in {"1", "true", "yes", "on"}
+WEB_STATE_WARMUP = os.getenv("WEB_STATE_WARMUP", "true").strip().lower() in {"1", "true", "yes", "on"}
 BRIDGE_API_TOKEN = os.getenv("BRIDGE_API_TOKEN", "").strip() or os.getenv("TELEGRAM_GIFTS_API_TOKEN", "").strip()
 BRIDGE_API_PATH = (os.getenv("BRIDGE_API_PATH", "/bridge/gifts/verified").strip() or "/bridge/gifts/verified")
 AUTH_COOKIE_DOMAIN = os.getenv("AUTH_COOKIE_DOMAIN", "").strip().lower()
@@ -5377,13 +5391,18 @@ def run() -> None:
     port = int(os.getenv("PORT", "8080"))
     server = ThreadingHTTPServer((host, port), RequestHandler)
     # Warm-up analytics state in background: healthcheck becomes fast while data stack initializes.
-    threading.Thread(target=_state, daemon=True, name="state-warmup").start()
+    if WEB_STATE_WARMUP:
+        threading.Thread(target=_state, daemon=True, name="state-warmup").start()
     _start_signal_bot_loop(port)
     print(f"Server started on http://{host}:{port}")
     server.serve_forever()
 
 
 def _start_signal_bot_loop(port: int) -> None:
+    if not WEB_ENABLE_SIGNAL_BOT:
+        _BOT_STATUS["enabled"] = False
+        _BOT_STATUS["last_error"] = "web signal bot loop disabled"
+        return
     if not signal_bot.BOT_TOKEN or not signal_bot.CHAT_ID:
         _BOT_STATUS["enabled"] = False
         _BOT_STATUS["last_error"] = "TG_BOT_TOKEN/TG_CHAT_ID not configured"

@@ -108,6 +108,41 @@ class TestAuthAndMarketStatus(unittest.TestCase):
         text = renderer.render_market_status({"ts": "2026-03-03T19:43:48Z", "market_regime": "RISK_OFF", "data_conf_pct": 70, "trend": "падение", "velocity_score": 41, "vol_level": "HIGH", "flow": {"volume_velocity": 0.91, "absorption": 0.74, "listing_pressure": 4.8}, "liquidity": {"liquidity_score": 38, "depth_5pct": {"lots": 9, "ton": 77.0}}, "supply": {"active_lots": 1220, "delta_lots_1h": 88, "listing_velocity_10m": 17, "listing_velocity_norm": 0.41}, "whales": {"whale_ratio_pct": 14.2, "whale_impulse": 1.3}, "signals_1h": {"buy": 2, "sell": 8, "watch": 5, "skip": 11}, "provider_health": {"p95_ms": 420, "err_pct": 0.8}, "data_health": "OK"})
         self.assertIn("03.03.2026/22:43:48 МСК", text)
 
+    def test_configure_web_runtime_defaults_sets_safe_background_flags(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INGEST_AUTO_LOOP", None)
+            os.environ.pop("WEB_ENABLE_SIGNAL_BOT", None)
+            os.environ.pop("WEB_STATE_WARMUP", None)
+            server._configure_web_runtime_defaults()
+            self.assertEqual(os.environ.get("INGEST_AUTO_LOOP"), "false")
+            self.assertEqual(os.environ.get("WEB_ENABLE_SIGNAL_BOT"), "false")
+            self.assertEqual(os.environ.get("WEB_STATE_WARMUP"), "true")
+
+    def test_configure_web_runtime_defaults_keeps_explicit_env(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"INGEST_AUTO_LOOP": "true", "WEB_ENABLE_SIGNAL_BOT": "true", "WEB_STATE_WARMUP": "false"},
+            clear=False,
+        ):
+            server._configure_web_runtime_defaults()
+            self.assertEqual(os.environ.get("INGEST_AUTO_LOOP"), "true")
+            self.assertEqual(os.environ.get("WEB_ENABLE_SIGNAL_BOT"), "true")
+            self.assertEqual(os.environ.get("WEB_STATE_WARMUP"), "false")
+
+    def test_start_signal_bot_loop_skips_when_web_loop_disabled(self) -> None:
+        old_enabled = server.WEB_ENABLE_SIGNAL_BOT
+        old_status = dict(server._BOT_STATUS)
+        try:
+            server.WEB_ENABLE_SIGNAL_BOT = False
+            server._BOT_STATUS.update({"enabled": True, "last_error": ""})
+            server._start_signal_bot_loop(8080)
+            self.assertFalse(server._BOT_STATUS["enabled"])
+            self.assertEqual(server._BOT_STATUS["last_error"], "web signal bot loop disabled")
+        finally:
+            server.WEB_ENABLE_SIGNAL_BOT = old_enabled
+            server._BOT_STATUS.clear()
+            server._BOT_STATUS.update(old_status)
+
 
 if __name__ == "__main__":
     unittest.main()
