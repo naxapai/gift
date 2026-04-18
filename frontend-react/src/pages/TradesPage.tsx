@@ -85,6 +85,12 @@ function stableJson(value: unknown): string {
   return `{${Object.keys(row).sort().map((key) => `${JSON.stringify(key)}:${stableJson(row[key])}`).join(',')}}`
 }
 
+function mockTonConnectEnabled(): boolean {
+  const envFlag = String(import.meta.env.VITE_TRADE_MOCK_TONCONNECT || '').trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(envFlag)) return true
+  return new URLSearchParams(window.location.search).get('mock_tonconnect') === '1'
+}
+
 async function walletTxHash(walletTx: Record<string, unknown>): Promise<string> {
   const raw = stableJson(walletTx || {})
   const bytes = new TextEncoder().encode(raw)
@@ -94,6 +100,9 @@ async function walletTxHash(walletTx: Record<string, unknown>): Promise<string> 
 
 async function sendTonWalletTx(walletTx: Record<string, unknown>): Promise<{ txHash: string; payloadHash: string }> {
   const payloadHash = await walletTxHash(walletTx)
+  if (mockTonConnectEnabled()) {
+    return { txHash: `sim_${payloadHash.slice(0, 24)}`, payloadHash }
+  }
   const uiCtor = window.TON_CONNECT_UI?.TonConnectUI
   if (!uiCtor) {
     return { txHash: `sim_${Date.now()}`, payloadHash }
