@@ -78,8 +78,15 @@ function timelineSteps(value: unknown): Array<{ status: string; ts: string; sour
     })
 }
 
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`
+  const row = value as Record<string, unknown>
+  return `{${Object.keys(row).sort().map((key) => `${JSON.stringify(key)}:${stableJson(row[key])}`).join(',')}}`
+}
+
 async function walletTxHash(walletTx: Record<string, unknown>): Promise<string> {
-  const raw = JSON.stringify(walletTx || {})
+  const raw = stableJson(walletTx || {})
   const bytes = new TextEncoder().encode(raw)
   const digest = await window.crypto.subtle.digest('SHA-256', bytes)
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('')
