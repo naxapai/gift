@@ -123,6 +123,43 @@ class TestTradingRuntime(unittest.TestCase):
             self.assertEqual(item['status'], 'BROADCAST')
             self.assertIsNone(rt.list_holdings('EQTEST')['items'][0:1] or None)
 
+    def test_tx_hash_replay_is_rejected_for_standard_and_fast_buy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
+            first = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'replay1', 'wallet_address': 'EQTEST', 'max_spend_ton': 3.0},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+            )
+            rt.confirm_intent_signature(
+                first['intent']['intent_id'],
+                {'tx_hash': 'tx_replay_1'},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+            )
+            second = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'replay2', 'wallet_address': 'EQTEST', 'max_spend_ton': 4.0},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 4.0, 'fair_ton': 4.3},
+            )
+            with self.assertRaises(RuntimeError) as standard_replay:
+                rt.confirm_intent_signature(
+                    second['intent']['intent_id'],
+                    {'tx_hash': 'tx_replay_1'},
+                    market_regime='MEAN_REVERT',
+                    variant_snapshot={'floor_ton': 4.0, 'fair_ton': 4.3},
+                )
+            self.assertEqual(str(standard_replay.exception), 'tx_hash_already_used')
+
+            quote = rt.issue_buy_quote(variant_id='replay3', max_price_ton=5.0, slippage_bps=100, wallet_address='EQTEST', variant_snapshot={'floor_ton': 5.0})
+            with self.assertRaises(RuntimeError) as fast_replay:
+                rt.confirm_fast_buy(
+                    {'buy_quote_token': quote['buy_quote_token'], 'tx_hash': 'tx_replay_1', 'wallet_address': 'EQTEST'},
+                    market_regime='MEAN_REVERT',
+                    variant_snapshot={'floor_ton': 5.0, 'fair_ton': 5.3},
+                )
+            self.assertEqual(str(fast_replay.exception), 'tx_hash_already_used')
+
     def test_duplicate_confirm_request_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')

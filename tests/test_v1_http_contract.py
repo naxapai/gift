@@ -9,6 +9,7 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 import server
 from core import GiftAnalyticsService
@@ -363,7 +364,7 @@ class TestV1HttpContract(unittest.TestCase):
 
             status_confirm, payload_confirm = self._post_json("/v1/trades/fast/confirm", {
                 "buy_quote_token": quote_token,
-                "tx_hash": "sim_fast_ok",
+                "tx_hash": f"sim_fast_ok_{uuid4().hex}",
                 "wallet_address": ton_wallet["address"],
             })
             self.assertEqual(status_confirm, 200)
@@ -473,7 +474,7 @@ class TestV1HttpContract(unittest.TestCase):
             intent_id = str(((payload_create.get("intent") or {}).get("intent_id")) or "")
             self.assertTrue(intent_id)
 
-            status_confirm, payload_confirm = self._post_json(f"/v1/trades/intents/{intent_id}/confirm_signature", {"tx_hash": "tx_test_1", "wallet_address": ton_wallet["address"]})
+            status_confirm, payload_confirm = self._post_json(f"/v1/trades/intents/{intent_id}/confirm_signature", {"tx_hash": f"tx_test_1_{uuid4().hex}", "wallet_address": ton_wallet["address"]})
             self.assertEqual(status_confirm, 200)
             self.assertEqual(str(payload_confirm.get("status") or ""), "CONFIRMED")
 
@@ -502,7 +503,7 @@ class TestV1HttpContract(unittest.TestCase):
             chain_intent_id = str(((payload_chain_create.get("intent") or {}).get("intent_id")) or "")
             self.assertTrue(chain_intent_id)
 
-            status_chain_confirm, payload_chain_confirm = self._post_json(f"/v1/trades/intents/{chain_intent_id}/confirm_signature", {"tx_hash": "tx_test_chain", "wallet_address": ton_wallet["address"]})
+            status_chain_confirm, payload_chain_confirm = self._post_json(f"/v1/trades/intents/{chain_intent_id}/confirm_signature", {"tx_hash": f"tx_test_chain_{uuid4().hex}", "wallet_address": ton_wallet["address"]})
             self.assertEqual(status_chain_confirm, 200)
             self.assertEqual(str(payload_chain_confirm.get("status") or ""), "CONFIRMED")
 

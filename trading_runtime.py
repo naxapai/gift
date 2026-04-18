@@ -304,7 +304,10 @@ class TradeRuntime:
         provided_payload_hash = str(sig_meta.get("payload_hash") or "").strip()
         if provided_payload_hash and provided_payload_hash != str(target.get("wallet_tx_hash") or ""):
             raise ValueError("wallet_tx_payload_mismatch")
-        target["tx_hash"] = str(payload.get("tx_hash") or "").strip() or target.get("tx_hash")
+        tx_hash = str(payload.get("tx_hash") or "").strip()
+        if self._tx_hash_used(tx_hash, exclude_intent_id=str(target.get("intent_id") or "")):
+            raise RuntimeError("tx_hash_already_used")
+        target["tx_hash"] = tx_hash or target.get("tx_hash")
         target["status"] = "SIGNED"
         target.setdefault("status_timeline", []).append({"status": "SIGNED", "ts": _iso()})
         self._append_event("trade.intent.signed", target)
@@ -364,6 +367,8 @@ class TradeRuntime:
         wallet_address = str(payload.get("wallet_address") or "").strip()
         if not token or not tx_hash or not wallet_address:
             raise ValueError("missing_fast_confirm_fields")
+        if self._tx_hash_used(tx_hash):
+            raise RuntimeError("tx_hash_already_used")
         quote = self._decode_quote(token)
         nonce = str(((quote or {}).get("quote") or {}).get("nonce") or "")
         if not nonce:
@@ -1103,6 +1108,18 @@ class TradeRuntime:
             if str(row.get("intent_type") or "") not in kinds:
                 continue
             if str(row.get("status") or "") in {"PENDING_SIGNATURE", "SIGNED", "BROADCAST"}:
+                return True
+        return False
+
+    def _tx_hash_used(self, tx_hash: str, *, exclude_intent_id: str | None = None) -> bool:
+        normalized = str(tx_hash or "").strip()
+        if not normalized:
+            return False
+        exclude = str(exclude_intent_id or "").strip()
+        for row in self._read_list(self.intents_file):
+            if exclude and str(row.get("intent_id") or "") == exclude:
+                continue
+            if str(row.get("tx_hash") or "").strip() == normalized:
                 return True
         return False
 
