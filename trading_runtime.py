@@ -1081,8 +1081,14 @@ class TradeRuntime:
             except Exception:
                 continue
             if exp_ts <= now_ts:
-                row["status"] = "EXPIRED"
-                row.setdefault("status_timeline", []).append({"status": "EXPIRED", "ts": _iso()})
+                if status == "BROADCAST":
+                    row["status"] = "FAILED"
+                    row["error_code"] = "broadcast_timeout"
+                    row["error_message"] = "broadcast_timeout"
+                    row.setdefault("status_timeline", []).append({"status": "FAILED", "ts": _iso(), "reason": "broadcast_timeout"})
+                else:
+                    row["status"] = "EXPIRED"
+                    row.setdefault("status_timeline", []).append({"status": "EXPIRED", "ts": _iso()})
                 self._append_event("trade.intent.failed", row)
                 changed = True
         if changed:
