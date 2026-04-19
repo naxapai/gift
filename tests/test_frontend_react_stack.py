@@ -87,6 +87,16 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('https://fragment.com/gift/', card)
         self.assertIn('?collection=all&query=', card)
 
+    def test_gmz_select_uses_native_select_for_reliable_trait_selection(self):
+        component = (FRONT / 'src' / 'components' / 'GmzSelect.tsx').read_text(encoding='utf-8')
+        css = (FRONT / 'src' / 'index.css').read_text(encoding='utf-8')
+        self.assertIn('<select', component)
+        self.assertIn('onChange={(e) => onChange(e.target.value)}', component)
+        self.assertIn('gmz-select-native', component)
+        self.assertIn('appearance: none;', css)
+        self.assertNotIn('document.addEventListener', component)
+        self.assertNotIn('gmz-select-menu', component)
+
     def test_signals_page_has_full_filter_set_and_drawer(self):
         page = (FRONT / 'src' / 'pages' / 'SignalsPage.tsx').read_text(encoding='utf-8')
         drawer = (FRONT / 'src' / 'components' / 'SignalDetailsDrawer.tsx').read_text(encoding='utf-8')
@@ -165,6 +175,8 @@ class TestFrontendReactStack(unittest.TestCase):
         page = (FRONT / 'src' / 'pages' / 'TradesPage.tsx').read_text(encoding='utf-8')
         for token in ['FAST BUY', 'BUY+LIST', 'PnL PRO', 'Positions', 'Holdings', 'History', 'Wallet activity', 'AutoSell rules', 'LIST', 'CANCEL', 'SELL', 'TRANSFER', 'Повторить выставление', 'optimisticHistory', 'subscribeTradesStream', 'subscribePnlStream', 'seenSseKeysRef', 'scheduleSseRefresh', 'refreshWorkspace', 'stableJson', 'mockTonConnectEnabled', 'VITE_TRADE_MOCK_TONCONNECT', 'mock_tonconnect', 'decision_trace', 'reasons:', 'risk_flags:', 'sendTransaction', 'payload_hash', 'Holding не найден для выбранного варианта.', 'Подключите TON wallet перед отправкой транзакции.', 'expandedPositionId', 'expandedHoldingId', 'listing_meta:', 'transfer_meta:', 'Коллекция', 'Модель', 'Фон', 'Узор', 'variant_id будет выбран автоматически', 'resolveVariantByTraits', 'getCollections', 'getVariants', 'GmzSelect']:
             self.assertIn(token, page)
+        for token in ['useLocation', 'location.search', 'variant_id', 'collection_id', 'selectedCollectionId', 'tradePrefill']:
+            self.assertIn(token, page)
 
     def test_favorites_page_uses_non_blocking_refresh(self):
         page = (FRONT / 'src' / 'pages' / 'FavoritesPage.tsx').read_text(encoding='utf-8')
@@ -219,7 +231,15 @@ class TestFrontendReactStack(unittest.TestCase):
             'Режим',
             'Листинги 10м',
             'Объем 24ч (TON)',
+            'buildTradesHref',
+            'Купить+выставить',
+            "to={`/variant/${encodeURIComponent(row.variant_id)}`",
         ]:
+            self.assertIn(token, page)
+
+    def test_variant_page_exposes_trade_entry_points(self):
+        page = (FRONT / 'src' / 'pages' / 'VariantPage.tsx').read_text(encoding='utf-8')
+        for token in ['buildTradesHref', 'tradeBuyHref', 'tradeBuyListHref', 'Купить', 'Купить+выставить', "intent: 'BUY'", "intent: 'BUY_AND_LIST'"]:
             self.assertIn(token, page)
 
     def test_listing_page_has_pro_new_race_blocks(self):

@@ -10,6 +10,7 @@ import { Sparkline } from '../components/Sparkline'
 import { getMetric, getVariantDetails, getVariants, resolveVariantByTraits, signalTypeRu, subscribeRealtime, ton } from '../lib/api'
 import { bentoBlockMetrics, bentoBlockTitle, bentoPageMetrics, bentoPageTitleRu, bentoTimeframes } from '../lib/bentoContracts'
 import { fmtByUnit, scalarFromPoints, timeframeConfig, timeframeFromIso, type TimeframeKey } from '../lib/metrics'
+import { buildTradesHref } from '../lib/trades'
 import { readUiAutoRefreshMinutes, uiAutoRefreshMs } from '../lib/uiSettings'
 import type { MetricPoint, VariantDetailsResponse, VariantItem } from '../types/api'
 
@@ -568,6 +569,24 @@ export function VariantPage() {
     () => [variant?.collection_name, variant?.model, variant?.background, variant?.pattern].filter(Boolean).join(' • ') || variantId,
     [variant, variantId],
   )
+  const tradeBuyHref = useMemo(() => buildTradesHref({
+    variantId,
+    collectionId: String(variant?.collection_id || '').trim() || undefined,
+    collection: variant?.collection_name,
+    model: variant?.model,
+    background: variant?.background,
+    pattern: variant?.pattern,
+    intent: 'BUY',
+  }), [variantId, variant])
+  const tradeBuyListHref = useMemo(() => buildTradesHref({
+    variantId,
+    collectionId: String(variant?.collection_id || '').trim() || undefined,
+    collection: variant?.collection_name,
+    model: variant?.model,
+    background: variant?.background,
+    pattern: variant?.pattern,
+    intent: 'BUY_AND_LIST',
+  }), [variantId, variant])
 
   const depthScalar = getScalar(scalars, 'MARKET_DEPTH')
   const depthPoint = lastPoint(floorSeries)
@@ -590,9 +609,17 @@ export function VariantPage() {
         title={variantTitle}
         subtitle={variantId}
         right={
-          <Link to="/signals" className="gmz-btn gmz-btn-ghost px-3 py-2 text-sm">
-            Назад к сигналам
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link to={tradeBuyHref} className="gmz-btn gmz-btn-primary px-3 py-2 text-sm">
+              Купить
+            </Link>
+            <Link to={tradeBuyListHref} className="gmz-btn gmz-btn-ghost px-3 py-2 text-sm">
+              Купить+выставить
+            </Link>
+            <Link to="/signals" className="gmz-btn gmz-btn-ghost px-3 py-2 text-sm">
+              Назад к сигналам
+            </Link>
+          </div>
         }
       />
 
@@ -617,10 +644,18 @@ export function VariantPage() {
                 ))}
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <MetricTile label="Минимальная цена (floor)" value={`${ton(variant?.floor_ton)} TON`} />
+              <MetricTile label="Минимальная цена (floor)" value={`${ton(variant?.floor_ton)} TON`} />
               <MetricTile label="Справедливая цена" value={fmtByUnit(getScalar(scalars, 'FAIR_PRICE').value, getScalar(scalars, 'FAIR_PRICE').unit)} />
               <MetricTile label="Недооценка" value={fmtByUnit(getScalar(scalars, 'UNDERVALUE').value, getScalar(scalars, 'UNDERVALUE').unit)} />
               <MetricTile label="Ожидаемая прибыль" value={fmtByUnit(getScalar(scalars, 'EXPECTED_PROFIT').value, getScalar(scalars, 'EXPECTED_PROFIT').unit)} />
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Link to={tradeBuyHref} className="gmz-btn gmz-btn-primary px-3 py-2 text-sm">
+                  Купить
+                </Link>
+                <Link to={tradeBuyListHref} className="gmz-btn gmz-btn-ghost px-3 py-2 text-sm">
+                  Купить+выставить
+                </Link>
               </div>
             </>
           )}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { BentoCard } from '../components/BentoCard'
 import { GmzSelect } from '../components/GmzSelect'
 import { BentoGrid } from '../components/BentoGrid'
@@ -120,6 +120,7 @@ async function sendTonWalletTx(walletTx: Record<string, unknown>): Promise<{ txH
 }
 
 export function TradesPage() {
+  const location = useLocation()
   const openTonConnect = useCallback(() => {
     const root = document.getElementById(TONCONNECT_BUTTON_ROOT_ID)
     root?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -251,6 +252,18 @@ export function TradesPage() {
     void load()
   }, [load])
 
+  const tradePrefill = useMemo(() => {
+    const q = new URLSearchParams(location.search)
+    return {
+      variantId: String(q.get('variant_id') || '').trim(),
+      collectionId: String(q.get('collection_id') || '').trim(),
+      collection: String(q.get('collection') || '').trim(),
+      model: String(q.get('model') || '').trim(),
+      background: String(q.get('background') || '').trim(),
+      pattern: String(q.get('pattern') || '').trim(),
+    }
+  }, [location.search])
+
   useEffect(() => {
     if (!allowed) return
     let cancelled = false
@@ -273,6 +286,32 @@ export function TradesPage() {
       cancelled = true
     }
   }, [allowed])
+
+  useEffect(() => {
+    if (!allowed || selectorLoading) return
+    if (!tradePrefill.collectionId && !tradePrefill.collection && !tradePrefill.model && !tradePrefill.background && !tradePrefill.pattern && !tradePrefill.variantId) return
+    const collectionIdFromName = !tradePrefill.collectionId && tradePrefill.collection
+      ? String(
+        (collections || []).find((row) => String(row.name || '').trim().toLowerCase() === tradePrefill.collection.toLowerCase())?.collection_id || '',
+      ).trim()
+      : ''
+    const nextCollectionId = tradePrefill.collectionId || collectionIdFromName
+    if (nextCollectionId && nextCollectionId !== selectedCollectionId) setSelectedCollectionId(nextCollectionId)
+    if (tradePrefill.model && tradePrefill.model !== selectedModel) setSelectedModel(tradePrefill.model)
+    if (tradePrefill.background !== selectedBackground) setSelectedBackground(tradePrefill.background)
+    if (tradePrefill.pattern !== selectedPattern) setSelectedPattern(tradePrefill.pattern)
+    if (tradePrefill.variantId && tradePrefill.variantId !== variantId) setVariantId(tradePrefill.variantId)
+  }, [
+    allowed,
+    selectorLoading,
+    tradePrefill,
+    collections,
+    selectedCollectionId,
+    selectedModel,
+    selectedBackground,
+    selectedPattern,
+    variantId,
+  ])
 
   useEffect(() => {
     if (!selectedCollectionId || !selectedModel) {
@@ -663,6 +702,11 @@ export function TradesPage() {
                 <button type="button" className="gmz-btn px-4 py-2 text-sm" disabled={creating || !variantId || walletStatePending} onClick={() => { void createBuy('BUY_AND_LIST') }}>BUY+LIST</button>
               </div>
             </div>
+            {!selectorLoading && !collections.length ? (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                Не удалось загрузить список коллекций и вариантов. Обновите страницу или повторите позже.
+              </div>
+            ) : null}
             <div className="mt-2 text-xs text-slate-500">Кнопка “Купить и выставить” создает 2 шага: BUY → CONFIRMED → LIST.</div>
           </BentoCard>
 

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import catalogUiRaw from '../../../config/catalog/catalog_page_pro_ui_mapping_v1.json'
 import catalogBentoRaw from '../../../config/catalog/bento_ui_catalog_blocks_v1.json'
 import { BentoCard } from '../components/BentoCard'
@@ -9,6 +10,7 @@ import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
 import { DecisionTraceCard } from '../components/DecisionTraceCard'
 import { getCatalogFeed, getCatalogVariant, getMarketStatus, pct, subscribeCatalogStream, subscribeRealtime, ton } from '../lib/api'
+import { buildTradesHref } from '../lib/trades'
 import { readUiAutoRefreshMinutes, uiAutoRefreshMs } from '../lib/uiSettings'
 import type { CatalogRowPro, MarketStatusResponse, SignalType } from '../types/api'
 
@@ -30,6 +32,34 @@ const CATALOG_UI = (catalogUiRaw || {}) as CatalogUiMapping
 const CATALOG_BENTO = catalogBentoRaw as Record<string, unknown>
 
 const REGIME_OPTIONS: MarketRegime[] = ['RISK_ON', 'MEAN_REVERT', 'RISK_OFF', 'PANIC']
+const CATALOG_CACHE_KEY = 'gmz.catalog.cache.v1'
+
+interface CatalogCachePayload {
+  savedAt: number
+  data: {
+    items: CatalogRowPro[]
+    selectedVariantId?: string
+    marketStatus?: MarketStatusResponse | null
+    nextCursor?: string | null
+    q?: string
+    actions?: SignalType[]
+    regimes?: MarketRegime[]
+    preset?: string
+    sortBy?: 'edgerank' | 'profit' | 'liquidity' | 'undervalue' | 'updated'
+    sortDir?: 'asc' | 'desc'
+    edgeMin?: number
+    confMin?: number
+    profitMin?: number
+    liqMin?: number
+    depthMin?: number
+    arMin?: number
+    lpMax?: number
+    activeLotsMin?: number
+    activeLotsMax?: number
+    listedShareMin?: number
+    listedShareMax?: number
+  }
+}
 
 function actionRu(value?: string): string {
   const v = String(value || '').toUpperCase()
@@ -70,6 +100,17 @@ function formatCountdown(totalSec: number): string {
   const mm = Math.floor(sec / 60)
   const ss = sec % 60
   return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
+}
+
+function tradesHrefForRow(row: CatalogRowPro, intent: 'BUY' | 'BUY_AND_LIST' = 'BUY'): string {
+  return buildTradesHref({
+    variantId: row.variant_id,
+    collection: row.collection,
+    model: row.model,
+    background: row.background,
+    pattern: row.pattern,
+    intent,
+  })
 }
 
 function fmtDateTime(value?: string): string {
@@ -125,6 +166,7 @@ export function CatalogPage() {
   const [listedShareMax, setListedShareMax] = useState<number>(() => defaultFilterValue('listed_share_max', 100) / 100)
 
   const firstLoadRef = useRef(true)
+  const initDoneRef = useRef(false)
   const nextRefreshAtRef = useRef<number>(Date.now() + autoRefreshMs)
   const [flashRows, setFlashRows] = useState<Record<string, number>>({})
   const actionOptions = useMemo<SignalType[]>(() => {
@@ -234,9 +276,110 @@ export function CatalogPage() {
   }, [q, actions, regimes, edgeMin, confMin, profitMin, liqMin, depthMin, arMin, lpMax, activeLotsMin, activeLotsMax, listedShareMin, listedShareMax, preset, sortBy, sortDir, selected])
 
   useEffect(() => {
+    if (initDoneRef.current) return
+    initDoneRef.current = true
+    try {
+      const raw = sessionStorage.getItem(CATALOG_CACHE_KEY)
+      if (raw) {
+        const parsed = JSON.parse(raw) as CatalogCachePayload
+        const savedAt = Number(parsed?.savedAt || 0)
+        const ageMs = Date.now() - savedAt
+        const d = parsed?.data
+        if (d && savedAt > 0 && ageMs >= 0 && ageMs < autoRefreshMs) {
+          const cachedItems = Array.isArray(d.items) ? d.items : []
+          setItems(cachedItems)
+          setSelected(cachedItems.find((x) => String(x.variant_id || '') === String(d.selectedVariantId || '')) || cachedItems[0] || null)
+          setMarketStatus(d.marketStatus || null)
+          setNextCursor(d.nextCursor || null)
+          setQ(String(d.q || ''))
+          setActions(Array.isArray(d.actions) ? d.actions : [])
+          setRegimes(Array.isArray(d.regimes) ? d.regimes : [])
+          setPreset(String(d.preset || ''))
+          setSortBy(d.sortBy || 'edgerank')
+          setSortDir(d.sortDir || 'desc')
+          if (Number.isFinite(Number(d.edgeMin))) setEdgeMin(Number(d.edgeMin))
+          if (Number.isFinite(Number(d.confMin))) setConfMin(Number(d.confMin))
+          if (Number.isFinite(Number(d.profitMin))) setProfitMin(Number(d.profitMin))
+          if (Number.isFinite(Number(d.liqMin))) setLiqMin(Number(d.liqMin))
+          if (Number.isFinite(Number(d.depthMin))) setDepthMin(Number(d.depthMin))
+          if (Number.isFinite(Number(d.arMin))) setArMin(Number(d.arMin))
+          if (Number.isFinite(Number(d.lpMax))) setLpMax(Number(d.lpMax))
+          if (Number.isFinite(Number(d.activeLotsMin))) setActiveLotsMin(Number(d.activeLotsMin))
+          if (Number.isFinite(Number(d.activeLotsMax))) setActiveLotsMax(Number(d.activeLotsMax))
+          if (Number.isFinite(Number(d.listedShareMin))) setListedShareMin(Number(d.listedShareMin))
+          if (Number.isFinite(Number(d.listedShareMax))) setListedShareMax(Number(d.listedShareMax))
+          setLoading(false)
+          setRefreshing(false)
+          firstLoadRef.current = false
+          nextRefreshAtRef.current = savedAt + autoRefreshMs
+          setNextRefreshSec(Math.ceil(Math.max(0, nextRefreshAtRef.current - Date.now()) / 1000))
+          return
+        }
+      }
+    } catch {
+      // cache is best effort; stale or malformed data must not block the live feed
+    }
     scheduleNextAutoRefresh(Date.now())
     void load()
   }, [load, scheduleNextAutoRefresh])
+
+  useEffect(() => {
+    if (loading) return
+    try {
+      const payload: CatalogCachePayload = {
+        savedAt: Date.now(),
+        data: {
+          items,
+          selectedVariantId: selected?.variant_id,
+          marketStatus,
+          nextCursor,
+          q,
+          actions,
+          regimes,
+          preset,
+          sortBy,
+          sortDir,
+          edgeMin,
+          confMin,
+          profitMin,
+          liqMin,
+          depthMin,
+          arMin,
+          lpMax,
+          activeLotsMin,
+          activeLotsMax,
+          listedShareMin,
+          listedShareMax,
+        },
+      }
+      sessionStorage.setItem(CATALOG_CACHE_KEY, JSON.stringify(payload))
+    } catch {
+      // cache write is best effort
+    }
+  }, [
+    loading,
+    items,
+    selected?.variant_id,
+    marketStatus,
+    nextCursor,
+    q,
+    actions,
+    regimes,
+    preset,
+    sortBy,
+    sortDir,
+    edgeMin,
+    confMin,
+    profitMin,
+    liqMin,
+    depthMin,
+    arMin,
+    lpMax,
+    activeLotsMin,
+    activeLotsMax,
+    listedShareMin,
+    listedShareMax,
+  ])
 
   useEffect(() => {
     const poll = window.setInterval(() => {
@@ -498,9 +641,22 @@ export function CatalogPage() {
                             if (id === 'variant_label') {
                               return (
                                 <td key={id} className="py-2 pr-3">
-                                  <button type="button" onClick={() => setSelected(row)} className="gmz-btn gmz-btn-ghost rounded-lg px-2 py-1 text-left text-sm font-medium text-slate-700 hover:text-[var(--accent)]">
-                                    {row.variant_label || row.variant_id}
-                                  </button>
+                                  <div className="flex flex-col gap-2">
+                                    <button type="button" onClick={() => setSelected(row)} className="gmz-btn gmz-btn-ghost rounded-lg px-2 py-1 text-left text-sm font-medium text-slate-700 hover:text-[var(--accent)]">
+                                      {row.variant_label || row.variant_id}
+                                    </button>
+                                    <div className="flex flex-wrap gap-2">
+                                      <Link to={`/variant/${encodeURIComponent(row.variant_id)}`} className="text-xs font-semibold text-[var(--accent)] hover:underline">
+                                        Карточка
+                                      </Link>
+                                      <Link to={tradesHrefForRow(row, 'BUY')} className="text-xs font-semibold text-[var(--accent)] hover:underline">
+                                        Купить
+                                      </Link>
+                                      <Link to={tradesHrefForRow(row, 'BUY_AND_LIST')} className="text-xs font-semibold text-[var(--accent)] hover:underline">
+                                        Купить+выставить
+                                      </Link>
+                                    </div>
+                                  </div>
                                 </td>
                               )
                             }
@@ -575,6 +731,17 @@ export function CatalogPage() {
           ) : (
             <div className="space-y-2 text-sm">
               <div className="text-base font-semibold text-slate-900">{selected.variant_label || selected.variant_id}</div>
+              <div className="flex flex-wrap gap-2">
+                <Link to={`/variant/${encodeURIComponent(selected.variant_id)}`} className="gmz-btn gmz-btn-ghost px-3 py-2 text-sm">
+                  Карточка
+                </Link>
+                <Link to={tradesHrefForRow(selected, 'BUY')} className="gmz-btn gmz-btn-primary px-3 py-2 text-sm">
+                  Купить
+                </Link>
+                <Link to={tradesHrefForRow(selected, 'BUY_AND_LIST')} className="gmz-btn gmz-btn-ghost px-3 py-2 text-sm">
+                  Купить+выставить
+                </Link>
+              </div>
               <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
                 <MetricTile label="Floor" value={ton(selectedDetails?.floor_ton ?? selected.floor_ton)} />
                 <MetricTile label="Fair" value={ton(selectedDetails?.fair_ton ?? selected.fair_ton)} />
