@@ -972,18 +972,25 @@ class TradeRuntime:
         self._redis_publish_event(event, payload)
 
     def _append_execution(self, *, intent_id: str, tx_hash: str, result: str, error_code: Any = None, error_message: Any = None) -> None:
+        intent = next((row for row in self._read_list(self.intents_file) if str(row.get("intent_id") or "") == str(intent_id or "")), {})
         rows = self._read_list(self.executions_file)
+        normalized_result = str(result or "").upper()
         item = {
             "exec_id": f"exec_{secrets.token_hex(6)}",
             "intent_id": intent_id,
+            "intent_type": intent.get("intent_type"),
+            "wallet_address": intent.get("wallet_address"),
+            "variant_id": intent.get("variant_id"),
             "tx_hash": tx_hash or None,
-            "result": str(result or "").upper(),
+            "result": normalized_result,
             "error_code": str(error_code) if error_code not in (None, "") else None,
             "error_message": str(error_message) if error_message not in (None, "") else None,
-            "confirmed_at": _iso() if str(result or "").upper() == "CONFIRMED" else None,
+            "confirmed_at": _iso() if normalized_result == "CONFIRMED" else None,
         }
         rows.append(item)
         self._write_list(self.executions_file, rows[-4000:])
+        if normalized_result == "CONFIRMED":
+            self._append_event("trade.execution.confirmed", item)
 
     def _evaluate_autosell(self, *, wallet_address: str, variant_id: str, market_regime: str, positions: list[dict], holdings: list[dict], variant_snapshot: dict | None) -> None:
         rules = [x for x in self._read_list(self.autosell_file) if str(x.get("wallet_address") or "") == wallet_address and bool(x.get("enabled", True))]
@@ -1267,6 +1274,8 @@ class TradeRuntime:
     def _stream_name_for_event(self, event: str) -> str:
         if event.startswith("trade.quote"):
             return "stream:trade_quotes"
+        if event.startswith("trade.execution"):
+            return "stream:trade_executions"
         if event.startswith("trade.intent"):
             return "stream:trade_intents"
         if event.startswith("position."):
@@ -1283,6 +1292,7 @@ class TradeRuntime:
         mapping = {
             "stream:trade_quotes": 1000,
             "stream:trade_intents": 5000,
+            "stream:trade_executions": 5000,
             "stream:positions": 3000,
             "stream:holdings": 3000,
             "stream:pnl": 3000,

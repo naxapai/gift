@@ -399,11 +399,16 @@ class TestTradingRuntime(unittest.TestCase):
             quote = rt.issue_buy_quote(variant_id='v3', max_price_ton=4.5, slippage_bps=100, wallet_address='EQTEST', variant_snapshot={'floor_ton': 4.0, 'fair_ton': 4.6})
             item = rt.confirm_fast_buy({'buy_quote_token': quote['buy_quote_token'], 'tx_hash': 'tx3', 'wallet_address': 'EQTEST'}, market_regime='MEAN_REVERT', variant_snapshot={'floor_ton': 4.0, 'fair_ton': 4.6})
             self.assertEqual(item['status'], 'CONFIRMED')
-            events = rt.stream_events('EQTEST', kinds={'trade.quote.used', 'trade.intent.broadcast', 'trade.intent.confirmed'}, limit=20)
+            events = rt.stream_events('EQTEST', kinds={'trade.quote.used', 'trade.intent.broadcast', 'trade.intent.confirmed', 'trade.execution.confirmed'}, limit=20)
             names = [x.get('event') for x in events]
             self.assertIn('trade.quote.used', names)
             self.assertIn('trade.intent.broadcast', names)
             self.assertIn('trade.intent.confirmed', names)
+            self.assertIn('trade.execution.confirmed', names)
+            execution = next(x for x in events if x.get('event') == 'trade.execution.confirmed')
+            self.assertEqual(execution.get('payload', {}).get('wallet_address'), 'EQTEST')
+            self.assertEqual(execution.get('payload', {}).get('variant_id'), 'v3')
+            self.assertEqual(rt._stream_name_for_event('trade.execution.confirmed'), 'stream:trade_executions')
 
     def test_sqlite_backed_runtime_persists_snapshots_and_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -415,8 +420,10 @@ class TestTradingRuntime(unittest.TestCase):
             rt2 = TradeRuntime(root, quote_secret='secret', quote_ttl_sec=5, db_path=db_path)
             intents = rt2.list_trade_intents('EQSQL')['items']
             self.assertTrue(intents)
-            events = rt2.stream_events('EQSQL', kinds={'trade.intent.confirmed'}, limit=20)
-            self.assertTrue(events)
+            events = rt2.stream_events('EQSQL', kinds={'trade.intent.confirmed', 'trade.execution.confirmed'}, limit=20)
+            names = [x.get('event') for x in events]
+            self.assertIn('trade.intent.confirmed', names)
+            self.assertIn('trade.execution.confirmed', names)
 
     def test_quote_nonce_lifecycle_persists_used_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
