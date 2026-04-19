@@ -1,4 +1,3 @@
-import { motion } from 'framer-motion'
 import clsx from 'clsx'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
@@ -654,9 +653,9 @@ export function AppShell() {
         </aside>
 
         <main className="min-w-0">
-          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
+          <div>
             <Outlet />
-          </motion.div>
+          </div>
         </main>
       </div>
 

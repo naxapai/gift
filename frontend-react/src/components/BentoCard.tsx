@@ -1,4 +1,3 @@
-import { motion } from 'framer-motion'
 import clsx from 'clsx'
 import type { PropsWithChildren, ReactNode } from 'react'
 
@@ -10,10 +9,7 @@ interface BentoCardProps extends PropsWithChildren {
 
 export function BentoCard({ title, right, className, children }: BentoCardProps) {
   return (
-    <motion.article
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2 }}
+    <article
       className={clsx(
         'gmz-panel relative overflow-hidden p-4 before:absolute before:left-0 before:right-0 before:top-0 before:h-1 before:bg-[linear-gradient(90deg,#9ac0ff,#dbe9ff_60%,#ffffff)]',
         className,
@@ -26,6 +22,6 @@ export function BentoCard({ title, right, className, children }: BentoCardProps)
         </header>
       )}
       {children}
-    </motion.article>
+    </article>
   )
 }

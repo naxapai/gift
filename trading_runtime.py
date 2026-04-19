@@ -299,13 +299,23 @@ class TradeRuntime:
                 break
         if not isinstance(target, dict):
             raise KeyError("intent_not_found")
-        if str(target.get("status") or "") in {"CONFIRMED", "BROADCAST", "SIGNED"} and str(target.get("tx_hash") or "") == str(payload.get("tx_hash") or ""):
+        tx_hash = str(payload.get("tx_hash") or "").strip()
+        current_tx_hash = str(target.get("tx_hash") or "").strip()
+        current_status = str(target.get("status") or "")
+        payload_wallet = str(payload.get("wallet_address") or "").strip()
+        target_wallet = str(target.get("wallet_address") or "").strip()
+        if payload_wallet and target_wallet and payload_wallet != target_wallet:
+            raise ValueError("wallet_address_mismatch")
+        if current_status in {"CONFIRMED", "BROADCAST", "SIGNED"} and current_tx_hash and current_tx_hash == tx_hash:
             return target
+        if current_status in {"CONFIRMED", "FAILED", "EXPIRED"}:
+            raise RuntimeError("intent_already_finalized")
+        if current_status in {"BROADCAST", "SIGNED"} and current_tx_hash and current_tx_hash != tx_hash:
+            raise RuntimeError("intent_tx_hash_mismatch")
         sig_meta = payload.get("signature_meta") if isinstance(payload.get("signature_meta"), dict) else {}
         provided_payload_hash = str(sig_meta.get("payload_hash") or "").strip()
         if provided_payload_hash and provided_payload_hash != str(target.get("wallet_tx_hash") or ""):
             raise ValueError("wallet_tx_payload_mismatch")
-        tx_hash = str(payload.get("tx_hash") or "").strip()
         if self._tx_hash_used(tx_hash, exclude_intent_id=str(target.get("intent_id") or "")):
             raise RuntimeError("tx_hash_already_used")
         target["tx_hash"] = tx_hash or target.get("tx_hash")

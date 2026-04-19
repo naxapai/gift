@@ -550,6 +550,43 @@ class TestV1HttpContract(unittest.TestCase):
             self.assertEqual(status_activity, 200)
             self.assertTrue(isinstance(payload_activity.get("items"), list))
 
+    def test_trades_intent_read_and_confirm_reject_connected_wallet_mismatch(self) -> None:
+        allowed_user = {"id": 144832201, "username": "tester"}
+        owner_wallet = {"address": "EQOWNERWALLET0000000000000000000000000000000"}
+        other_wallet = {"address": "EQOTHERWALLET0000000000000000000000000000000"}
+        variant_id = str(next(iter((server._STATE.variants or {}).keys()), ""))
+        self.assertTrue(variant_id)
+        with patch.object(server, "_auth_user_from_request", return_value=allowed_user), patch.object(server, "_ton_wallet_from_request", return_value=owner_wallet):
+            status_create, payload_create = self._post_json("/v1/trades/intents", {
+                "intent_type": "BUY",
+                "variant_id": variant_id,
+                "wallet_address": owner_wallet["address"],
+                "max_spend_ton": 8.5,
+            })
+            self.assertEqual(status_create, 200)
+            intent_id = str(((payload_create.get("intent") or {}).get("intent_id")) or "")
+            self.assertTrue(intent_id)
+
+        with patch.object(server, "_auth_user_from_request", return_value=allowed_user), patch.object(server, "_ton_wallet_from_request", return_value=other_wallet):
+            try:
+                status_get, payload_get = self._get_json(f"/v1/trades/intents/{intent_id}")
+            except HTTPError as exc:
+                status_get = exc.code
+                payload_get = json.loads(exc.read().decode("utf-8"))
+            self.assertEqual(status_get, 403)
+            self.assertEqual(str(payload_get.get("code") or ""), "wallet_address_mismatch")
+
+            try:
+                status_confirm, payload_confirm = self._post_json(
+                    f"/v1/trades/intents/{intent_id}/confirm_signature",
+                    {"tx_hash": f"tx_wrong_wallet_{uuid4().hex}"},
+                )
+            except HTTPError as exc:
+                status_confirm = exc.code
+                payload_confirm = json.loads(exc.read().decode("utf-8"))
+            self.assertEqual(status_confirm, 403)
+            self.assertEqual(str(payload_confirm.get("code") or ""), "wallet_address_mismatch")
+
     def test_bridge_owned_gifts_endpoint_returns_user_inventory_payload(self) -> None:
         old_token = server.BRIDGE_API_TOKEN
         try:

@@ -183,6 +183,72 @@ class TestTradingRuntime(unittest.TestCase):
             self.assertEqual(first['intent_id'], second['intent_id'])
             self.assertEqual(len(rt.list_holdings('EQTEST')['items']), 1)
 
+    def test_standard_confirm_rejects_wallet_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'wallet_mismatch', 'wallet_address': 'EQTEST', 'max_spend_ton': 3.0},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+            )
+            with self.assertRaises(ValueError) as exc:
+                rt.confirm_intent_signature(
+                    created['intent']['intent_id'],
+                    {'tx_hash': 'sim_wallet_mismatch', 'wallet_address': 'EQOTHER'},
+                    market_regime='MEAN_REVERT',
+                    variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+                )
+            self.assertEqual(str(exc.exception), 'wallet_address_mismatch')
+            self.assertEqual(rt.list_holdings('EQTEST')['items'], [])
+
+    def test_standard_confirm_rejects_second_different_tx_after_finalization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'dup_final', 'wallet_address': 'EQTEST', 'max_spend_ton': 3.0},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+            )
+            rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'sim_dup_final_ok', 'wallet_address': 'EQTEST'},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+            )
+            with self.assertRaises(RuntimeError) as exc:
+                rt.confirm_intent_signature(
+                    created['intent']['intent_id'],
+                    {'tx_hash': 'sim_dup_final_other', 'wallet_address': 'EQTEST'},
+                    market_regime='MEAN_REVERT',
+                    variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+                )
+            self.assertEqual(str(exc.exception), 'intent_already_finalized')
+            self.assertEqual(len(rt.list_holdings('EQTEST')['items']), 1)
+
+    def test_standard_confirm_rejects_tx_replacement_while_broadcast(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')
+            created = rt.create_trade_intent(
+                {'intent_type': 'BUY', 'variant_id': 'broadcast_replace', 'wallet_address': 'EQTEST', 'max_spend_ton': 3.0},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+            )
+            rt.confirm_intent_signature(
+                created['intent']['intent_id'],
+                {'tx_hash': 'pending_replace_1', 'wallet_address': 'EQTEST'},
+                market_regime='MEAN_REVERT',
+                variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+            )
+            with self.assertRaises(RuntimeError) as exc:
+                rt.confirm_intent_signature(
+                    created['intent']['intent_id'],
+                    {'tx_hash': 'pending_replace_2', 'wallet_address': 'EQTEST'},
+                    market_regime='MEAN_REVERT',
+                    variant_snapshot={'floor_ton': 3.0, 'fair_ton': 3.3},
+                )
+            self.assertEqual(str(exc.exception), 'intent_tx_hash_mismatch')
+            self.assertEqual(rt.list_holdings('EQTEST')['items'], [])
+
     def test_broadcast_timeout_marks_failed_not_expired(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='sandbox')

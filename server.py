@@ -2635,13 +2635,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/v1/trades/intents/") and not path.endswith("/confirm_signature"):
-            user, _ = _require_trading_user(self)
+            user, wallet = _require_trading_user(self)
             if user is None:
                 return
             intent_id = path.split("/")[-1]
             item = _state().trades_get_intent_v1(intent_id)
             if not item:
                 _json_response(self, {"code": "not_found", "message": "intent_not_found"}, status=HTTPStatus.NOT_FOUND, cache_control="no-store")
+                return
+            ok_wallet, reason = _validate_wallet_match(wallet, item.get("wallet_address"))
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.FORBIDDEN, cache_control="no-store")
                 return
             _json_response(self, item, cache_control="no-store")
             return
@@ -5329,18 +5333,36 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if not ok_wallet:
                     _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
                     return
+            target = _state().trades_get_intent_v1(intent_id)
+            if not isinstance(target, dict):
+                _json_response(self, {"code": "not_found", "message": "intent_not_found"}, status=HTTPStatus.NOT_FOUND, cache_control="no-store")
+                return
+            ok_wallet, reason = _validate_wallet_match(wallet, target.get("wallet_address"))
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.FORBIDDEN, cache_control="no-store")
+                return
             try:
                 _json_response(self, _state().trades_confirm_signature_v1(intent_id, payload), cache_control="no-store")
             except KeyError:
                 _json_response(self, {"code": "not_found", "message": "intent_not_found"}, status=HTTPStatus.NOT_FOUND, cache_control="no-store")
+            except RuntimeError as exc:
+                _json_response(self, {"code": "conflict", "message": str(exc)}, status=HTTPStatus.CONFLICT, cache_control="no-store")
             except Exception as exc:
                 _json_response(self, {"code": "bad_request", "message": f"confirm_signature_failed:{exc.__class__.__name__}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             return
         if parsed.path.endswith("/retry_list") and parsed.path.startswith("/v1/trades/intents/"):
-            user, _wallet = _require_trading_user(self)
+            user, wallet = _require_trading_user(self)
             if user is None:
                 return
             parent_intent_id = parsed.path.split("/")[-2]
+            parent = _state().trades_get_intent_v1(parent_intent_id)
+            if not isinstance(parent, dict):
+                _json_response(self, {"code": "not_found", "message": "parent_intent_not_found"}, status=HTTPStatus.NOT_FOUND, cache_control="no-store")
+                return
+            ok_wallet, reason = _validate_wallet_match(wallet, parent.get("wallet_address"))
+            if not ok_wallet:
+                _json_response(self, {"code": reason, "message": reason}, status=HTTPStatus.FORBIDDEN, cache_control="no-store")
+                return
             try:
                 _json_response(self, _state().trades_retry_chain_list_v1(parent_intent_id), cache_control="no-store")
             except KeyError:
