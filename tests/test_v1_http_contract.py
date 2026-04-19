@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
@@ -586,6 +587,102 @@ class TestV1HttpContract(unittest.TestCase):
                 payload_confirm = json.loads(exc.read().decode("utf-8"))
             self.assertEqual(status_confirm, 403)
             self.assertEqual(str(payload_confirm.get("code") or ""), "wallet_address_mismatch")
+
+    def test_trades_http_roundtrip_list_cancel_sell_and_transfer(self) -> None:
+        allowed_user = {"id": 144832201, "username": "tester"}
+        ton_wallet = {"address": f"EQFLOW{uuid4().hex[:32].upper()}"}
+        variant_id = str(next(iter((server._STATE.variants or {}).keys()), ""))
+        self.assertTrue(variant_id)
+
+        def create_and_confirm(intent_payload: dict, tx_prefix: str) -> dict:
+            try:
+                status_create, payload_create = self._post_json("/v1/trades/intents", intent_payload)
+            except HTTPError as exc:
+                if exc.code == 429:
+                    retry_after = int(exc.headers.get("Retry-After") or "1")
+                    time.sleep(max(1, retry_after))
+                    status_create, payload_create = self._post_json("/v1/trades/intents", intent_payload)
+                else:
+                    self.fail(f"create_intent_http_{exc.code}:{exc.read().decode('utf-8')}")
+            self.assertEqual(status_create, 200)
+            intent_id = str(((payload_create.get("intent") or {}).get("intent_id")) or "")
+            self.assertTrue(intent_id)
+            try:
+                status_confirm, payload_confirm = self._post_json(
+                    f"/v1/trades/intents/{intent_id}/confirm_signature",
+                    {"tx_hash": f"{tx_prefix}_{uuid4().hex}", "wallet_address": ton_wallet["address"]},
+                )
+            except HTTPError as exc:
+                self.fail(f"confirm_intent_http_{exc.code}:{exc.read().decode('utf-8')}")
+            self.assertEqual(status_confirm, 200)
+            self.assertEqual(str(payload_confirm.get("status") or ""), "CONFIRMED")
+            return payload_confirm
+
+        with patch.object(server, "_auth_user_from_request", return_value=allowed_user), patch.object(server, "_ton_wallet_from_request", return_value=ton_wallet):
+            create_and_confirm({
+                "intent_type": "BUY",
+                "variant_id": variant_id,
+                "wallet_address": ton_wallet["address"],
+                "max_spend_ton": 5.0,
+            }, "tx_flow_buy")
+
+            list_confirmed = create_and_confirm({
+                "intent_type": "LIST",
+                "variant_id": variant_id,
+                "wallet_address": ton_wallet["address"],
+                "post_action": {"type": "LIST", "listing_params": {"list_price_ton": 6.1, "duration_sec": 86400, "marketplace": "fragment"}},
+            }, "tx_flow_list")
+            self.assertEqual(str(list_confirmed.get("intent_type") or ""), "LIST")
+            status_holdings_after_list, holdings_after_list = self._get_json(f"/v1/trades/holdings?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_holdings_after_list, 200)
+            listed_holding = next((x for x in holdings_after_list.get("items") or [] if str((x or {}).get("variant_id") or "") == variant_id), None)
+            self.assertTrue(isinstance(listed_holding, dict))
+            self.assertEqual(str((listed_holding or {}).get("status") or ""), "LISTED")
+
+            cancel_confirmed = create_and_confirm({
+                "intent_type": "CANCEL_LISTING",
+                "variant_id": variant_id,
+                "wallet_address": ton_wallet["address"],
+            }, "tx_flow_cancel")
+            self.assertEqual(str(cancel_confirmed.get("intent_type") or ""), "CANCEL_LISTING")
+            status_holdings_after_cancel, holdings_after_cancel = self._get_json(f"/v1/trades/holdings?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_holdings_after_cancel, 200)
+            owned_holding = next((x for x in holdings_after_cancel.get("items") or [] if str((x or {}).get("variant_id") or "") == variant_id), None)
+            self.assertTrue(isinstance(owned_holding, dict))
+            self.assertEqual(str((owned_holding or {}).get("status") or ""), "OWNED")
+
+            sell_confirmed = create_and_confirm({
+                "intent_type": "SELL",
+                "variant_id": variant_id,
+                "wallet_address": ton_wallet["address"],
+                "price_ton": 6.3,
+            }, "tx_flow_sell")
+            self.assertEqual(str(sell_confirmed.get("intent_type") or ""), "SELL")
+            status_holdings_after_sell, holdings_after_sell = self._get_json(f"/v1/trades/holdings?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_holdings_after_sell, 200)
+            sold_holding = next((x for x in holdings_after_sell.get("items") or [] if str((x or {}).get("variant_id") or "") == variant_id), None)
+            self.assertTrue(isinstance(sold_holding, dict))
+            self.assertEqual(str((sold_holding or {}).get("status") or ""), "SOLD")
+
+            create_and_confirm({
+                "intent_type": "BUY",
+                "variant_id": variant_id,
+                "wallet_address": ton_wallet["address"],
+                "max_spend_ton": 3.0,
+            }, "tx_flow_transfer_buy")
+            transfer_confirmed = create_and_confirm({
+                "intent_type": "TRANSFER",
+                "variant_id": variant_id,
+                "wallet_address": ton_wallet["address"],
+                "transfer_params": {"telegram_user_id": "144832201"},
+            }, "tx_flow_transfer")
+            self.assertEqual(str(transfer_confirmed.get("intent_type") or ""), "TRANSFER")
+            status_holdings_after_transfer, holdings_after_transfer = self._get_json(f"/v1/trades/holdings?wallet_address={ton_wallet['address']}")
+            self.assertEqual(status_holdings_after_transfer, 200)
+            transferred = next((x for x in reversed(holdings_after_transfer.get("items") or []) if str((x or {}).get("variant_id") or "") == variant_id and ((x or {}).get("transfer_meta") or {})), None)
+            self.assertTrue(isinstance(transferred, dict))
+            self.assertEqual(str((transferred or {}).get("status") or ""), "SOLD")
+            self.assertEqual(str(((transferred or {}).get("transfer_meta") or {}).get("result") or ""), "TRANSFERRED")
 
     def test_bridge_owned_gifts_endpoint_returns_user_inventory_payload(self) -> None:
         old_token = server.BRIDGE_API_TOKEN
