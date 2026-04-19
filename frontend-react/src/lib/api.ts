@@ -1385,7 +1385,7 @@ export function subscribeTradesStream(
       // noop
     }
   }
-  ;['trade.intent.created', 'trade.intent.signed', 'trade.intent.broadcast', 'trade.intent.confirmed', 'position.updated', 'holding.updated', 'wallet.activity.updated', 'autosell.triggered', 'message']
+  ;['trade.intent.created', 'trade.intent.signed', 'trade.intent.broadcast', 'trade.intent.confirmed', 'trade.execution.confirmed', 'position.updated', 'holding.updated', 'wallet.activity.updated', 'autosell.triggered', 'message']
     .forEach((name) => es.addEventListener(name, handler as EventListener))
   if (onError) es.onerror = onError
   return es
