@@ -12,6 +12,40 @@ class TestV1FormulaContract(unittest.TestCase):
             svc = GiftAnalyticsService()
             self.assertEqual(svc.v1_signal_engine_mode, "tz")
 
+    def test_verified_only_bootstraps_empty_catalog_even_when_cache_disabled(self) -> None:
+        env = {
+            "INGEST_AUTO_LOOP": "false",
+            "VERIFIED_ONLY": "true",
+            "VERIFIED_SOURCE": "telegram_api",
+            "FRAGMENT_BOOTSTRAP_CACHE": "false",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(GiftAnalyticsService, "_restore_from_listing_state", return_value=None),
+            patch.object(GiftAnalyticsService, "_sync_listing_tracker_state", return_value=None),
+            patch.object(GiftAnalyticsService, "_bootstrap_from_verified_file", return_value=None) as bootstrap,
+        ):
+            svc = GiftAnalyticsService()
+        self.assertTrue(svc._verified_file_bootstrap_required_for_empty_catalog())  # noqa: SLF001
+        bootstrap.assert_called_once()
+
+    def test_telegram_api_does_not_bootstrap_when_not_verified_only_and_cache_disabled(self) -> None:
+        env = {
+            "INGEST_AUTO_LOOP": "false",
+            "VERIFIED_ONLY": "false",
+            "VERIFIED_SOURCE": "telegram_api",
+            "FRAGMENT_BOOTSTRAP_CACHE": "false",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(GiftAnalyticsService, "_restore_from_listing_state", return_value=None),
+            patch.object(GiftAnalyticsService, "_sync_listing_tracker_state", return_value=None),
+            patch.object(GiftAnalyticsService, "_bootstrap_from_verified_file", return_value=None) as bootstrap,
+        ):
+            svc = GiftAnalyticsService()
+        self.assertFalse(svc._verified_file_bootstrap_required_for_empty_catalog())  # noqa: SLF001
+        bootstrap.assert_not_called()
+
     def test_signals_v1_contract(self) -> None:
         svc = GiftAnalyticsService()
         payload = svc.signals_v1(limit=25, mode="tz")
