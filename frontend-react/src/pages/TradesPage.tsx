@@ -107,7 +107,8 @@ async function sendTonWalletTx(walletTx: Record<string, unknown>): Promise<{ txH
   if (!uiCtor) {
     return { txHash: `sim_${Date.now()}`, payloadHash }
   }
-  const ui = new uiCtor({ manifestUrl: `${window.location.origin}/tonconnect-manifest.json`, buttonRootId: TONCONNECT_BUTTON_ROOT_ID })
+  const ui = window.__gmzTonConnectUiSingleton || new uiCtor({ manifestUrl: `${window.location.origin}/tonconnect-manifest.json`, buttonRootId: TONCONNECT_BUTTON_ROOT_ID })
+  window.__gmzTonConnectUiSingleton = ui
   if (ui.connectionRestored) {
     await ui.connectionRestored.catch(() => undefined)
   }
@@ -418,6 +419,11 @@ export function TradesPage() {
 
   const createBuy = useCallback(async (intentType: 'BUY' | 'BUY_AND_LIST' | 'FAST_BUY') => {
     if (!walletAddress || !variantId.trim()) return
+    const maxSpend = Number(maxPriceTon || 0)
+    if (!Number.isFinite(maxSpend) || maxSpend <= 0) {
+      setToast('Укажите max price TON больше 0 перед отправкой сделки.')
+      return
+    }
     setCreating(true)
     setToast('')
     let optimisticId = ''
@@ -438,7 +444,7 @@ export function TradesPage() {
         ...prev,
       ].slice(0, 30))
       if (intentType === 'FAST_BUY') {
-        const quote = await getBuyQuote({ variantId: variantId.trim(), maxPriceTon: Number(maxPriceTon || 0), slippageBps: Number(slippageBps || 100), walletAddress })
+        const quote = await getBuyQuote({ variantId: variantId.trim(), maxPriceTon: maxSpend, slippageBps: Number(slippageBps || 100), walletAddress })
         const tx = await sendTonWalletTx((quote as unknown as { wallet_tx?: Record<string, unknown> }).wallet_tx || {})
         await postFastBuyConfirm({ buy_quote_token: quote.buy_quote_token, tx_hash: tx.txHash, wallet_address: walletAddress, client_meta: { payload_hash: tx.payloadHash } })
       } else {
@@ -446,11 +452,11 @@ export function TradesPage() {
           intent_type: intentType,
           variant_id: variantId.trim(),
           wallet_address: walletAddress,
-          max_spend_ton: Number(maxPriceTon || 0),
+          max_spend_ton: maxSpend,
           chain_policy: intentType === 'BUY_AND_LIST' ? 'BUY_THEN_LIST' : 'MANUAL',
         }
         if (intentType === 'BUY_AND_LIST') {
-          payload.post_action = { type: 'LIST', listing_params: { list_price_ton: Number(buyAndListPriceTon || Number(maxPriceTon || 0) * 1.1), duration_sec: 86400, marketplace: 'fragment' } }
+          payload.post_action = { type: 'LIST', listing_params: { list_price_ton: Number(buyAndListPriceTon || maxSpend * 1.1), duration_sec: 86400, marketplace: 'fragment' } }
         }
         const created = await postTradeIntent(payload)
         const tx = await sendTonWalletTx(created.wallet_tx || {})

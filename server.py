@@ -2531,6 +2531,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             except KeyError as exc:
                 reason = str(exc) or "variant_not_found"
                 _json_response(self, {"code": "bad_request", "message": f"quote_issue_failed:{reason}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
+            except ValueError as exc:
+                reason = str(exc) or "invalid_quote_request"
+                _json_response(self, {"code": "bad_request", "message": f"quote_issue_failed:{reason}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             except Exception as exc:
                 _json_response(self, {"code": "bad_request", "message": f"quote_issue_failed:{exc.__class__.__name__}"}, status=HTTPStatus.BAD_REQUEST, cache_control="no-store")
             return

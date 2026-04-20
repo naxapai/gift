@@ -159,12 +159,7 @@ export function AppShell() {
   const [ownedGifts, setOwnedGifts] = useState<OwnedGiftItem[]>([])
   const [ownedSource, setOwnedSource] = useState('')
   const [ownedMessage, setOwnedMessage] = useState('')
-  const tonUiRef = useRef<{
-    wallet?: { account?: { address?: string; chain?: string; publicKey?: string; [key: string]: unknown } } | null
-    connectionRestored?: Promise<unknown>
-    connectWallet: (opts?: { tonProof?: string }) => Promise<{ account?: { address?: string; chain?: string; publicKey?: string; [key: string]: unknown }; connectItems?: { tonProof?: { proof?: Record<string, unknown> } } }>
-    disconnect: () => Promise<void>
-  } | null>(null)
+  const tonUiRef = useRef<GmzTonConnectUiInstance | null>(null)
   const telegramWidgetRef = useRef<HTMLDivElement | null>(null)
   const tonMenuRef = useRef<HTMLDivElement | null>(null)
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
@@ -287,11 +282,16 @@ export function AppShell() {
   const ensureTonUi = useCallback(async () => {
     await ensureTonConnectSdk()
     if (!window.TON_CONNECT_UI?.TonConnectUI) throw new Error('tonconnect_sdk_unavailable')
+    if (window.__gmzTonConnectUiSingleton) {
+      tonUiRef.current = window.__gmzTonConnectUiSingleton
+      return tonUiRef.current
+    }
     if (!tonUiRef.current) {
         tonUiRef.current = new window.TON_CONNECT_UI.TonConnectUI({
           manifestUrl: `${window.location.origin}/tonconnect-manifest.json`,
           buttonRootId: TONCONNECT_BUTTON_ROOT_ID,
         })
+      window.__gmzTonConnectUiSingleton = tonUiRef.current
       if (tonUiRef.current?.connectionRestored) {
         await tonUiRef.current.connectionRestored.catch(() => undefined)
       }
