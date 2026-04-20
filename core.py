@@ -887,7 +887,10 @@ class GiftAnalyticsService:
         self._listing_mt_warmup_last_error = ""
         self._restore_from_listing_state()
         self._sync_listing_tracker_state(_now(), persist=True)
-        allow_bootstrap_from_file = self.verified_source in {"file", "fragment", "hybrid"}
+        # Keep the API source as primary, but never boot with an empty catalog.
+        # Trading selectors and v1 contract pages need a warm in-memory catalog
+        # even while the live API/MTProto source is still warming up or rate-limited.
+        allow_bootstrap_from_file = self.verified_source in {"file", "fragment", "hybrid", "telegram_api"} or self.verified_only
         if self.fragment_bootstrap_cache and allow_bootstrap_from_file and not self.variants:
             self._bootstrap_from_verified_file()
         self._prune_ai_cache(force=True)
