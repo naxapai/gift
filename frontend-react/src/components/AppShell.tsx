@@ -253,16 +253,15 @@ export function AppShell() {
       if (connected) {
         setTonConnected(true)
         setTonWallet(me.wallet || null)
-      }
-      if (connected) writeJson(LS_TON_WALLET, me.wallet || null)
-      if (!connected) {
-        if (!initialTonWallet?.address) {
-          setTonConnected(false)
-          setTonWallet(null)
-          setTonMenuOpen(false)
-          setTonBalance(null)
-          writeJson(LS_TON_WALLET, null)
-        }
+        writeJson(LS_TON_WALLET, me.wallet || null)
+      } else {
+        // Server-side TON session is authoritative. If it says the wallet is
+        // disconnected, clear any stale cached wallet from previous sessions.
+        setTonConnected(false)
+        setTonWallet(null)
+        setTonMenuOpen(false)
+        setTonBalance(null)
+        writeJson(LS_TON_WALLET, null)
       }
       setTonError('')
     } catch (e) {

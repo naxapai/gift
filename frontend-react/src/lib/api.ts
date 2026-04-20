@@ -40,7 +40,8 @@ import { assertMetricAllowedByMapping, normalizeMetricName, type MetricScope } f
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 const API_TIMEOUT_MS = Math.max(1000, Number(import.meta.env.VITE_API_TIMEOUT_MS || 15000))
-const API_RETRY_COUNT = Math.max(0, Number(import.meta.env.VITE_API_RETRY_COUNT || 1))
+const API_RETRY_COUNT = Math.max(0, Number(import.meta.env.VITE_API_RETRY_COUNT || 3))
+const API_RETRY_BASE_DELAY_MS = Math.max(150, Number(import.meta.env.VITE_API_RETRY_BASE_DELAY_MS || 450))
 const ENABLE_LEGACY_MARKET_OVERVIEW_FALLBACK = String(import.meta.env.VITE_ENABLE_LEGACY_MARKET_OVERVIEW_FALLBACK || '').trim().toLowerCase() === 'true'
 const TRANSIENT_HTTP_CODES = new Set([408, 429, 500, 502, 503, 504])
 
@@ -83,7 +84,7 @@ async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
         const transient = TRANSIENT_HTTP_CODES.has(res.status)
         err.retryable = transient
         if (transient && attempt < API_RETRY_COUNT) {
-          await new Promise((resolve) => globalThis.setTimeout(resolve, 180 * (attempt + 1)))
+          await new Promise((resolve) => globalThis.setTimeout(resolve, API_RETRY_BASE_DELAY_MS * (attempt + 1)))
           continue
         }
         throw err
@@ -95,7 +96,7 @@ async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
       const msg = isAbort ? `HTTP timeout after ${API_TIMEOUT_MS}ms` : (e instanceof Error ? e.message : 'request_failed')
       lastError = new Error(msg)
       if (retryable && attempt < API_RETRY_COUNT) {
-        await new Promise((resolve) => globalThis.setTimeout(resolve, 180 * (attempt + 1)))
+        await new Promise((resolve) => globalThis.setTimeout(resolve, API_RETRY_BASE_DELAY_MS * (attempt + 1)))
         continue
       }
     } finally {
