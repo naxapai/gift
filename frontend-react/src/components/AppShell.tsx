@@ -15,7 +15,7 @@ const navItems = [
   { to: '/settings', label: 'Настройки' },
 ]
 
-const TONCONNECT_UI_SRC = 'https://unpkg.com/@tonconnect/ui@2.0.9/dist/tonconnect-ui.min.js'
+const TONCONNECT_UI_SRC = '/vendor/tonconnect-ui.min.js'
 const TELEGRAM_WIDGET_SRC = 'https://telegram.org/js/telegram-widget.js?22'
 const TONCONNECT_BUTTON_ROOT_ID = 'gmz-tonconnect-anchor'
 const LS_TELEGRAM_USER = 'gmz:telegram:user'
@@ -72,6 +72,12 @@ function writeJson(key: string, value: unknown | null) {
   } catch {
     // ignore
   }
+}
+
+function telegramMiniAppUrl(botUsername: string): string {
+  const bot = String(botUsername || '').replace(/^@/, '').trim()
+  if (!bot) return ''
+  return `https://t.me/${encodeURIComponent(bot)}?startapp=auth`
 }
 
 let tonScriptPromise: Promise<void> | null = null
@@ -577,6 +583,16 @@ export function AppShell() {
                     <div className="space-y-3">
                       <div className="text-sm text-slate-600">Войдите через Telegram, чтобы видеть данные профиля и подарки.</div>
                       {telegramAuthEnabled ? <div ref={telegramWidgetRef} /> : <div className="text-xs text-amber-700">Telegram auth пока не настроен на backend.</div>}
+                      {telegramAuthEnabled && telegramBotUsername ? (
+                        <a
+                          className="gmz-btn block rounded-xl border border-[#c8d5ea] bg-white px-3 py-2 text-center text-sm font-semibold text-[var(--accent)]"
+                          href={telegramMiniAppUrl(telegramBotUsername)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Открыть вход в Telegram Mini App
+                        </a>
+                      ) : null}
                       {telegramAuthBusy ? <div className="text-xs text-slate-500">Проверяем подпись Telegram…</div> : null}
                       {telegramAuthError ? <div className="text-xs text-rose-600">{telegramAuthError}</div> : null}
                     </div>

@@ -87,7 +87,7 @@ function stableJson(value: unknown): string {
 
 function mockTonConnectEnabled(): boolean {
   const envFlag = String(import.meta.env.VITE_TRADE_MOCK_TONCONNECT || '').trim().toLowerCase()
-  if (['1', 'true', 'yes', 'on'].includes(envFlag)) return true
+  if (!['1', 'true', 'yes', 'on'].includes(envFlag)) return false
   return new URLSearchParams(window.location.search).get('mock_tonconnect') === '1'
 }
 

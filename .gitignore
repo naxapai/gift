@@ -2,3 +2,15 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+data/auth_sessions.json
+data/ton_auth_sessions.json
+data/listing_state.json
+data/listing_tracker_state.json
+data/state.json
+data/trade_events.json
+data/trade_*_store.json
+data/stars_rate_cache.json
+data/trades_runtime.sqlite3
+data/variant_history.json
+data/ingest.log
+*.sqlite3

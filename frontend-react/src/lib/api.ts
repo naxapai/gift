@@ -118,7 +118,6 @@ async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
     try {
       const res = await fetch(url, {
         credentials: 'include',
-        cache: 'no-store',
         ...init,
         signal: controller.signal,
       })

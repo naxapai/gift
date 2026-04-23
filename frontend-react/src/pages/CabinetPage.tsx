@@ -37,6 +37,12 @@ function fmtDate(value?: string): string {
   return new Date(ts).toLocaleString('ru-RU')
 }
 
+function telegramMiniAppUrl(botUsername: string): string {
+  const bot = String(botUsername || '').replace(/^@/, '').trim()
+  if (!bot) return ''
+  return `https://t.me/${encodeURIComponent(bot)}?startapp=auth`
+}
+
 function ensureTelegramWidgetScript(): Promise<void> {
   return new Promise((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>(`script[src^="${TELEGRAM_WIDGET_SRC}"]`)
@@ -259,6 +265,16 @@ export function CabinetPage() {
                 <div className="rounded-2xl border border-[var(--line)] bg-white/75 p-4">
                   <div className="mb-3 text-sm font-medium text-slate-700">Войти через Telegram</div>
                   <div ref={widgetRef} />
+                  {botUsername ? (
+                    <a
+                      className="gmz-btn mt-3 block rounded-xl border border-[#c8d5ea] bg-white px-4 py-2 text-center text-sm font-semibold text-[var(--accent)]"
+                      href={telegramMiniAppUrl(botUsername)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Открыть вход в Telegram Mini App
+                    </a>
+                  ) : null}
                   {authBusy ? <div className="mt-2 text-xs text-slate-500">Проверяем подпись Telegram…</div> : null}
                 </div>
               )}

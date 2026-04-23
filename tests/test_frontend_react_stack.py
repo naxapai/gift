@@ -48,6 +48,8 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('/logo.png', shell)
         self.assertIn('/favicon.png', shell)
         self.assertIn('TONCONNECT_UI_SRC', shell)
+        self.assertIn("const TONCONNECT_UI_SRC = '/vendor/tonconnect-ui.min.js'", shell)
+        self.assertNotIn('unpkg.com/@tonconnect/ui', shell)
         self.assertIn('postTonChallenge', shell)
         self.assertIn('postTonVerify', shell)
         self.assertIn('postTonLogout', shell)
@@ -55,6 +57,8 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('getTelegramAuthMe', shell)
         self.assertIn('getTelegramOwnedGifts', shell)
         self.assertIn('Войти через Telegram', shell)
+        self.assertIn('Открыть вход в Telegram Mini App', shell)
+        self.assertIn('telegramMiniAppUrl', shell)
         self.assertIn('TONCONNECT_BUTTON_ROOT_ID', shell)
         self.assertIn('Подарки в наличии', shell)
 
@@ -69,6 +73,8 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn('postTelegramLogout', page)
         self.assertIn('Подарки в наличии', page)
         self.assertIn('TELEGRAM_WIDGET_SRC', page)
+        self.assertIn('Открыть вход в Telegram Mini App', page)
+        self.assertIn('telegramMiniAppUrl', page)
         self.assertIn('Всего подарков', page)
         self.assertIn('Средний Floor', page)
         self.assertIn('Средний Fair', page)
@@ -176,6 +182,7 @@ class TestFrontendReactStack(unittest.TestCase):
         api = (FRONT / 'src' / 'lib' / 'api.ts').read_text(encoding='utf-8')
         for token in ['FAST BUY', 'BUY+LIST', 'PnL PRO', 'Positions', 'Holdings', 'History', 'Wallet activity', 'AutoSell rules', 'LIST', 'CANCEL', 'SELL', 'TRANSFER', 'Повторить выставление', 'optimisticHistory', 'subscribeTradesStream', 'subscribePnlStream', 'seenSseKeysRef', 'scheduleSseRefresh', 'refreshWorkspace', 'stableJson', 'mockTonConnectEnabled', 'VITE_TRADE_MOCK_TONCONNECT', 'mock_tonconnect', 'decision_trace', 'reasons:', 'risk_flags:', 'sendTransaction', 'payload_hash', 'Holding не найден для выбранного варианта.', 'Подключите TON wallet перед отправкой транзакции.', 'expandedPositionId', 'expandedHoldingId', 'listing_meta:', 'transfer_meta:', 'Коллекция', 'Модель', 'Фон', 'Узор', 'variant_id будет выбран автоматически', 'resolveVariantByTraits', 'getCollections', 'getVariants', 'GmzSelect']:
             self.assertIn(token, page)
+        self.assertIn("if (!['1', 'true', 'yes', 'on'].includes(envFlag)) return false", page)
         self.assertIn('trade.execution.confirmed', api)
         for token in ['useLocation', 'location.search', 'variant_id', 'collection_id', 'selectedCollectionId', 'tradePrefill']:
             self.assertIn(token, page)
@@ -488,6 +495,7 @@ class TestFrontendReactStack(unittest.TestCase):
         index = (FRONT / 'index.html').read_text(encoding='utf-8')
         self.assertIn('/favicon.png', index)
         self.assertTrue((FRONT / 'public' / 'tonconnect-manifest.json').exists())
+        self.assertTrue((FRONT / 'public' / 'vendor' / 'tonconnect-ui.min.js').exists())
 
     def test_main_uses_global_error_boundary(self):
         main = (FRONT / 'src' / 'main.tsx').read_text(encoding='utf-8')
@@ -530,6 +538,25 @@ class TestFrontendReactStack(unittest.TestCase):
         self.assertIn("pickNum('conf_pct', 'confidence_pct', 'confidence')", api)
         self.assertIn("pickNum('score100', 'score_pct', 'score')", api)
         self.assertIn("pickNum('price_ton', 'price', 'listing_price_ton', 'last_price_ton')", api)
+
+    def test_frontend_get_requests_do_not_force_no_store(self):
+        api = (FRONT / 'src' / 'lib' / 'api.ts').read_text(encoding='utf-8')
+        self.assertIn('apiResponseCache', api)
+        self.assertIn('apiInflight', api)
+        self.assertNotIn("cache: 'no-store'", api)
+        self.assertNotIn('cache: "no-store"', api)
+
+    def test_runtime_files_are_gitignored(self):
+        ignore = (ROOT / '.gitignore').read_text(encoding='utf-8')
+        for token in [
+            'data/auth_sessions.json',
+            'data/ton_auth_sessions.json',
+            'data/listing_state.json',
+            'data/trade_*_store.json',
+            'data/trades_runtime.sqlite3',
+            'data/variant_history.json',
+        ]:
+            self.assertIn(token, ignore)
 
     def test_react_metric_mapping_is_canonical_and_validated(self):
         catalog = (FRONT / 'src' / 'lib' / 'metricsCatalog.ts').read_text(encoding='utf-8')
