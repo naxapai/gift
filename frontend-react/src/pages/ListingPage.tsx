@@ -203,6 +203,7 @@ const RACE_DEFAULT_COLUMNS = [
 
 const LISTING_SIGNALS_DEFAULT_COLUMNS = [
   'variant_label',
+  'signal_origin',
   'action',
   'score100',
   'conf_pct',
@@ -242,6 +243,7 @@ const RACE_COLUMN_LABELS: Record<string, string> = {
 
 const LISTING_SIGNALS_COLUMN_LABELS: Record<string, string> = {
   variant_label: 'Вариант',
+  signal_origin: 'Поток',
   action: 'Сигнал',
   score100: 'Score',
   conf_pct: 'Conf',
@@ -1792,6 +1794,19 @@ export function ListingPage() {
                             return (
                               <td key={col} className="py-2 pr-4">
                                 <span className="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-xs font-semibold text-[var(--accent)]">{action}</span>
+                              </td>
+                            )
+                          }
+                          if (col === 'signal_origin') {
+                            const origin = String(row.signal_origin || (row.is_trade_signal ? 'real_trade_signal' : '') || 'raw_listing_event')
+                            const labelText = origin === 'real_trade_signal'
+                              ? 'SIGNAL'
+                              : origin === 'synthetic_warmup'
+                                ? 'WARMUP'
+                                : 'RAW'
+                            return (
+                              <td key={col} className="py-2 pr-4">
+                                <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">{labelText}</span>
                               </td>
                             )
                           }

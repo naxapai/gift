@@ -835,16 +835,20 @@ class GiftAnalyticsService:
         self.telegram_owned_gifts_cache_ttl_sec = max(5.0, float(os.getenv("TELEGRAM_OWNED_GIFTS_CACHE_TTL_SEC", "60")))
         self._telegram_owned_gifts_cache: dict[str, tuple[float, dict]] = {}
         self.owned_gifts_file = Path(os.getenv("OWNED_GIFTS_FILE", str(OWNED_GIFTS_FILE.resolve())))
+        trade_env = str(os.getenv("TRADES_ENV", os.getenv("TRADING_ENV", "sandbox")) or "sandbox").strip().lower()
+        trade_quote_secret = str(os.getenv("TRADES_QUOTE_SECRET", "") or "").strip()
+        if not trade_quote_secret and trade_env != "production":
+            trade_quote_secret = "sandbox-dev-trades-secret"
         self.trade_runtime = TradeRuntime(
             DATA_DIR,
-            quote_secret=str(os.getenv("TRADES_QUOTE_SECRET", "giftmarketzone-trades-secret") or "giftmarketzone-trades-secret"),
+            quote_secret=trade_quote_secret,
             quote_ttl_sec=int(os.getenv("TRADES_QUOTE_TTL_SEC", "5") or "5"),
             db_path=Path(os.getenv("TRADES_DB_PATH", str((DATA_DIR / "trades_runtime.sqlite3").resolve()))) if str(os.getenv("TRADES_DB_PATH", str((DATA_DIR / "trades_runtime.sqlite3").resolve()))).strip() else None,
             postgres_dsn=str(os.getenv("TRADES_POSTGRES_DSN", "") or "").strip() or None,
             redis_url=str(os.getenv("TRADES_REDIS_URL", "") or "").strip() or None,
             tx_verify_url=str(os.getenv("TRADES_TX_VERIFY_URL", "") or "").strip() or None,
             tx_verify_token=str(os.getenv("TRADES_TX_VERIFY_TOKEN", "") or "").strip() or None,
-            environment=str(os.getenv("TRADES_ENV", os.getenv("TRADING_ENV", "sandbox")) or "sandbox"),
+            environment=trade_env,
             marketplace_wallet_address=str(
                 os.getenv("TRADES_MARKETPLACE_WALLET_ADDRESS", os.getenv("TRADES_SANDBOX_MARKETPLACE_WALLET_ADDRESS", ""))
                 or ""
@@ -9054,7 +9058,7 @@ class GiftAnalyticsService:
         rows_count = len(rows or [])
         if rows_count <= 0:
             return error
-        if source in {"fragment.verified_snapshot", "mtproto_snapshot"} or source.startswith("mtproto"):
+        if source in {"fragment.verified_snapshot", "mtproto_snapshot"}:
             return ""
         return error
 
@@ -10951,6 +10955,8 @@ class GiftAnalyticsService:
                     variant_id = str(resolved_variant_id)
                     v = self.variants.get(variant_id)
             if v:
+                signal_origin = "real_trade_signal"
+                signal_quality = "LIVE_CONFIRMED" if str(ev.get("source") or events_payload.get("source") or "").strip().lower().startswith("mtproto") else "BACKFILL_CONFIRMED"
                 base_sig = self._v1_signal(v, mode=eff_mode)
                 sig_type_val = str(base_sig.get("type") or "WATCH")
                 score100 = float(base_sig.get("score100") or 0.0)
@@ -10982,6 +10988,8 @@ class GiftAnalyticsService:
                 reasons = list(base_sig.get("reasons") or [])[:4]
                 risks = list(base_sig.get("risk_flags") or [])[:4]
             else:
+                signal_origin = "synthetic_warmup"
+                signal_quality = "SYNTHETIC_WARMUP"
                 is_relisted = str(ev.get("topic") or "").endswith("relisted")
                 currency = str(ev.get("resell_currency") or "TON").strip().upper()
                 raw_amount = float(ev.get("resell_amount") or 0.0)
@@ -11119,6 +11127,11 @@ class GiftAnalyticsService:
                     "risk_flags": risks,
                     "engine_mode": eff_mode,
                     "source": ev.get("source") or events_payload.get("source") or "mtproto_api",
+                    "raw_event_topic": ev.get("topic"),
+                    "raw_event_source": ev.get("source") or events_payload.get("source") or "mtproto_api",
+                    "signal_origin": signal_origin,
+                    "signal_quality": signal_quality,
+                    "is_trade_signal": signal_origin == "real_trade_signal",
                 }
             )
 

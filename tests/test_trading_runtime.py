@@ -108,20 +108,27 @@ class TestTradingRuntime(unittest.TestCase):
 
     def test_production_without_verifier_does_not_auto_confirm(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            rt = TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='production')
-            created = rt.create_trade_intent(
-                {'intent_type': 'BUY', 'variant_id': 'prd1', 'wallet_address': 'EQTEST', 'max_spend_ton': 6.0},
-                market_regime='MEAN_REVERT',
-                variant_snapshot={'floor_ton': 6.0, 'fair_ton': 6.5},
-            )
-            item = rt.confirm_intent_signature(
-                created['intent']['intent_id'],
-                {'tx_hash': 'real_tx_hash'},
-                market_regime='MEAN_REVERT',
-                variant_snapshot={'floor_ton': 6.0, 'fair_ton': 6.5},
-            )
-            self.assertEqual(item['status'], 'BROADCAST')
-            self.assertIsNone(rt.list_holdings('EQTEST')['items'][0:1] or None)
+            with self.assertRaises(RuntimeError):
+                TradeRuntime(Path(tmpdir), quote_secret='secret', quote_ttl_sec=5, environment='production')
+
+            with self.assertRaises(RuntimeError):
+                TradeRuntime(
+                    Path(tmpdir),
+                    quote_secret='x' * 40,
+                    quote_ttl_sec=5,
+                    environment='production',
+                    marketplace_wallet_address='EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c',
+                    tx_verify_url='https://verifier.example/check',
+                )
+
+            with self.assertRaises(RuntimeError):
+                TradeRuntime(
+                    Path(tmpdir),
+                    quote_secret='x' * 40,
+                    quote_ttl_sec=5,
+                    environment='production',
+                    marketplace_wallet_address='EQPRODUCTIONMARKETPLACE',
+                )
 
     def test_tx_hash_replay_is_rejected_for_standard_and_fast_buy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

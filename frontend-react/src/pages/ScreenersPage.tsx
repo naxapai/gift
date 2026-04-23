@@ -45,6 +45,12 @@ type ScreenersUiMapping = {
 }
 
 const SCREENERS_UI = (screenersUiRaw || {}) as ScreenersUiMapping
+const SCREENERS_CACHE_KEY = 'gmz.screeners.cache.v1'
+
+type ScreenersCachePayload = {
+  savedAt: number
+  items: ScreenerRowPro[]
+}
 
 function defaultFilterValue(id: string, fallback: number): number {
   const rows = Array.isArray(SCREENERS_UI.filters) ? SCREENERS_UI.filters : []
@@ -178,6 +184,8 @@ export function ScreenersPage() {
         endpoint: SCREENERS_UI.primary_data_source || undefined,
       })
       setItems(feed.items || [])
+      const payload: ScreenersCachePayload = { savedAt: Date.now(), items: feed.items || [] }
+      sessionStorage.setItem(SCREENERS_CACHE_KEY, JSON.stringify(payload))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка загрузки скринеров')
     } finally {
@@ -188,6 +196,25 @@ export function ScreenersPage() {
   }, [actions, arMin, confMin, edgeMin, liqMin, lpMax, profitMin, regimes, screenerTypes])
 
   useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(SCREENERS_CACHE_KEY)
+      if (raw) {
+        const payload = JSON.parse(raw) as ScreenersCachePayload
+        if (payload && Array.isArray(payload.items) && Number.isFinite(Number(payload.savedAt))) {
+          const ageMs = Date.now() - Number(payload.savedAt)
+          if (ageMs >= 0 && ageMs < autoRefreshMs) {
+            setItems(payload.items)
+            setLoading(false)
+            firstLoadRef.current = false
+            nextRefreshAtRef.current = Number(payload.savedAt) + autoRefreshMs
+            setNextRefreshSec(Math.ceil(Math.max(0, nextRefreshAtRef.current - Date.now()) / 1000))
+            return
+          }
+        }
+      }
+    } catch {
+      // session cache is best-effort
+    }
     scheduleNextAutoRefresh(Date.now())
     void load()
   }, [load, scheduleNextAutoRefresh])

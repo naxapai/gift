@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import math
 import secrets
+import struct
 import threading
 import time
 import subprocess
@@ -19,6 +21,13 @@ from urllib.request import Request, urlopen
 
 from core import GiftAnalyticsService
 import bot as signal_bot
+
+try:  # Optional at import time; required for strict TON proof verification.
+    from nacl.exceptions import BadSignatureError
+    from nacl.signing import VerifyKey
+except Exception:  # pragma: no cover - exercised only when dependency is absent.
+    BadSignatureError = Exception  # type: ignore[assignment]
+    VerifyKey = None  # type: ignore[assignment]
 
 ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
@@ -81,7 +90,7 @@ TON_AUTH_SESSION_TTL_SEC = max(300, int(os.getenv("TON_AUTH_SESSION_TTL_SEC", "8
 TON_AUTH_TOUCH_PERSIST_INTERVAL_SEC = max(5.0, float(os.getenv("TON_AUTH_TOUCH_PERSIST_INTERVAL_SEC", "60")))
 TON_PROOF_MAX_AGE_SEC = max(60, int(os.getenv("TON_PROOF_MAX_AGE_SEC", "300")))
 TON_CHALLENGE_TTL_SEC = max(30, int(os.getenv("TON_CHALLENGE_TTL_SEC", "180")))
-TON_ALLOW_WEAK_VERIFY = os.getenv("TON_ALLOW_WEAK_VERIFY", "true").strip().lower() in {"1", "true", "yes", "on"}
+TON_ALLOW_WEAK_VERIFY = os.getenv("TON_ALLOW_WEAK_VERIFY", "false").strip().lower() in {"1", "true", "yes", "on"}
 TON_BALANCE_API_URL = (os.getenv("TON_BALANCE_API_URL", "https://toncenter.com/api/v2/getAddressBalance").strip() or "https://toncenter.com/api/v2/getAddressBalance")
 TON_BALANCE_TIMEOUT_SEC = max(2.0, float(os.getenv("TON_BALANCE_TIMEOUT_SEC", "8")))
 TON_BALANCE_CACHE_TTL_SEC = max(5.0, float(os.getenv("TON_BALANCE_CACHE_TTL_SEC", "30")))
@@ -1677,6 +1686,117 @@ def _host_only(handler: BaseHTTPRequestHandler) -> str:
     return host.split(":")[0].strip().lower()
 
 
+def _b64decode_padded(value: str, *, urlsafe: bool = False) -> bytes:
+    raw = str(value or "").strip()
+    if not raw:
+        return b""
+    pad = "=" * (-len(raw) % 4)
+    if urlsafe or "-" in raw or "_" in raw:
+        return base64.urlsafe_b64decode((raw + pad).encode("ascii"))
+    return base64.b64decode((raw + pad).encode("ascii"))
+
+
+def _crc16_ccitt(data: bytes) -> int:
+    crc = 0
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc & 0xFFFF
+
+
+def _decode_ton_account_address(address: str) -> tuple[int, bytes]:
+    raw = str(address or "").strip()
+    if ":" in raw:
+        wc_raw, hash_raw = raw.split(":", 1)
+        try:
+            wc = int(wc_raw)
+        except ValueError as exc:
+            raise ValueError("invalid_ton_address_workchain") from exc
+        if len(hash_raw) != 64:
+            raise ValueError("invalid_ton_address_hash")
+        try:
+            addr_hash = bytes.fromhex(hash_raw)
+        except ValueError as exc:
+            raise ValueError("invalid_ton_address_hash") from exc
+        if len(addr_hash) != 32:
+            raise ValueError("invalid_ton_address_hash")
+        return wc, addr_hash
+
+    try:
+        decoded = _b64decode_padded(raw, urlsafe=True)
+    except Exception as exc:
+        raise ValueError("invalid_ton_friendly_address") from exc
+    if len(decoded) != 36:
+        raise ValueError("invalid_ton_friendly_address_length")
+    body = decoded[:34]
+    expected_crc = int.from_bytes(decoded[34:], "big")
+    if _crc16_ccitt(body) != expected_crc:
+        raise ValueError("invalid_ton_friendly_address_crc")
+    wc_byte = body[1]
+    wc = wc_byte if wc_byte < 128 else wc_byte - 256
+    return wc, body[2:34]
+
+
+def _decode_ton_public_key(public_key: str) -> bytes:
+    raw = str(public_key or "").strip()
+    if not raw:
+        raise ValueError("missing_public_key")
+    try:
+        if len(raw) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in raw):
+            decoded = bytes.fromhex(raw)
+        else:
+            decoded = _b64decode_padded(raw, urlsafe=True)
+    except Exception as exc:
+        raise ValueError("invalid_public_key") from exc
+    if len(decoded) != 32:
+        raise ValueError("invalid_public_key_length")
+    return decoded
+
+
+def _verify_ton_proof_signature(
+    *,
+    address: str,
+    public_key: str,
+    domain: str,
+    timestamp: int,
+    payload: str,
+    signature: str,
+) -> tuple[bool, str]:
+    if VerifyKey is None:
+        return False, "ton_proof_crypto_unavailable"
+    try:
+        wc, address_hash = _decode_ton_account_address(address)
+        pubkey = _decode_ton_public_key(public_key)
+        sig = _b64decode_padded(signature, urlsafe=True)
+        if len(sig) != 64:
+            return False, "invalid_signature_length"
+        domain_bytes = str(domain or "").encode("utf-8")
+        payload_bytes = str(payload or "").encode("utf-8")
+        message = (
+            b"ton-proof-item-v2/"
+            + struct.pack(">i", int(wc))
+            + address_hash
+            + struct.pack("<I", len(domain_bytes))
+            + domain_bytes
+            + struct.pack("<Q", int(timestamp))
+            + payload_bytes
+        )
+        msg_hash = hashlib.sha256(message).digest()
+        signed = hashlib.sha256(b"\xff\xff" + b"ton-connect" + msg_hash).digest()
+        VerifyKey(pubkey).verify(signed, sig)  # type: ignore[union-attr]
+        return True, "ok"
+    except BadSignatureError:
+        return False, "ton_proof_signature_mismatch"
+    except ValueError as exc:
+        return False, str(exc)
+    except Exception:
+        return False, "ton_proof_signature_verify_failed"
+
+
 def _fetch_ton_wallet_balance(address: str) -> tuple[float | None, str]:
     wallet = str(address or "").strip()
     if not wallet:
@@ -1758,6 +1878,16 @@ def _validate_ton_verify_payload(handler: BaseHTTPRequestHandler, payload: dict)
     if domain_value and domain_value not in allowed_domains:
         return False, "proof_domain_mismatch", None
     challenge_host = domain_value or host
+    sig_ok, sig_reason = _verify_ton_proof_signature(
+        address=address,
+        public_key=public_key,
+        domain=challenge_host,
+        timestamp=ts,
+        payload=proof_payload,
+        signature=signature,
+    )
+    if not sig_ok:
+        return False, sig_reason, None
     ok, reason = TON_AUTH.consume_challenge(proof_payload, host=challenge_host, ua_hash=_ua_hash(handler))
     if not ok:
         return False, reason, None
@@ -1768,9 +1898,8 @@ def _validate_ton_verify_payload(handler: BaseHTTPRequestHandler, payload: dict)
         "domain": challenge_host,
         "verified_at": now_ts,
         "proof_timestamp": ts,
-        # В MVP валидируем challenge/domain/time/replay. Криптовалидация сигнатуры добавляется отдельным модулем.
-        "verification_level": "challenge+domain+time+anti_replay",
-        "verification_status": "mvp_verified",
+        "verification_level": "ton_proof_signature+challenge+domain+time+anti_replay",
+        "verification_status": "verified",
     }
     return True, "ok", wallet
 

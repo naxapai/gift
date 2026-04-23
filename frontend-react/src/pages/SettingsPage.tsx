@@ -3,6 +3,7 @@ import { BentoCard } from '../components/BentoCard'
 import { BentoGrid } from '../components/BentoGrid'
 import { MetricTile } from '../components/MetricTile'
 import { PageHeader } from '../components/PageHeader'
+import { AdminPage } from './AdminPage'
 import {
   getAutoSellRules,
   getAdminTelegramDeliveryConfig,
@@ -29,6 +30,10 @@ const LS = {
   animations: 'gmz:settings:animations',
   compact: 'gmz:settings:compact',
 }
+
+type SettingsTab = 'general' | 'telegram' | 'admin'
+const TELEGRAM_DELIVERY_ALLOWED_USER_ID = '144832201'
+const SETTINGS_ADMIN_ALLOWED_USER_ID = '44832201'
 
 type TelegramFormState = {
   enabled: boolean
@@ -93,6 +98,7 @@ function parseTelegramForm(effective?: Record<string, unknown> | null): Telegram
 
 export function SettingsPage() {
   const refreshBounds = uiAutoRefreshBounds()
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
   const [realtime, setRealtime] = useState(() => readBool(LS.realtime, true))
   const [animations, setAnimations] = useState(() => readBool(LS.animations, true))
   const [compact, setCompact] = useState(() => readBool(LS.compact, false))
@@ -114,6 +120,7 @@ export function SettingsPage() {
   const [alertSaving, setAlertSaving] = useState(false)
 
   const [telegramAuthed, setTelegramAuthed] = useState(false)
+  const [telegramUserId, setTelegramUserId] = useState('')
   const [telegramDeliveryAllowed, setTelegramDeliveryAllowed] = useState(false)
   const [tradingAllowed, setTradingAllowed] = useState(false)
   const [tradeWalletAddress, setTradeWalletAddress] = useState('')
@@ -144,6 +151,7 @@ export function SettingsPage() {
   const [tgJournal, setTgJournal] = useState<{ sent: Array<Record<string, unknown>>; failed: Array<Record<string, unknown>> }>({ sent: [], failed: [] })
   const [tgRecommendation, setTgRecommendation] = useState<{ currentPass?: number; recommendedPass?: number; recommended?: Record<string, unknown>; stats?: Record<string, unknown> } | null>(null)
   const [tgForm, setTgForm] = useState<TelegramFormState>(() => parseTelegramForm(null))
+  const adminTabAllowed = telegramUserId === SETTINGS_ADMIN_ALLOWED_USER_ID
 
   useEffect(() => {
     writeBool(LS.realtime, realtime)
@@ -209,13 +217,15 @@ export function SettingsPage() {
         setGifts(Number(ov.counts?.gifts || 0))
         setCollections(Number(ov.counts?.collections || 0))
         const nextTelegramAuthed = Boolean(auth?.authenticated)
+        const nextTelegramUserId = String(auth?.user?.id || '')
         setTelegramAuthed(nextTelegramAuthed)
-        setTelegramDeliveryAllowed(String(auth?.user?.id || '') === '144832201')
+        setTelegramUserId(nextTelegramUserId)
+        setTelegramDeliveryAllowed(nextTelegramUserId === TELEGRAM_DELIVERY_ALLOWED_USER_ID)
         const nextWallet = String(tonAuth?.wallet?.address || tradeAccess?.wallet_address || '')
         setTradeWalletAddress(nextWallet)
         const nextTradingAllowed = Boolean(tradeAccess?.allowed)
         setTradingAllowed(nextTradingAllowed)
-        if (nextTelegramAuthed && String(auth?.user?.id || '') === '144832201') {
+        if (nextTelegramAuthed && nextTelegramUserId === TELEGRAM_DELIVERY_ALLOWED_USER_ID) {
           await loadTelegramSettings()
         }
         if (nextTradingAllowed && nextWallet) {
@@ -411,6 +421,24 @@ export function SettingsPage() {
     <section>
       <PageHeader title="Настройки" subtitle="Локальные параметры интерфейса, серверные alerts и управление Telegram delivery" />
 
+      <div className="mb-4 flex flex-wrap gap-2">
+        {([
+          ['general', 'Общие'],
+          ...(telegramDeliveryAllowed ? [['telegram', 'Telegram delivery'] as const] : []),
+          ...(adminTabAllowed ? [['admin', 'Admin'] as const] : []),
+        ] as Array<readonly [SettingsTab, string]>).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setActiveTab(id)}
+            className={`gmz-btn px-4 py-2 text-sm ${activeTab === id ? 'gmz-btn-primary' : ''}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'admin' && adminTabAllowed ? <AdminPage /> : (
       <BentoGrid>
         <BentoCard title="Параметры интерфейса" className="xl:col-span-4">
           <div className="space-y-3">
@@ -464,14 +492,11 @@ export function SettingsPage() {
           </div>
         </BentoCard>
 
+        {activeTab === 'telegram' && telegramDeliveryAllowed ? (
         <BentoCard title="Telegram delivery" className="xl:col-span-6">
           {!telegramAuthed ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
               Войдите через Telegram, чтобы управлять отправкой сигналов и тестировать delivery.
-            </div>
-          ) : !telegramDeliveryAllowed ? (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
-              Telegram delivery доступен только для Telegram user ID `144832201`.
             </div>
           ) : (
             <div className="space-y-4">
@@ -617,6 +642,7 @@ export function SettingsPage() {
             </div>
           )}
         </BentoCard>
+        ) : null}
 
         <BentoCard title="AutoSell PRO" className="xl:col-span-6">
           {!tradingAllowed ? (
@@ -759,6 +785,7 @@ export function SettingsPage() {
           </div>
         </BentoCard>
       </BentoGrid>
+      )}
     </section>
   )
 }

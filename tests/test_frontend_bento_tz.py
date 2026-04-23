@@ -13,6 +13,8 @@ BENTO_BLOCKS_JSON = Path("/Users/nexapai/Downloads/bento_ui_blocks.json")
 class TestFrontendBentoTz(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        if not STYLES_CSS.exists() or not (ROOT / "static" / "app.js").exists():
+            raise unittest.SkipTest("legacy static frontend replaced by React build; covered by test_frontend_react_stack")
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
         cls.css = STYLES_CSS.read_text(encoding="utf-8")
         cls.js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")

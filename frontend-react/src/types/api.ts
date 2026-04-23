@@ -167,6 +167,11 @@ export interface SignalItem {
   listing_id?: string
   listing_key?: string
   source?: string
+  raw_event_topic?: string
+  raw_event_source?: string
+  signal_origin?: 'real_trade_signal' | 'synthetic_warmup' | 'raw_listing_event' | string
+  signal_quality?: 'LIVE_CONFIRMED' | 'BACKFILL_CONFIRMED' | 'SYNTHETIC_WARMUP' | string
+  is_trade_signal?: boolean
 }
 
 export interface CollectionItem {

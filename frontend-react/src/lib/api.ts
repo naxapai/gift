@@ -44,6 +44,51 @@ const API_RETRY_COUNT = Math.max(0, Number(import.meta.env.VITE_API_RETRY_COUNT 
 const API_RETRY_BASE_DELAY_MS = Math.max(150, Number(import.meta.env.VITE_API_RETRY_BASE_DELAY_MS || 450))
 const ENABLE_LEGACY_MARKET_OVERVIEW_FALLBACK = String(import.meta.env.VITE_ENABLE_LEGACY_MARKET_OVERVIEW_FALLBACK || '').trim().toLowerCase() === 'true'
 const TRANSIENT_HTTP_CODES = new Set([408, 429, 500, 502, 503, 504])
+const API_CACHE_TTL_MS = Math.max(15_000, Number(import.meta.env.VITE_API_CACHE_TTL_MS || 120_000))
+
+type ApiCacheEntry<T> = {
+  expiresAt: number
+  payload: T
+}
+
+const apiResponseCache = new Map<string, ApiCacheEntry<unknown>>()
+const apiInflight = new Map<string, Promise<unknown>>()
+
+function cacheKey(scope: string, value: unknown): string {
+  return `${scope}:${JSON.stringify(value)}`
+}
+
+export function invalidateApiCache(prefix?: string): void {
+  if (!prefix) {
+    apiResponseCache.clear()
+    apiInflight.clear()
+    return
+  }
+  for (const key of [...apiResponseCache.keys()]) {
+    if (key.startsWith(prefix)) apiResponseCache.delete(key)
+  }
+  for (const key of [...apiInflight.keys()]) {
+    if (key.startsWith(prefix)) apiInflight.delete(key)
+  }
+}
+
+async function cachedQuery<T>(key: string, loader: () => Promise<T>, ttlMs = API_CACHE_TTL_MS): Promise<T> {
+  const now = Date.now()
+  const cached = apiResponseCache.get(key) as ApiCacheEntry<T> | undefined
+  if (cached && cached.expiresAt > now) return cached.payload
+  const current = apiInflight.get(key) as Promise<T> | undefined
+  if (current) return current
+  const pending = loader()
+    .then((payload) => {
+      apiResponseCache.set(key, { expiresAt: Date.now() + ttlMs, payload })
+      return payload
+    })
+    .finally(() => {
+      apiInflight.delete(key)
+    })
+  apiInflight.set(key, pending)
+  return pending
+}
 
 function withBase(path: string): string {
   if (!API_BASE) return path
@@ -390,7 +435,8 @@ export function signalTypeRu(type?: string): string {
 }
 
 export async function getOverview(): Promise<OverviewResponse> {
-  return apiGet<OverviewResponse>(withMode(OPENAPI_V1.overview))
+  const path = withMode(OPENAPI_V1.overview)
+  return cachedQuery<OverviewResponse>(cacheKey('overview', path), () => apiGet<OverviewResponse>(path))
 }
 
 export async function getMarketStatus(window = '30m', endpoint?: string): Promise<MarketStatusResponse> {
@@ -400,7 +446,8 @@ export async function getMarketStatus(window = '30m', endpoint?: string): Promis
   if (window) q.set('window', window)
   const resolvedWindow = String(window || q.get('window') || '30m')
   try {
-    return await apiGet<MarketStatusResponse>(withQuery(basePath || OPENAPI_V1.marketStatus, q))
+    const path = withQuery(basePath || OPENAPI_V1.marketStatus, q)
+    return await cachedQuery<MarketStatusResponse>(cacheKey('market-status', path), () => apiGet<MarketStatusResponse>(path))
   } catch (e) {
     // Main compatibility fallback: derive market status from v1 overview.
     const v1Overview = (await apiGet<Record<string, unknown>>(withMode(OPENAPI_V1.overview)).catch(() => null)) || null
@@ -665,8 +712,13 @@ export function subscribeSignalsStream(
 }
 
 export async function getCollections(cap = 1000): Promise<CollectionItem[]> {
-  const rows = await fetchAllByCursor<CollectionsResponse>(OPENAPI_V1.collections, 200, cap)
-  return rows as CollectionItem[]
+  return cachedQuery<CollectionItem[]>(
+    cacheKey('collections', { cap }),
+    async () => {
+      const rows = await fetchAllByCursor<CollectionsResponse>(OPENAPI_V1.collections, 200, cap)
+      return rows as CollectionItem[]
+    },
+  )
 }
 
 export async function getVariants(params?: {
@@ -677,8 +729,15 @@ export async function getVariants(params?: {
   const q = new URLSearchParams({ mode: 'tz' })
   if (params?.collectionId) q.set('collection_id', params.collectionId)
   if (params?.sort) q.set('sort', params.sort)
-  const rows = await fetchAllByCursor<VariantsResponse>(withQuery(OPENAPI_V1.variants, q), 200, params?.cap || 5000)
-  return rows as VariantItem[]
+  const path = withQuery(OPENAPI_V1.variants, q)
+  const cap = params?.cap || 5000
+  return cachedQuery<VariantItem[]>(
+    cacheKey('variants', { path, cap }),
+    async () => {
+      const rows = await fetchAllByCursor<VariantsResponse>(path, 200, cap)
+      return rows as VariantItem[]
+    },
+  )
 }
 
 export async function getScreenersFeed(params?: {
@@ -708,8 +767,11 @@ export async function getScreenersFeed(params?: {
   if (Number.isFinite(params?.limit)) q.set('limit', String(params?.limit))
   if (params?.cursor) q.set('cursor', params.cursor)
   const endpoint = String(params?.endpoint || OPENAPI_V1.screenersFeed || '').trim() || OPENAPI_V1.screenersFeed
-  const payload = await apiGet<unknown>(withEndpointQuery(endpoint, q))
-  return normalizeScreenersFeed(payload)
+  const path = withEndpointQuery(endpoint, q)
+  return cachedQuery<ScreenersFeedResponse>(
+    cacheKey('screeners-feed', path),
+    async () => normalizeScreenersFeed(await apiGet<unknown>(path)),
+  )
 }
 
 export function subscribeScreenersStream(
@@ -782,7 +844,8 @@ export async function getCatalogFeed(params?: {
   if (Number.isFinite(params?.limit)) q.set('limit', String(params?.limit))
   if (params?.cursor) q.set('cursor', params.cursor)
   const endpoint = String(params?.endpoint || OPENAPI_V1.catalogFeed || '').trim() || OPENAPI_V1.catalogFeed
-  return apiGet<CatalogFeedResponse>(withEndpointQuery(endpoint, q))
+  const path = withEndpointQuery(endpoint, q)
+  return cachedQuery<CatalogFeedResponse>(cacheKey('catalog-feed', path), () => apiGet<CatalogFeedResponse>(path))
 }
 
 export async function getCatalogVariant(variantId: string, params?: { endpoint?: string }): Promise<CatalogRowPro> {
@@ -872,7 +935,8 @@ export async function getMetric(params: {
 export async function getListingsSummary(windowSec = 120): Promise<ListingSummaryResponse> {
   const q = new URLSearchParams()
   q.set('new_window_sec', String(windowSec))
-  return apiGet<ListingSummaryResponse>(withQuery(OPENAPI_V1.listingsSummary, q))
+  const path = withQuery(OPENAPI_V1.listingsSummary, q)
+  return cachedQuery<ListingSummaryResponse>(cacheKey('listings-summary', path), () => apiGet<ListingSummaryResponse>(path))
 }
 
 export async function getListingSourceStatus(): Promise<ListingSourceStatusResponse> {
@@ -929,8 +993,11 @@ export async function getListingsNew(params?: {
   if (params?.q) q.set('q', params.q)
   const endpoint = String(params?.endpoint || OPENAPI_V1.listingsNew || '').trim() || OPENAPI_V1.listingsNew
   try {
-    const payload = await apiGet<unknown>(withEndpointQuery(endpoint, q))
-    return normalizeListingsFeed(payload, endpoint)
+    const path = withEndpointQuery(endpoint, q)
+    return await cachedQuery<ListingsFeedResponse>(
+      cacheKey('listings-new', path),
+      async () => normalizeListingsFeed(await apiGet<unknown>(path), endpoint),
+    )
   } catch (e) {
     throw e
   }
@@ -958,8 +1025,11 @@ export async function getListingsRace(params?: {
   if (params?.q) q.set('q', params.q)
   const endpoint = String(params?.endpoint || OPENAPI_V1.listingsRace || '').trim() || OPENAPI_V1.listingsRace
   try {
-    const payload = await apiGet<unknown>(withEndpointQuery(endpoint, q))
-    return normalizeListingsRaceFeed(payload, endpoint)
+    const path = withEndpointQuery(endpoint, q)
+    return await cachedQuery<ListingsRaceFeedResponse>(
+      cacheKey('listings-race', path),
+      async () => normalizeListingsRaceFeed(await apiGet<unknown>(path), endpoint),
+    )
   } catch (e) {
     throw e
   }
@@ -1041,7 +1111,8 @@ export async function getListings(params?: {
   if (params?.onlyNew) q.set('only_new', '1')
   if (params?.collectionQ) q.set('collection_q', params.collectionQ)
   if (params?.modelQ) q.set('model_q', params.modelQ)
-  return apiGet<ListingsResponse>(withQuery(OPENAPI_V1.listings, q))
+  const path = withQuery(OPENAPI_V1.listings, q)
+  return cachedQuery<ListingsResponse>(cacheKey('listings', path), () => apiGet<ListingsResponse>(path))
 }
 
 export async function getListingSignals(params?: {
@@ -1072,8 +1143,12 @@ export async function getListingSignals(params?: {
     q.set('min_score', String(norm))
   }
   try {
-    const payload = await apiGet<unknown>(withEndpointQuery(endpoint, q))
-    return normalizeListingSignals(payload, endpoint)
+    const path = withEndpointQuery(endpoint, q)
+    return await cachedQuery<ListingSignalsResponse>(
+      cacheKey('listing-signals', path),
+      async () => normalizeListingSignals(await apiGet<unknown>(path), endpoint),
+      Math.min(API_CACHE_TTL_MS, 30_000),
+    )
   } catch (e) {
     throw e
   }

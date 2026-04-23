@@ -35,6 +35,10 @@ def _iso(dt: datetime | None = None) -> str:
     return target.isoformat().replace("+00:00", "Z")
 
 
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _load_json(path: Path, default):
     if not path.exists():
         return default
@@ -66,6 +70,13 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 
 class TradeRuntime:
+    DEFAULT_MARKETPLACE_WALLET_ADDRESS = "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c"
+    DEFAULT_QUOTE_SECRETS = {
+        "gmz-trade-quote-secret",
+        "giftmarketzone-trades-secret",
+        "sandbox-dev-trades-secret",
+    }
+
     def __init__(
         self,
         data_dir: Path,
@@ -81,18 +92,29 @@ class TradeRuntime:
         marketplace_wallet_address: str | None = None,
     ) -> None:
         self.data_dir = data_dir
-        self.quote_secret = str(quote_secret or "gmz-trade-quote-secret").encode("utf-8")
+        env_raw = str(environment or "sandbox").strip().lower()
+        if env_raw not in {"sandbox", "production"}:
+            raise ValueError("unsupported_trading_environment")
+        self.environment = env_raw
+        quote_secret_raw = str(quote_secret or "").strip()
+        marketplace_wallet_raw = str(marketplace_wallet_address or "").strip()
+        if self.environment == "production":
+            if not quote_secret_raw or quote_secret_raw in self.DEFAULT_QUOTE_SECRETS or len(quote_secret_raw) < 32:
+                raise RuntimeError("production_trades_quote_secret_required")
+            if not marketplace_wallet_raw or marketplace_wallet_raw == self.DEFAULT_MARKETPLACE_WALLET_ADDRESS:
+                raise RuntimeError("production_marketplace_wallet_required")
+            if not str(tx_verify_url or "").strip():
+                raise RuntimeError("production_tx_verifier_required")
+        if not quote_secret_raw:
+            quote_secret_raw = "sandbox-dev-trades-secret"
+        self.quote_secret = quote_secret_raw.encode("utf-8")
         self.quote_ttl_sec = max(3, min(int(quote_ttl_sec or 5), 10))
         self.db_path = Path(db_path) if db_path else None
         self.postgres_dsn = str(postgres_dsn or "").strip()
         self.redis_url = str(redis_url or "").strip()
         self.tx_verify_url = str(tx_verify_url or "").strip()
         self.tx_verify_token = str(tx_verify_token or "").strip()
-        env_raw = str(environment or "sandbox").strip().lower()
-        self.environment = env_raw if env_raw in {"sandbox", "production"} else "sandbox"
-        self.marketplace_wallet_address = str(
-            marketplace_wallet_address or "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c"
-        ).strip() or "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c"
+        self.marketplace_wallet_address = marketplace_wallet_raw or self.DEFAULT_MARKETPLACE_WALLET_ADDRESS
         self.intents_file = data_dir / "trade_intents_store.json"
         self.positions_file = data_dir / "trade_positions_store.json"
         self.holdings_file = data_dir / "trade_holdings_store.json"
@@ -180,11 +202,24 @@ class TradeRuntime:
             raise ValueError("missing_required_fields")
         self._validate_intent_preconditions(intent_type, payload, wallet_address=wallet_address, variant_id=variant_id)
         idem = str(payload.get("idempotency_key") or "").strip()
+        if not idem:
+            bucket = int(time.time() // 30)
+            idem_src = "|".join(
+                [
+                    wallet_address,
+                    variant_id,
+                    intent_type,
+                    str(payload.get("price_ton") or ""),
+                    str(payload.get("max_spend_ton") or ""),
+                    _stable_json(payload.get("post_action") if isinstance(payload.get("post_action"), dict) else {}),
+                    str(bucket),
+                ]
+            )
+            idem = f"auto:{hashlib.sha256(idem_src.encode('utf-8')).hexdigest()[:24]}"
         intents = self._read_list(self.intents_file)
-        if idem:
-            for row in intents:
-                if str(row.get("idempotency_key") or "") == idem:
-                    return {"intent": row, "wallet_tx": self._wallet_tx_for_intent(row)}
+        for row in intents:
+            if str(row.get("idempotency_key") or "") == idem:
+                return {"intent": row, "wallet_tx": self._wallet_tx_for_intent(row)}
         now = _now_utc()
         item = {
             "intent_id": f"ti_{secrets.token_hex(8)}",
@@ -223,7 +258,7 @@ class TradeRuntime:
                     "source": "runtime",
                 }
             ],
-            "idempotency_key": idem or None,
+            "idempotency_key": idem,
         }
         wallet_tx = self._wallet_tx_for_intent(item)
         item["wallet_tx_hash"] = self._wallet_tx_hash(wallet_tx)
@@ -394,7 +429,8 @@ class TradeRuntime:
             except RuntimeError:
                 raise
             except Exception:
-                pass
+                if self.environment == "production":
+                    raise RuntimeError("quote_lock_unavailable")
         if nonce in self.used_quotes and self.used_quotes[nonce] > time.time():
             raise RuntimeError("quote_nonce_already_used")
         issued_at = _as_int(((quote or {}).get("quote") or {}).get("issued_at"), 0)
@@ -415,7 +451,8 @@ class TradeRuntime:
             try:
                 self._redis.setex(f"used_quote:{nonce}", 30, "LOCKED")
             except Exception:
-                pass
+                if self.environment == "production":
+                    raise RuntimeError("quote_lock_unavailable")
         quote_payload = (quote or {}).get("quote") or {}
         item = self.create_trade_intent(
             {

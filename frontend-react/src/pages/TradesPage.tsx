@@ -105,7 +105,7 @@ async function sendTonWalletTx(walletTx: Record<string, unknown>): Promise<{ txH
   }
   const uiCtor = window.TON_CONNECT_UI?.TonConnectUI
   if (!uiCtor) {
-    return { txHash: `sim_${Date.now()}`, payloadHash }
+    throw new Error('TON Connect UI SDK is unavailable')
   }
   const ui = window.__gmzTonConnectUiSingleton || new uiCtor({ manifestUrl: `${window.location.origin}/tonconnect-manifest.json`, buttonRootId: TONCONNECT_BUTTON_ROOT_ID })
   window.__gmzTonConnectUiSingleton = ui
@@ -116,7 +116,8 @@ async function sendTonWalletTx(walletTx: Record<string, unknown>): Promise<{ txH
     throw new Error('TON wallet was not connected')
   }
   const res = await ui.sendTransaction(walletTx as { validUntil: number; messages: Array<{ address: string; amount: string; payload?: string; stateInit?: string }> })
-  const txHash = String((res && (res.transactionHash || res.boc)) || `sim_${Date.now()}`)
+  const txHash = String((res && (res.transactionHash || res.boc)) || '')
+  if (!txHash) throw new Error('TON wallet did not return transaction proof')
   return { txHash, payloadHash }
 }
 
