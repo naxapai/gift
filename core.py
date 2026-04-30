@@ -5291,6 +5291,44 @@ class GiftAnalyticsService:
         items.sort(key=lambda x: (str(x.get("ts") or ""), int(x.get("active_lots") or 0)), reverse=True)
         return items
 
+    def _overview_top_signals_v1(self, eff_mode: str, limit: int = 8) -> list[dict]:
+        """Return top signals for overview without forcing a heavy cold rebuild.
+
+        The full signals_v1 feed can merge tens of thousands of live listing rows.
+        Overview is a high-frequency lightweight endpoint, so it should reuse a
+        warm signals cache and fall back to a cheap snapshot preview on cold start.
+        """
+        lim = max(1, min(int(limit or 8), 20))
+        cache_key = (
+            "signals_v1",
+            eff_mode,
+            "",
+            tuple(),
+            tuple(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            False,
+            False,
+            "",
+            "",
+            "",
+            "",
+            lim,
+            "",
+        )
+        cached = self._cache_get(cache_key)
+        if isinstance(cached, dict) and isinstance(cached.get("items"), list):
+            return list(cached.get("items") or [])[:lim]
+        return self._fallback_v1_signals_from_listings(mode=eff_mode)[:lim]
+
     def overview_v1(self, mode: str | None = None) -> dict:
         self._ensure_recos()
         eff_mode = self._effective_v1_mode(mode)
@@ -5306,7 +5344,7 @@ class GiftAnalyticsService:
             market_state = "рост"
         elif market_index <= 40:
             market_state = "падение"
-        top_signals = self.signals_v1(limit=8, mode=eff_mode).get("items") or []
+        top_signals = self._overview_top_signals_v1(eff_mode, limit=8)
         recommendation = top_signals[0] if top_signals else None
         volume24h = round(sum(float((v.get("metrics") or {}).get("volume_ton_24h", 0) or 0) for v in self.variants.values()), 6)
         avg_liq = round(_safe_mean(float((v.get("metrics") or {}).get("liquidity_score_24h", 0) or 0) for v in self.variants.values()), 6)
