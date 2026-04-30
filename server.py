@@ -2244,7 +2244,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path == "/" or path == "/index.html":
             _serve_file_head(self, "index.html")
             return
-        if path.startswith("/assets/"):
+        if path.startswith("/assets/") or path.startswith("/vendor/"):
             _serve_file_head(self, path.lstrip("/"))
             return
         if path in {"/favicon.png", "/logo.png", "/vite.svg"}:
@@ -2505,7 +2505,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path == "/" or path == "/index.html":
             _serve_file(self, "index.html")
             return
-        if path.startswith("/assets/"):
+        if path.startswith("/assets/") or path.startswith("/vendor/"):
             _serve_file(self, path.lstrip("/"))
             return
         if path in {"/favicon.png", "/logo.png", "/vite.svg"}:
