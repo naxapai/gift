@@ -8521,7 +8521,7 @@ class GiftAnalyticsService:
         out: list[str] = []
         seen: set[str] = set()
         for token in [x.strip() for x in raw.split(",") if x.strip()]:
-            candidates = [token]
+            candidates: list[str] = []
             try:
                 parsed = urlsplit(token)
                 base = urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
@@ -8529,11 +8529,16 @@ class GiftAnalyticsService:
                 if not path or path == "/":
                     candidates.append(f"{base}/api/listings/new")
                 elif path.endswith("/api/listing-bridge/status"):
+                    # Status endpoints are useful for diagnostics but must never be
+                    # queried as a data source, otherwise a healthy bridge can be
+                    # incorrectly marked degraded due to "payload_no_items".
                     candidates.append(f"{base}/api/listings/new")
                 elif path.endswith("/api/listings/new"):
-                    candidates.append(f"{base}/api/listing-bridge/status")
+                    candidates.append(token)
+                else:
+                    candidates.append(token)
             except Exception:
-                pass
+                candidates.append(token)
             for candidate in candidates:
                 c = str(candidate or "").strip()
                 if not c:
