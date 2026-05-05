@@ -755,7 +755,10 @@ class GiftAnalyticsService:
         self.listing_mt_api_token = str(os.getenv("LISTING_MT_API_TOKEN", "") or "").strip()
         self.listing_mt_api_token_header = str(os.getenv("LISTING_MT_API_TOKEN_HEADER", "Authorization") or "Authorization").strip()
         self.listing_mt_api_token_prefix = str(os.getenv("LISTING_MT_API_TOKEN_PREFIX", "Bearer ") or "")
-        self.listing_mt_api_timeout_sec = max(3.0, float(os.getenv("LISTING_MT_API_TIMEOUT_SEC", "4")))
+        # The MTProto bridge returns the full live listing payload in API-only mode.
+        # Four seconds is too aggressive for cold Render instances and causes false
+        # DEGRADED status even when the bridge is healthy but the payload is large.
+        self.listing_mt_api_timeout_sec = max(12.0, float(os.getenv("LISTING_MT_API_TIMEOUT_SEC", "12")))
         self.listing_mt_allow_snapshot_fallback = (
             str(os.getenv("LISTING_MT_ALLOW_SNAPSHOT_FALLBACK", "false") or "").strip().lower() in {"1", "true", "yes", "on"}
         )
