@@ -14,3 +14,4 @@ data/trades_runtime.sqlite3
 data/variant_history.json
 data/ingest.log
 *.sqlite3
+data/fragment_snapshot_meta.json
